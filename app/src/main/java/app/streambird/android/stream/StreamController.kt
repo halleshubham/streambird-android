@@ -1,0 +1,294 @@
+package app.streambird.android.stream
+
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.os.Build
+import androidx.core.content.ContextCompat
+import app.streambird.android.R
+import app.streambird.android.data.ApiClient
+import app.streambird.android.data.ApiException
+import app.streambird.android.data.BrandKit
+import app.streambird.android.data.CreateStreamRequest
+import app.streambird.android.data.Settings
+import app.streambird.android.data.StreamDto
+import app.streambird.android.data.StreamStatusDestination
+import app.streambird.android.media.CodecProbe
+import app.streambird.android.media.DeviceReading
+import app.streambird.android.media.DeviceTelemetry
+import app.streambird.android.media.EncoderStats
+import app.streambird.android.media.EngineConfig
+import app.streambird.android.media.EngineListener
+import app.streambird.android.media.IceServerSpec
+import app.streambird.android.media.LogRow
+import app.streambird.android.media.LogoOverlay
+import app.streambird.android.media.PicturePriority
+import app.streambird.android.media.PreviewHandle
+import app.streambird.android.media.SampleLog
+import app.streambird.android.media.SendQuality
+import app.streambird.android.media.SendSample
+import app.streambird.android.media.StreamEngine
+import app.streambird.android.media.StreamTier
+import app.streambird.android.media.classifySendQuality
+import app.streambird.android.media.pickBrandKit
+import app.streambird.android.whip.WhipClient
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
+import javax.inject.Inject
+import javax.inject.Singleton
+
+enum class LogoChoice(val label: String) { BRAND("Brand kit logo"), TEST("Test logo (app icon)"), NONE("No logo") }
+
+data class GoLiveRequest(
+    val title: String,
+    val visibility: String,
+    val destinationIds: Set<String>,
+    val tier: StreamTier,
+    val priority: PicturePriority,
+    val frontCamera: Boolean,
+    val h264HighProfile: Boolean,
+    val forceKeyFrames: Boolean,
+    val logoChoice: LogoChoice,
+)
+
+enum class LivePhase { IDLE, STARTING, LIVE, ENDING, ENDED, FAILED }
+
+data class LiveUi(
+    val phase: LivePhase = LivePhase.IDLE,
+    val message: String = "",
+    val stream: StreamDto? = null,
+    val request: GoLiveRequest? = null,
+    val stats: EncoderStats? = null,
+    val kbps: Double? = null,
+    val quality: SendQuality? = null,
+    val hardware: Boolean? = null,
+    val device: DeviceReading? = null,
+    val elapsedS: Long = 0,
+    val destinations: List<StreamStatusDestination> = emptyList(),
+    val droppedFrames: Long = 0,
+    val events: List<String> = emptyList(),
+    val logRows: Int = 0,
+    val logoNote: String = "",
+) {
+    val active get() = phase == LivePhase.STARTING || phase == LivePhase.LIVE || phase == LivePhase.ENDING
+}
+
+/**
+ * Process-wide owner of the one running stream: creates it via the API, runs the [StreamEngine], samples telemetry and
+ * exposes everything the Live screen needs. Lives in the application scope so that it survives the Activity; the
+ * foreground [StreamingService] only keeps the process alive and shows the notification.
+ */
+@Singleton
+class StreamController @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val api: ApiClient,
+    private val settings: Settings,
+    private val scope: CoroutineScope,
+) {
+    private val _ui = MutableStateFlow(LiveUi())
+    val ui: StateFlow<LiveUi> = _ui.asStateFlow()
+
+    private val telemetry = DeviceTelemetry(context)
+    private val whipHttp = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
+    private var engine: StreamEngine? = null
+    private var log: SampleLog? = null
+    private var startedAtMs = 0L
+    private var pollJob: Job? = null
+    private var unwatchNetwork: (() -> Unit)? = null
+
+    val preview: PreviewHandle? get() = engine?.preview
+
+    fun start(req: GoLiveRequest) {
+        if (_ui.value.active) return
+        _ui.value = LiveUi(phase = LivePhase.STARTING, message = "Creating the stream...", request = req)
+        ContextCompat.startForegroundService(context, Intent(context, StreamingService::class.java))
+        scope.launch { run(req) }
+    }
+
+    private suspend fun run(req: GoLiveRequest) {
+        var stream: StreamDto? = null
+        try {
+            stream = api.createStream(
+                CreateStreamRequest(title = req.title.ifBlank { "Mobile stream" }, visibility = req.visibility, orientation = "portrait", destinationConnectionIds = req.destinationIds.toList()),
+            )
+            val whipUrl = stream.whipUrl ?: error("The server returned no publish (WHIP) URL for this stream.")
+            _ui.update { it.copy(stream = stream, message = "Preparing camera and encoder...") }
+
+            val ice = runCatching { api.turnCredentials().iceServers.map { IceServerSpec(it.urlList(), it.username, it.credential) } }
+                .getOrDefault(emptyList()).ifEmpty { listOf(IceServerSpec(listOf("stun:stun.l.google.com:19302"))) }
+            val (logo, logoNote) = loadLogo(req)
+            _ui.update { it.copy(logoNote = logoNote) }
+
+            val header = listOf(
+                "app" to "StreamBird Android spike ${app.streambird.android.BuildConfig.VERSION_NAME}",
+                "device" to "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT})",
+                "server" to settings.baseUrl,
+                "stream_id" to stream.id,
+                "tier" to "${req.tier.label} ${req.tier.width}x${req.tier.height} max ${req.tier.maxBitrateBps / 1000} kbps",
+                "picture_priority" to req.priority.name,
+                "camera" to if (req.frontCamera) "front" else "back",
+                "h264_high_profile" to req.h264HighProfile.toString(),
+                "force_keyframes_2s" to req.forceKeyFrames.toString(),
+                "logo" to "${req.logoChoice} $logoNote",
+                "codecs" to CodecProbe.summary(),
+            )
+            log = SampleLog(header)
+
+            val eng = StreamEngine(context, WhipClient(whipHttp), listener)
+            engine = eng
+            unwatchNetwork = telemetry.watchNetwork { event(it, withRow = true) }
+            eng.start(EngineConfig(req.tier, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl))
+
+            startedAtMs = System.currentTimeMillis()
+            _ui.update { it.copy(phase = LivePhase.LIVE, message = "Live. Platforms need a few seconds to show the picture.") }
+            event("LIVE", withRow = true)
+            pollJob = scope.launch { pollStatus(stream.id) }
+        } catch (t: Throwable) {
+            val msg = (t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName
+            event("start failed: $msg", withRow = false)
+            runCatching { engine?.stop() }
+            engine = null
+            unwatchNetwork?.invoke(); unwatchNetwork = null
+            // The stream row was created and is LIVE server-side: end it so it does not linger.
+            stream?.let { runCatching { api.endStream(it.id) } }
+            _ui.update { it.copy(phase = LivePhase.FAILED, message = "Could not go live: $msg") }
+            stopService()
+        }
+    }
+
+    fun end() {
+        val cur = _ui.value
+        if (!cur.active || cur.phase == LivePhase.ENDING) return
+        _ui.update { it.copy(phase = LivePhase.ENDING, message = "Ending the stream...") }
+        scope.launch {
+            pollJob?.cancel()
+            unwatchNetwork?.invoke(); unwatchNetwork = null
+            event("END requested", withRow = true)
+            runCatching { engine?.stop() }
+            engine = null
+            val id = cur.stream?.id
+            val err = id?.let { runCatching { api.endStream(it) }.exceptionOrNull() }
+            _ui.update {
+                it.copy(
+                    phase = LivePhase.ENDED,
+                    message = if (err == null) "Stream ended." else "Stopped sending, but the server did not confirm: ${err.message}",
+                )
+            }
+            stopService()
+        }
+    }
+
+    /** Back to the setup screen after Ended/Failed (keeps the log for sharing until the next start). */
+    fun acknowledge() {
+        if (_ui.value.phase == LivePhase.ENDED || _ui.value.phase == LivePhase.FAILED) _ui.update { it.copy(phase = LivePhase.IDLE) }
+    }
+
+    fun setPriority(p: PicturePriority) {
+        engine?.setPicturePriority(p)
+        _ui.update { it.copy(request = it.request?.copy(priority = p)) }
+        event("picture priority -> $p", withRow = true)
+    }
+
+    fun logCsv(): String? = log?.toCsv()
+
+    private val listener = object : EngineListener {
+        override fun onStats(stats: EncoderStats, kbps: Double?, hardware: Boolean?) {
+            val req = _ui.value.request ?: return
+            val elapsed = (System.currentTimeMillis() - startedAtMs) / 1000
+            val warming = elapsed < 8
+            val q = classifySendQuality(SendSample(stats.width, stats.height, stats.fps, kbps?.times(1000), stats.limitationReason), req.tier.width, req.tier.height, warming)
+            val dev = telemetry.read()
+            log?.add(LogRow(System.currentTimeMillis(), elapsed, stats, kbps, q.limited, dev))
+            _ui.update {
+                it.copy(
+                    stats = stats, kbps = kbps, quality = q, hardware = hardware, device = dev, elapsedS = elapsed,
+                    droppedFrames = engine?.droppedFrames ?: 0, logRows = log?.size ?: 0,
+                )
+            }
+        }
+
+        override fun onEvent(text: String) = event(text, withRow = false)
+
+        override fun onConnection(state: String) {
+            if (state == "FAILED" || state == "DISCONNECTED") {
+                _ui.update { if (it.phase == LivePhase.LIVE) it.copy(message = "Connection $state. The spike does not reconnect: end and go live again.") else it }
+            } else if (state == "CONNECTED") {
+                _ui.update { if (it.phase == LivePhase.LIVE) it.copy(message = "Live.") else it }
+            }
+        }
+    }
+
+    private fun event(text: String, withRow: Boolean) {
+        val stamp = SampleLog.iso(System.currentTimeMillis()).substring(11, 19)
+        _ui.update { it.copy(events = (it.events + "$stamp $text").takeLast(40)) }
+        if (withRow) log?.add(
+            LogRow(System.currentTimeMillis(), (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0) / 1000, null, null, false, telemetry.read(), event = text),
+        )
+    }
+
+    private suspend fun pollStatus(streamId: String) {
+        while (scope.isActive) {
+            delay(10_000)
+            val st = runCatching { api.streamStatus(streamId) }.getOrNull() ?: continue
+            _ui.update { it.copy(destinations = st.destinations) }
+            if (st.status != "live" && _ui.value.phase == LivePhase.LIVE) {
+                event("server says stream is ${st.status}", withRow = true)
+                _ui.update { it.copy(message = "The server ended this stream (${st.status}).") }
+                end()
+                return
+            }
+        }
+    }
+
+    // ---- logo ----
+
+    private suspend fun loadLogo(req: GoLiveRequest): Pair<LogoOverlay?, String> = when (req.logoChoice) {
+        LogoChoice.NONE -> null to "none"
+        LogoChoice.TEST -> LogoOverlay(testLogoBitmap(), onRight = false, heightPx = 120) to "test logo (app icon)"
+        LogoChoice.BRAND -> try {
+            val kits = api.brandKits()
+            val kit: BrandKit? = pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds })
+            val assetId = kit?.logoAssetId
+            if (kit == null || assetId == null) null to "brand kit has no logo"
+            else {
+                val bytes = api.assetFile(assetId)
+                val bmp = decodeLogo(bytes) ?: error("logo image could not be decoded")
+                LogoOverlay(bmp, onRight = kit.logoPosition == "right", heightPx = kit.logoSize) to "kit '${kit.name}' ${bmp.width}x${bmp.height}, ${kit.logoPosition}, ${kit.logoSize}px"
+            }
+        } catch (t: Throwable) {
+            null to "brand logo unavailable (${t.message})"
+        }
+    }
+
+    private fun decodeLogo(bytes: ByteArray): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outHeight / (sample * 2) >= 512) sample *= 2
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+
+    private fun testLogoBitmap(): Bitmap {
+        val d = ContextCompat.getDrawable(context, R.drawable.ic_test_logo)!!
+        val bmp = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888)
+        d.setBounds(0, 0, 256, 256)
+        d.draw(Canvas(bmp))
+        return bmp
+    }
+
+    private fun stopService() {
+        context.stopService(Intent(context, StreamingService::class.java))
+    }
+}

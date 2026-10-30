@@ -1,0 +1,18 @@
+package app.streambird.android
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import app.streambird.android.ui.AppRoot
+import app.streambird.android.ui.theme.StreamBirdTheme
+import dagger.hilt.android.AndroidEntryPoint
+
+@AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent { StreamBirdTheme { AppRoot() } }
+    }
+}

@@ -1,0 +1,68 @@
+name: Build debug APK
+
+on:
+  push:
+    branches: [ main, 'claude/**' ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Name the APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk streambird-spike-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: streambird-android-debug-apk
+          path: streambird-spike-debug.apk
+
+      - name: Upload unit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest
+
+      # Phone-friendly download: one stable pre-release whose tag always points at the newest spike build.
+      - name: Move the spike-latest tag to this commit
+        if: github.ref == 'refs/heads/claude/android-spike' || github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f spike-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/spike-latest
+
+      - name: Publish APK to the spike-latest pre-release
+        if: github.ref == 'refs/heads/claude/android-spike' || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: spike-latest
+          name: Spike debug build (latest)
+          prerelease: true
+          body: |
+            Debug APK of the StreamBird Android spike, built from ${{ github.sha }} (${{ github.ref_name }}).
+            Install: download `streambird-spike-debug.apk` on the phone, allow "install unknown apps" for the browser, open it.
+            See docs/SPIKE.md for the test checklist.
+          files: streambird-spike-debug.apk
