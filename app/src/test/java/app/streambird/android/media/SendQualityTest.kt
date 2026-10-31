@@ -41,7 +41,26 @@ class SendQualityTest {
         assertEquals("3.1 Mbps", formatBitrate(3_100_000.0))
     }
 
-    @Test fun `unknown reason other is flagged too`() {
-        assertNotNull(classifySendQuality(s(720, 1280, reason = "other"), 720, 1280).message)
+    @Test fun `reason other is not flagged by itself (web rule)`() {
+        assertFalse(classifySendQuality(s(720, 1280, reason = "other"), 720, 1280).limited)
+    }
+
+    @Test fun `messages follow the web texts adapted for a phone`() {
+        assertEquals("Your connection is limiting quality. Try a lower quality or a better connection.", classifySendQuality(s(720, 1280, reason = "bandwidth"), 720, 1280).message)
+        assertEquals("Your phone is struggling. Try a lower quality.", classifySendQuality(s(720, 1280, reason = "cpu"), 720, 1280).message)
+        assertEquals(
+            "The picture is being sent smaller than the 1080p you chose. Try a lower quality or a better connection.",
+            classifySendQuality(s(540, 960), 1080, 1920).message,
+        )
+    }
+
+    @Test fun `chip state mapping`() {
+        val waiting = qualityChip(null)
+        assertFalse(waiting.limited); assertEquals(null, waiting.reason)
+        val ok = qualityChip(classifySendQuality(s(720, 1280, fps = 29.6, bps = 2_400_000.0), 720, 1280))
+        assertEquals("Sending 720x1280 - 30 fps - 2.4 Mbps", ok.text); assertFalse(ok.limited); assertEquals(null, ok.reason)
+        val amber = qualityChip(classifySendQuality(s(720, 1280, reason = "cpu"), 720, 1280))
+        assertTrue(amber.limited); assertEquals(MSG_CPU, amber.reason)
+        assertEquals(6L, WARMUP_SECONDS)
     }
 }

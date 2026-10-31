@@ -1,4 +1,4 @@
-# StreamBird Android (spike)
+# StreamBird Android
 
 Native Android client for [StreamBird](https://streambird.app), the browser live-streaming studio and simulcast service.
 
@@ -14,6 +14,7 @@ What it deliberately does not do: register accounts or connect channels (use the
 wallpapers, guests, screen share, recording, background removal, reconnect after a network change.
 
 * How to install and what to test on your phone: [docs/SPIKE.md](docs/SPIKE.md)
+* New in 0.2.0-brand (brand kits, thumbnail, share live link, send-quality chip, website look): [docs/FEATURES.md](docs/FEATURES.md)
 * Endpoints, headers and payloads the app uses: [docs/API-CONTRACT.md](docs/API-CONTRACT.md)
 * What the backend would need for a proper mobile client: [docs/BACKEND-NEEDS.md](docs/BACKEND-NEEDS.md)
 

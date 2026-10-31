@@ -39,6 +39,8 @@ data class StudioUi(
     val h264HighProfile: Boolean = true,
     val forceKeyFrames: Boolean = true,
     val logoChoice: LogoChoice = LogoChoice.TEST,
+    /** Photo-picker Uri of the optional stream thumbnail. */
+    val thumbnailUri: String? = null,
 ) {
     val brandAllowed get() = (limits?.assetStorageMb ?: 0) > 0
     val allowedTiers get() = StreamTier.allowed(limits?.maxResolution ?: "sd")
@@ -51,6 +53,7 @@ class StudioViewModel @Inject constructor(
     private val auth: AuthRepository,
     private val settings: app.streambird.android.data.Settings,
     val controller: StreamController,
+    private val brand: app.streambird.android.brand.BrandRepository,
 ) : ViewModel() {
     private val _ui = MutableStateFlow(StudioUi())
     val ui: StateFlow<StudioUi> = _ui.asStateFlow()
@@ -106,6 +109,8 @@ class StudioViewModel @Inject constructor(
                 title = s.title, visibility = s.visibility, destinationIds = s.selected, tier = s.tier, priority = s.priority,
                 frontCamera = s.frontCamera, h264HighProfile = s.h264HighProfile, forceKeyFrames = s.forceKeyFrames,
                 logoChoice = if (s.logoChoice == LogoChoice.BRAND && !s.brandAllowed) LogoChoice.NONE else s.logoChoice,
+                brandKitId = brand.selectedKitId.value, thumbnailUri = s.thumbnailUri,
+                liveLinks = s.connections.filter { it.id in s.selected }.associate { it.id to it.liveLinkUrl },
             ),
         )
     }

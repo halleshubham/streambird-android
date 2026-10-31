@@ -71,14 +71,14 @@ class OriginInterceptor(private val baseUrl: () -> String) : Interceptor {
  * Non-2xx responses become [ApiException] with the backend's own message when it sent one.
  */
 class ApiClient(
-    private val http: OkHttpClient,
+    internal val http: OkHttpClient,
     private val baseUrl: () -> String,
 ) {
-    private val jsonType = "application/json".toMediaType()
+    internal val jsonType = "application/json".toMediaType()
 
-    private fun url(path: String): HttpUrl = (baseUrl().trimEnd('/') + "/api" + path).toHttpUrl()
+    internal fun url(path: String): HttpUrl = (baseUrl().trimEnd('/') + "/api" + path).toHttpUrl()
 
-    private suspend fun <T> call(req: Request, parse: (String) -> T): T = withContext(Dispatchers.IO) {
+    internal suspend fun <T> call(req: Request, parse: (String) -> T): T = withContext(Dispatchers.IO) {
         http.newCall(req).execute().use { res ->
             val text = res.body?.string().orEmpty()
             if (!res.isSuccessful) throw ApiException(res.code, errorMessage(res.code, text))
@@ -86,8 +86,8 @@ class ApiClient(
         }
     }
 
-    private fun get(path: String) = Request.Builder().url(url(path)).get().build()
-    private fun post(path: String, body: RequestBody? = null) =
+    internal fun get(path: String) = Request.Builder().url(url(path)).get().build()
+    internal fun post(path: String, body: RequestBody? = null) =
         Request.Builder().url(url(path)).post(body ?: "".toRequestBody(jsonType)).build()
 
     // ---- auth ----

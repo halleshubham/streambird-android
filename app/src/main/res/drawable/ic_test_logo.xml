@@ -1,6 +1,0 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="256dp" android:height="256dp" android:viewportWidth="256" android:viewportHeight="256">
-    <!-- Test overlay used when the account has no brand logo: opaque rounded tile with a transparent margin, so alpha blending is visible. -->
-    <path android:fillColor="#E6FF5A36" android:pathData="M28,16 L228,16 Q240,16 240,28 L240,228 Q240,240 228,240 L28,240 Q16,240 16,228 L16,28 Q16,16 28,16 Z" />
-    <path android:fillColor="#FFFFFFFF" android:pathData="M64,170 L124,86 L192,142 L146,146 L116,196 Z" />
-</vector>

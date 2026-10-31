@@ -15,15 +15,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -44,6 +40,8 @@ import app.streambird.android.media.PreviewHandle
 import app.streambird.android.media.formatBitrate
 import app.streambird.android.media.StatsParser
 import app.streambird.android.stream.LivePhase
+import app.streambird.android.stream.buildShareText
+import app.streambird.android.stream.resolveLiveLinks
 import app.streambird.android.stream.LiveUi
 import app.streambird.android.stream.StreamController
 import app.streambird.android.ui.theme.Amber
@@ -66,18 +64,27 @@ fun LiveScreen(controller: StreamController) {
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Header(ui)
+        if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) SendQualityChip(ui.quality)
+        ui.thumbnailNotice?.let { ThumbnailNoticeBar(it, onDismiss = controller::dismissThumbnailNotice) }
 
         val handle = if (ui.phase == LivePhase.LIVE) controller.preview else null
         Box(Modifier.fillMaxWidth().heightIn(max = 420.dp).aspectRatio(9f / 16f).align(Alignment.CenterHorizontally).clip(RoundedCornerShape(12.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
             if (handle != null) PreviewView(handle) else CircularProgressIndicator()
         }
 
-        ui.quality?.takeIf { it.limited }?.let { Notice("${it.message}", Amber) }
         if (ui.phase == LivePhase.FAILED || ui.phase == LivePhase.ENDED) {
             Notice(ui.message, if (ui.phase == LivePhase.FAILED) MaterialTheme.colorScheme.error else Ok)
         } else if (ui.message.isNotBlank()) Text(ui.message, style = MaterialTheme.typography.bodySmall)
 
-        if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) StatsPanel(ui)
+        if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) Expander("Details") { StatsPanel(ui) }
+
+        val links = resolveLiveLinks(
+            ui.request?.destinationIds.orEmpty(), ui.request?.liveLinks.orEmpty(),
+            ui.destinations.map { it.platformConnectionId to it.watchUrl } + ui.stream?.destinations.orEmpty().map { it.platformConnectionId to it.watchUrl },
+        )
+        if (links.isNotEmpty() && (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING)) {
+            OutlinedButton(onClick = { shareText(ctx, buildShareText(links)) }, modifier = Modifier.fillMaxWidth()) { Text("Share live link") }
+        }
 
         if (ui.phase == LivePhase.LIVE) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {

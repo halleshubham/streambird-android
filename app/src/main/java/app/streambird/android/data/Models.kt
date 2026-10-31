@@ -59,6 +59,9 @@ data class BrandKit(
     val logoAssetId: String? = null,
     val logoPosition: String = "left",
     val logoSize: Int = 90,
+    /** Not editable in the app, but sent back unchanged on PATCH (see BrandKitPayload). */
+    val wallpaperAssetId: String? = null,
+    val wallpaperDim: Int = 0,
     val lowerThirdStyle: String = "accent",
     val isDefault: Boolean = false,
     val connectionIds: List<String> = emptyList(),

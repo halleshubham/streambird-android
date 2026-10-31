@@ -14,8 +14,8 @@ android {
         applicationId = "app.streambird.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-spike"
+        versionCode = 10
+        versionName = "0.2.0-brand"
         vectorDrawables { useSupportLibrary = true }
         // Server the app talks to. Override at build time: ./gradlew assembleDebug -PstreambirdBaseUrl=https://staging.example.com
         val baseUrl = (project.findProperty("streambirdBaseUrl") as String?) ?: "https://streambird.app"
@@ -93,6 +93,8 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     implementation("io.coil-kt:coil-compose:2.6.0")
+    implementation("io.coil-kt:coil-gif:2.6.0")
+    implementation("androidx.core:core-splashscreen:1.0.1")
 
     // Prebuilt libwebrtc (package org.webrtc) -- see docs/SPIKE.md for why this one.
     implementation("io.getstream:stream-webrtc-android:1.3.10")

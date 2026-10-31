@@ -77,3 +77,23 @@ The cookie is kept in a persistent `CookieJar` (DataStore), so the session survi
 
 Post-answer sender setup (web `goLive`): `maxBitrate` per tier (1 / 3 / 6 Mbps), `degradationPreference` (maintain-resolution or balanced), keyframes about every 2 s.
 Android has no `generateKeyFrame()`, so a wrapper around the H.264 encoder requests a keyframe every 2 s (`KeyFrameEncoderFactory`).
+
+## Added in 0.2.0-brand (brand kits, assets, thumbnail, live link)
+
+Sources: `src/assets/assets.controller.ts`, `brand-kits.service.ts`, `assets.service.ts`, `image.util.ts`, `src/streams/streams.controller.ts`, `thumbnail.util.ts`. All routes are behind `AccountGuard` (cookie + `Origin`).
+
+| Call | Body / response | Notes |
+| --- | --- | --- |
+| `GET /api/brand-kits` | `[{id,name,logoAssetId,logoPosition,logoSize,wallpaperAssetId,wallpaperDim,lowerThirdStyle,isDefault,connectionIds[]}]` | `403` on Free. The app does not call it when `/plans/me` has `assetStorageMb == 0`. |
+| `POST /api/brand-kits` | `{name(1..80), logoAssetId?, logoPosition left\|right, logoSize 16..600, lowerThirdStyle bar\|accent\|glass, isDefault?}` | The first kit becomes the default automatically. |
+| `PATCH /api/brand-kits/:id` | same fields, all optional | The app always sends `wallpaperAssetId` and `wallpaperDim` back **unchanged** (it has no wallpaper UI) and an explicit `logoAssetId: null` to clear the logo. `isDefault` only when turning it on. |
+| `DELETE /api/brand-kits/:id` | `204` | Its channels fall back to the account default. |
+| `PUT /api/brand-kits/connections/:connectionId` | `{brandKitId: uuid \| null}` | One kit per connection; `null` = account default. The editor sends one PUT per changed channel. |
+| `GET /api/assets` | `{enabled, quotaBytes, usedBytes, items:[{id,kind,name,contentType,sizeBytes,width,height,createdAt,usedBy[]}]}` | `enabled:false` = object storage not configured on the server; `quotaBytes:0` = Free. |
+| `POST /api/assets` | multipart: `kind=logo`, optional `name`, `file` | PNG/JPG/WebP (GIF for logos), <= 4 MB, <= 8192 px. Refusals: `400` (type/size/dimensions), `403` (Free / not enough storage), `503` (storage not enabled). The app pre-checks the same rules and shows the backend message verbatim. |
+| `DELETE /api/assets/:id` | `204` | `409 "This file is used by the brand kit ..."` is shown as is. |
+| `GET /api/assets/:id/file` | image bytes | Loaded by Coil through the app's OkHttpClient (cookie + Origin). |
+| `PUT /api/streams/:id/thumbnail` | multipart field `file` (JPEG) -> `{hasThumbnail, thumbnailUpdatedAt, platformWarnings?: string[]}` | JPEG/PNG, <= 2 MB, >= 640 px wide (`parseThumbnail`). Throttled 10/min. Called in the background after `POST /streams`. |
+| `GET /api/platform-connections` | `liveLinkUrl` per YouTube/Facebook connection (`https://streambird.app/stream/<slug>`) | Shown with Copy/Share on Channels, shared from Live. Fallback: destination `watchUrl` from `/streams/:id/status`. |
+
+Brand kit choice for a stream (web `useHostStudio.ts` auto-apply): the kit the user picked on Setup; else the kit of the first ticked destination that has one; else the account default; else the first kit.

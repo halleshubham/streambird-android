@@ -15,6 +15,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import app.streambird.android.data.Stage
 import app.streambird.android.stream.LivePhase
+import app.streambird.android.ui.screens.BrandKitEditorScreen
+import app.streambird.android.ui.screens.BrandScreen
 import app.streambird.android.ui.screens.ChannelsScreen
 import app.streambird.android.ui.screens.LiveScreen
 import app.streambird.android.ui.screens.LoginScreen
@@ -50,8 +52,17 @@ private fun MainNav() {
         }
     }
     NavHost(nav, startDestination = if (live.active) "live" else "channels") {
-        composable("channels") { ChannelsScreen(studio, onNext = { nav.navigate("setup") }) }
-        composable("setup") { SetupScreen(studio, onBack = { nav.popBackStack() }) }
+        composable("channels") { ChannelsScreen(studio, onNext = { nav.navigate("setup") }, onBrand = { nav.navigate("brand") }) }
+        composable("setup") { SetupScreen(studio, onBack = { nav.popBackStack() }, onBrand = { nav.navigate("brand") }) }
+        composable("brand") {
+            val u by studio.ui.collectAsStateWithLifecycle()
+            BrandScreen(u.connections, studio.baseUrl, onBack = { nav.popBackStack() }, onEdit = { id -> nav.navigate("brand/edit/${id ?: "new"}") })
+        }
+        composable("brand/edit/{id}") { entry ->
+            val u by studio.ui.collectAsStateWithLifecycle()
+            val id = entry.arguments?.getString("id")?.takeIf { it != "new" }
+            BrandKitEditorScreen(id, u.connections, onBack = { nav.popBackStack() })
+        }
         composable("live") { LiveScreen(studio.controller) }
     }
 }

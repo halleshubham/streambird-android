@@ -33,11 +33,12 @@ enum class PicturePriority(val label: String, val hint: String) {
 /** How many destinations may be ticked (GET /plans/me maxDestinations). */
 fun canSelectMore(selectedCount: Int, maxDestinations: Int): Boolean = selectedCount < maxDestinations
 
-/** Which brand kit applies: the one assigned to the single chosen channel, else the account default, else the first. */
-fun <T> pickBrandKit(kits: List<T>, selectedConnectionIds: Set<String>, isDefault: (T) -> Boolean, connectionIds: (T) -> List<String>): T? {
+/**
+ * Which brand kit applies (web studio: the kit of the stream's destination channel, else the account default).
+ * Destinations are walked in the order they were ticked; the first one that has a kit assigned wins. Else the default, else the first kit.
+ */
+fun <T> pickBrandKit(kits: List<T>, selectedConnectionIds: Collection<String>, isDefault: (T) -> Boolean, connectionIds: (T) -> List<String>): T? {
     if (kits.isEmpty()) return null
-    if (selectedConnectionIds.size == 1) {
-        kits.firstOrNull { selectedConnectionIds.first() in connectionIds(it) }?.let { return it }
-    }
+    for (id in selectedConnectionIds) kits.firstOrNull { id in connectionIds(it) }?.let { return it }
     return kits.firstOrNull(isDefault) ?: kits.first()
 }

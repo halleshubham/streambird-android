@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
 import android.os.Build
 import androidx.core.content.ContextCompat
 import app.streambird.android.R
@@ -15,6 +14,7 @@ import app.streambird.android.data.CreateStreamRequest
 import app.streambird.android.data.Settings
 import app.streambird.android.data.StreamDto
 import app.streambird.android.data.StreamStatusDestination
+import app.streambird.android.data.uploadStreamThumbnail
 import app.streambird.android.media.CodecProbe
 import app.streambird.android.media.DeviceReading
 import app.streambird.android.media.DeviceTelemetry
@@ -31,6 +31,7 @@ import app.streambird.android.media.SendQuality
 import app.streambird.android.media.SendSample
 import app.streambird.android.media.StreamEngine
 import app.streambird.android.media.StreamTier
+import app.streambird.android.media.WARMUP_SECONDS
 import app.streambird.android.media.classifySendQuality
 import app.streambird.android.media.pickBrandKit
 import app.streambird.android.whip.WhipClient
@@ -49,7 +50,7 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
-enum class LogoChoice(val label: String) { BRAND("Brand kit logo"), TEST("Test logo (app icon)"), NONE("No logo") }
+enum class LogoChoice(val label: String) { BRAND("Brand kit logo"), TEST("Test logo (StreamBird bird)"), NONE("No logo") }
 
 data class GoLiveRequest(
     val title: String,
@@ -61,6 +62,12 @@ data class GoLiveRequest(
     val h264HighProfile: Boolean,
     val forceKeyFrames: Boolean,
     val logoChoice: LogoChoice,
+    /** Brand kit picked on the Setup screen; null = automatic (kit of the first destination, else the account default). */
+    val brandKitId: String? = null,
+    /** Optional thumbnail (photo-picker Uri), prepared and uploaded in the background after the stream exists. */
+    val thumbnailUri: String? = null,
+    /** connectionId -> permanent live link (PlatformConnection.liveLinkUrl), for "Share live link". */
+    val liveLinks: Map<String, String?> = emptyMap(),
 )
 
 enum class LivePhase { IDLE, STARTING, LIVE, ENDING, ENDED, FAILED }
@@ -81,6 +88,7 @@ data class LiveUi(
     val events: List<String> = emptyList(),
     val logRows: Int = 0,
     val logoNote: String = "",
+    val thumbnailNotice: ThumbnailNotice? = null,
 ) {
     val active get() = phase == LivePhase.STARTING || phase == LivePhase.LIVE || phase == LivePhase.ENDING
 }
@@ -123,6 +131,7 @@ class StreamController @Inject constructor(
             stream = api.createStream(
                 CreateStreamRequest(title = req.title.ifBlank { "Mobile stream" }, visibility = req.visibility, orientation = "portrait", destinationConnectionIds = req.destinationIds.toList()),
             )
+            launchThumbnail(stream, req)
             val whipUrl = stream.whipUrl ?: error("The server returned no publish (WHIP) URL for this stream.")
             _ui.update { it.copy(stream = stream, message = "Preparing camera and encoder...") }
 
@@ -201,13 +210,32 @@ class StreamController @Inject constructor(
         event("picture priority -> $p", withRow = true)
     }
 
+    fun dismissThumbnailNotice() = _ui.update { it.copy(thumbnailNotice = null) }
+
+    /** Background thumbnail upload: never delays go-live and never fails the stream; the outcome becomes a dismissible notice. */
+    private fun launchThumbnail(stream: StreamDto, req: GoLiveRequest) {
+        val uri = req.thumbnailUri ?: return
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val notice = try {
+                val enc = ThumbnailPreparer.prepare(context, android.net.Uri.parse(uri), stream.orientation == "portrait")
+                thumbnailNotice(api.uploadStreamThumbnail(stream.id, enc.bytes))
+            } catch (t: kotlinx.coroutines.CancellationException) {
+                throw t
+            } catch (t: Throwable) {
+                thumbnailFailure((t as? ApiException)?.message ?: t.message)
+            }
+            event("thumbnail: ${notice.kind}", withRow = false)
+            _ui.update { if (it.stream == null || it.stream.id == stream.id) it.copy(thumbnailNotice = notice) else it }
+        }
+    }
+
     fun logCsv(): String? = log?.toCsv()
 
     private val listener = object : EngineListener {
         override fun onStats(stats: EncoderStats, kbps: Double?, hardware: Boolean?) {
             val req = _ui.value.request ?: return
             val elapsed = (System.currentTimeMillis() - startedAtMs) / 1000
-            val warming = elapsed < 8
+            val warming = elapsed < WARMUP_SECONDS
             val q = classifySendQuality(SendSample(stats.width, stats.height, stats.fps, kbps?.times(1000), stats.limitationReason), req.tier.width, req.tier.height, warming)
             val dev = telemetry.read()
             log?.add(LogRow(System.currentTimeMillis(), elapsed, stats, kbps, q.limited, dev))
@@ -256,10 +284,10 @@ class StreamController @Inject constructor(
 
     private suspend fun loadLogo(req: GoLiveRequest): Pair<LogoOverlay?, String> = when (req.logoChoice) {
         LogoChoice.NONE -> null to "none"
-        LogoChoice.TEST -> LogoOverlay(testLogoBitmap(), onRight = false, heightPx = 120) to "test logo (app icon)"
+        LogoChoice.TEST -> LogoOverlay(testLogoBitmap(), onRight = false, heightPx = 120) to "test logo (StreamBird bird)"
         LogoChoice.BRAND -> try {
             val kits = api.brandKits()
-            val kit: BrandKit? = pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds })
+            val kit: BrandKit? = kits.firstOrNull { it.id == req.brandKitId } ?: pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds })
             val assetId = kit?.logoAssetId
             if (kit == null || assetId == null) null to "brand kit has no logo"
             else {
@@ -281,11 +309,7 @@ class StreamController @Inject constructor(
     }
 
     private fun testLogoBitmap(): Bitmap {
-        val d = ContextCompat.getDrawable(context, R.drawable.ic_test_logo)!!
-        val bmp = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888)
-        d.setBounds(0, 0, 256, 256)
-        d.draw(Canvas(bmp))
-        return bmp
+        return BitmapFactory.decodeResource(context.resources, R.drawable.logo_bird)
     }
 
     private fun stopService() {

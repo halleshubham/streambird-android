@@ -1,0 +1,84 @@
+package app.streambird.android.ui.screens
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.streambird.android.ui.BrandViewModel
+import coil.compose.AsyncImage
+
+/** Setup screen: which brand kit this stream uses (automatic by default) and a way to manage kits. Shown only when a brand logo is chosen. */
+@Composable
+fun BrandSetupSection(destinationIds: Set<String>, onManage: () -> Unit) {
+    val vm: BrandViewModel = hiltViewModel()
+    val st by vm.state.collectAsStateWithLifecycle()
+    val selected by vm.selectedKitId.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { if (!st.loaded && !st.loading) vm.refresh() }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Brand kit", style = MaterialTheme.typography.titleSmall)
+        when {
+            st.blocked -> Text("Brand kits are on the paid plans.", style = MaterialTheme.typography.bodySmall)
+            !st.loaded -> Text("Loading brand kits...", style = MaterialTheme.typography.bodySmall)
+            st.kits.isEmpty() -> Text("No brand kits yet. Create one to put your logo on the stream.", style = MaterialTheme.typography.bodySmall)
+            else -> {
+                val auto = vm.repo.effectiveKit(destinationIds, st)
+                Row(Modifier.fillMaxWidth().clickable { vm.select(null) }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = selected == null, onClick = { vm.select(null) })
+                    Column {
+                        Text("Automatic")
+                        Text(
+                            auto?.let { "Today: \"${it.name}\"" } ?: "No kit",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                st.kits.forEach { k ->
+                    Row(Modifier.fillMaxWidth().clickable { vm.select(k.id) }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selected == k.id, onClick = { vm.select(k.id) })
+                        Text(k.name + if (k.isDefault) "  (default)" else "", Modifier.weight(1f), maxLines = 1)
+                    }
+                }
+            }
+        }
+        TextButton(onClick = onManage) { Text("Manage brand kits") }
+    }
+}
+
+/** Optional thumbnail for the stream (Android photo picker). Prepared (scaled, JPEG < 2 MB) and uploaded after go-live, in the background. */
+@Composable
+fun ThumbnailPickerSection(uri: String?, onPick: (String?) -> Unit) {
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { u -> if (u != null) onPick(u.toString()) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Thumbnail (optional)", style = MaterialTheme.typography.titleSmall)
+        if (uri != null) {
+            AsyncImage(model = uri, contentDescription = "Chosen thumbnail", contentScale = ContentScale.Crop, modifier = Modifier.height(96.dp).fillMaxWidth().clip(MaterialTheme.shapes.medium))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) { Text(if (uri == null) "Choose a picture" else "Change picture") }
+            if (uri != null) TextButton(onClick = { onPick(null) }) { Text("Remove") }
+        }
+        Text(
+            "Sent to YouTube / Facebook right after you go live (YouTube needs a verified channel). It never delays or stops the stream.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+

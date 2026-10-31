@@ -33,7 +33,9 @@ class TiersTest {
         fun pick(sel: Set<String>) = pickBrandKit(kits, sel, { it.default }, { it.conns })?.id
         assertEquals("a", pick(setOf("c1")))
         assertEquals("b", pick(setOf("c2")))
-        assertEquals("b", pick(setOf("c1", "c2")))
+        assertEquals("a", pick(setOf("c1", "c2")))          // first ticked destination that has a kit
+        assertEquals("a", pick(linkedSetOf("c2", "c1")))     // c2 has none, c1 does
+        assertEquals("b", pick(setOf("c2", "c3")))
         assertEquals("a", pickBrandKit(listOf(Kit("a", false, emptyList())), emptySet(), { it.default }, { it.conns })?.id)
         assertNull(pickBrandKit(emptyList<Kit>(), setOf("c1"), { it.default }, { it.conns }))
     }

@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -56,3 +55,15 @@ fun KeyValue(k: String, v: String, valueColor: Color = Color.Unspecified) {
 }
 
 val ScreenPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+
+fun shareText(context: Context, text: String, chooserTitle: String = "Share live link") {
+    val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text) }
+    context.startActivity(Intent.createChooser(send, chooserTitle).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
+/** Copies to the clipboard and tells the user (Android 13+ shows its own confirmation, so a toast only below that). */
+fun copyText(context: Context, label: String, text: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+    cm.setPrimaryClip(android.content.ClipData.newPlainText(label, text))
+    if (android.os.Build.VERSION.SDK_INT < 33) android.widget.Toast.makeText(context, "Link copied", android.widget.Toast.LENGTH_SHORT).show()
+}

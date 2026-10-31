@@ -15,10 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
@@ -40,7 +40,7 @@ import app.streambird.android.ui.StudioViewModel
 import app.streambird.android.ui.theme.Amber
 
 @Composable
-fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit) {
+fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {}) {
     val s by vm.ui.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val codecs = remember { CodecProbe.summary() }
@@ -56,32 +56,25 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("Stream setup", style = MaterialTheme.typography.titleLarge)
+        PageHeading("Stream setup", "Pick a title and quality, then go live.")
         OutlinedTextField(value = s.title, onValueChange = { v -> vm.update { it.copy(title = v) } }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
         Text("Visibility (YouTube)", style = MaterialTheme.typography.titleSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("public", "unlisted", "private").forEach { v ->
-                FilterChip(selected = s.visibility == v, onClick = { vm.update { it.copy(visibility = v) } }, label = { Text(v) })
-            }
-        }
+        Segmented(listOf("public", "unlisted", "private"), s.visibility, { it.replaceFirstChar { c -> c.uppercase() } }, { v -> vm.update { it.copy(visibility = v) } })
 
         Text("Quality (portrait 9:16, 30 fps)", style = MaterialTheme.typography.titleSmall)
-        StreamTier.entries.forEach { t ->
-            val ok = t in s.allowedTiers
-            Row(Modifier.fillMaxWidth().clickable(enabled = ok) { vm.update { it.copy(tier = t) } }, verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = s.tier == t, onClick = { vm.update { it.copy(tier = t) } }, enabled = ok)
-                Text("${t.label}  ${t.width}x${t.height}, up to ${t.maxBitrateBps / 1_000_000} Mbps" + if (ok) "" else "  (needs a higher plan)")
-            }
-        }
+        Segmented(
+            StreamTier.entries, s.tier, { it.label }, { t -> vm.update { it.copy(tier = t) } },
+            sub = { "${it.width}x${it.height}" }, enabled = { it in s.allowedTiers },
+        )
+        Text(
+            "Up to ${s.tier.maxBitrateBps / 1_000_000} Mbps" + if (s.allowedTiers.size < StreamTier.entries.size) ". Higher qualities need a higher plan." else "",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         Text("Picture priority", style = MaterialTheme.typography.titleSmall)
-        PicturePriority.entries.forEach { p ->
-            Row(Modifier.fillMaxWidth().clickable { vm.update { it.copy(priority = p) } }, verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = s.priority == p, onClick = { vm.update { it.copy(priority = p) } })
-                Column { Text(p.label); Text(p.hint, style = MaterialTheme.typography.bodySmall) }
-            }
-        }
+        Segmented(PicturePriority.entries, s.priority, { it.label }, { p -> vm.update { it.copy(priority = p) } })
+        Text(s.priority.hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         Text("Logo overlay", style = MaterialTheme.typography.titleSmall)
         LogoChoice.entries.forEach { c ->
@@ -91,6 +84,9 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit) {
                 Text(c.label + if (ok) "" else "  (brand kits are on paid plans)")
             }
         }
+
+        if (s.logoChoice == LogoChoice.BRAND && s.brandAllowed) BrandSetupSection(s.selected, onBrand)
+        ThumbnailPickerSection(s.thumbnailUri) { u -> vm.update { it.copy(thumbnailUri = u) } }
 
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text("Front camera", Modifier.weight(1f)); Switch(s.frontCamera, { v -> vm.update { it.copy(frontCamera = v) } })
@@ -107,7 +103,10 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit) {
         if (!hasHwH264) Notice("No hardware H.264 encoder was found. Streaming will likely fail or be very heavy on this phone.", Amber)
         if (s.limits?.watermark == true) Text("Free plan: streams carry a 'Powered by StreamBird' mark (added on the server side, not in this spike).", style = MaterialTheme.typography.bodySmall)
 
-        Button(onClick = ::goLive, enabled = s.selected.isNotEmpty() && s.title.length <= 200, modifier = Modifier.fillMaxWidth()) { Text("Go live") }
+        Button(onClick = ::goLive, enabled = s.selected.isNotEmpty() && s.title.length <= 200, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.Sensors, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
+            Text("Go live")
+        }
         OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back") }
     }
 }
