@@ -32,6 +32,11 @@ import app.streambird.android.media.SendSample
 import app.streambird.android.media.StreamEngine
 import app.streambird.android.media.StreamOrientation
 import app.streambird.android.media.StreamTier
+import app.streambird.android.media.TickerSize
+import app.streambird.android.media.TickerSpec
+import app.streambird.android.media.NetworkWatcher
+import app.streambird.android.media.Trigger
+import app.streambird.android.media.ConnPhase
 import app.streambird.android.media.WARMUP_SECONDS
 import app.streambird.android.media.classifySendQuality
 import app.streambird.android.media.pickBrandKit
@@ -70,6 +75,9 @@ data class GoLiveRequest(
     val thumbnailUri: String? = null,
     /** connectionId -> permanent live link (PlatformConnection.liveLinkUrl), for "Share live link". */
     val liveLinks: Map<String, String?> = emptyMap(),
+    /** News ticker at the bottom of the picture (empty = none) and its S/M/L size. */
+    val tickerText: String = "",
+    val tickerSize: TickerSize = TickerSize.S,
 )
 
 enum class LivePhase { IDLE, STARTING, LIVE, ENDING, ENDED, FAILED }
@@ -91,6 +99,9 @@ data class LiveUi(
     val logRows: Int = 0,
     val logoNote: String = "",
     val thumbnailNotice: ThumbnailNotice? = null,
+    val tickerText: String = "",
+    val tickerSize: TickerSize = TickerSize.S,
+    val reconnect: ReconnectUi = ReconnectUi(),
     val canFlipCamera: Boolean = false,
     val frontCamera: Boolean = false,
     val dropDetail: String = "",
@@ -120,6 +131,9 @@ class StreamController @Inject constructor(
     private var startedAtMs = 0L
     private var pollJob: Job? = null
     private var unwatchNetwork: (() -> Unit)? = null
+    private var reconnector: Reconnector? = null
+    private var netWatcher: NetworkWatcher? = null
+    private var tickerSpec: TickerSpec? = null
 
     val preview: PreviewHandle? get() = engine?.preview
 
@@ -155,6 +169,7 @@ class StreamController @Inject constructor(
                 "camera" to if (req.frontCamera) "front" else "back",
                 "h264_high_profile" to req.h264HighProfile.toString(),
                 "force_keyframes_2s" to req.forceKeyFrames.toString(),
+                "ticker" to if (req.tickerText.isBlank()) "off" else "on size=${req.tickerSize.label} len=${req.tickerText.length}",
                 "logo" to "${req.logoChoice} $logoNote",
                 "codecs" to CodecProbe.summary(),
             )
@@ -163,7 +178,11 @@ class StreamController @Inject constructor(
             val eng = StreamEngine(context, WhipClient(whipHttp), listener)
             engine = eng
             unwatchNetwork = telemetry.watchNetwork { event(it, withRow = true) }
-            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl))
+            tickerSpec = TickerSpec.next(null, req.tickerText, req.tickerSize, android.os.SystemClock.elapsedRealtime())
+            _ui.update { it.copy(tickerText = tickerSpec?.text.orEmpty(), tickerSize = req.tickerSize) }
+            event("ticker ${if (tickerSpec != null) "on size=${req.tickerSize.label} len=${tickerSpec!!.text.length}" else "off"}", withRow = false)
+            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec))
+            startReconnector()
 
             startedAtMs = System.currentTimeMillis()
             _ui.update { it.copy(canFlipCamera = eng.hasBothCameras, frontCamera = eng.frontCamera) }
@@ -176,6 +195,7 @@ class StreamController @Inject constructor(
             runCatching { engine?.stop() }
             engine = null
             unwatchNetwork?.invoke(); unwatchNetwork = null
+            stopReconnector()
             // The stream row was created and is LIVE server-side: end it so it does not linger.
             stream?.let { runCatching { api.endStream(it.id) } }
             _ui.update { it.copy(phase = LivePhase.FAILED, message = "Could not go live: $msg") }
@@ -262,6 +282,7 @@ class StreamController @Inject constructor(
             val warming = elapsed < WARMUP_SECONDS
             val q = classifySendQuality(SendSample(stats.width, stats.height, stats.fps, kbps?.times(1000), stats.limitationReason), req.tier.width(req.orientation), req.tier.height(req.orientation), warming)
             val dev = telemetry.read()
+            reconnector?.onStats(stats)
             log?.add(LogRow(System.currentTimeMillis(), elapsed, stats, kbps, q.limited, dev))
             _ui.update {
                 it.copy(
@@ -271,15 +292,58 @@ class StreamController @Inject constructor(
             }
         }
 
-        override fun onEvent(text: String) = event(text, withRow = false)
+        // Connection-state events become CSV rows too, so a log shows exactly when the transport changed.
+        override fun onEvent(text: String) = event(text, withRow = text.startsWith("peer connection") || text.startsWith("ice "))
 
         override fun onConnection(state: String) {
-            if (state == "FAILED" || state == "DISCONNECTED") {
-                _ui.update { if (it.phase == LivePhase.LIVE) it.copy(message = "Connection $state. The spike does not reconnect: end and go live again.") else it }
-            } else if (state == "CONNECTED") {
-                _ui.update { if (it.phase == LivePhase.LIVE) it.copy(message = "Live.") else it }
+            reconnector?.onPeerState(state)
+            if (state == "CONNECTED") _ui.update { if (it.phase == LivePhase.LIVE && !it.reconnect.phaseBusy) it.copy(message = "Live.") else it }
+        }
+    }
+
+    // ---- reconnect (network change / dead transport) ----
+
+    private fun startReconnector() {
+        val host = object : ReconnectHost {
+            override suspend fun republish() { engine?.republish() ?: error("stream engine is gone") }
+            override fun log(text: String) = event(text, withRow = true)
+            override fun nowMs() = System.currentTimeMillis()
+            override fun onUi(ui: ReconnectUi) {
+                _ui.update { cur ->
+                    if (cur.phase != LivePhase.LIVE) return@update cur
+                    val msg = when {
+                        ui.phase == ConnPhase.RECONNECTING || ui.phase == ConnPhase.WAITING_NETWORK -> "Reconnecting..."
+                        ui.phase == ConnPhase.GAVE_UP -> "Could not reconnect. Check your network, or end the stream."
+                        ui.backOnlineAtMs > 0 -> "Back online."
+                        else -> cur.message
+                    }
+                    cur.copy(reconnect = ui, message = msg)
+                }
             }
         }
+        val r = Reconnector(scope, host).also { reconnector = it }
+        netWatcher = NetworkWatcher(context) { t -> r.onTrigger(t) }.also { it.start() }
+    }
+
+    private fun stopReconnector() {
+        netWatcher?.stop(); netWatcher = null
+        reconnector?.stop(); reconnector = null
+    }
+
+    /** Debug aid (Details section): closes the transport like a network switch would. The reconnect path should kick in. */
+    fun simulateDrop() {
+        event("SIMULATED network drop", withRow = true)
+        engine?.simulateDrop()
+    }
+
+    /** Live ticker edit: text and size apply to the running picture without restarting anything. */
+    fun setTicker(rawText: String, size: TickerSize) {
+        val spec = TickerSpec.next(tickerSpec, rawText, size, android.os.SystemClock.elapsedRealtime())
+        tickerSpec = spec
+        engine?.setTicker(spec)
+        settings.tickerText = spec?.text.orEmpty(); settings.tickerSize = size.name
+        _ui.update { it.copy(tickerText = spec?.text.orEmpty(), tickerSize = size) }
+        event(if (spec != null) "ticker on size=${size.label} len=${spec.text.length}" else "ticker off", withRow = true)
     }
 
     private fun event(text: String, withRow: Boolean) {

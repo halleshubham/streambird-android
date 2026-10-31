@@ -70,3 +70,45 @@ fun Expander(title: String, content: @Composable () -> Unit) {
         }
     }
 }
+
+/** "Reconnecting..." while the app republishes after a network change; the stream itself stays up on the server (slate on air meanwhile). */
+@Composable
+fun ReconnectBanner(r: app.streambird.android.stream.ReconnectUi) {
+    when (r.phase) {
+        app.streambird.android.media.ConnPhase.RECONNECTING, app.streambird.android.media.ConnPhase.WAITING_NETWORK ->
+            Notice(
+                (if (r.phase == app.streambird.android.media.ConnPhase.WAITING_NETWORK) "No network. Reconnecting as soon as one is back..." else "Reconnecting..." + if (r.attempt > 0) " (attempt ${r.attempt})" else "") +
+                    "\nViewers see a \"technical difficulties\" slate until your picture is back. Keep the app open.",
+                Amber,
+            )
+        app.streambird.android.media.ConnPhase.GAVE_UP -> Notice("Could not reconnect. Check your network, or end the stream.", MaterialTheme.colorScheme.error)
+        else -> {}
+    }
+}
+
+/** Ticker button + dialog: edit text and size, Apply updates the live picture, Clear hides the ticker. No restart. */
+@Composable
+fun TickerControl(text: String, size: app.streambird.android.media.TickerSize, onApply: (String, app.streambird.android.media.TickerSize) -> Unit) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) { Text(if (text.isBlank()) "Ticker" else "Ticker (on)") }
+    if (open) {
+        var draft by rememberSaveable { mutableStateOf(text) }
+        var sz by rememberSaveable { mutableStateOf(size) }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text("News ticker") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = draft, onValueChange = { draft = it.take(app.streambird.android.media.Ticker.MAX_LENGTH) },
+                        label = { Text("Text at the bottom of the picture") }, supportingText = { Text("${draft.length}/${app.streambird.android.media.Ticker.MAX_LENGTH}") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Segmented(app.streambird.android.media.TickerSize.entries, sz, { it.label }, { sz = it })
+                }
+            },
+            confirmButton = { TextButton(onClick = { onApply(draft, sz); open = false }) { Text("Apply") } },
+            dismissButton = { TextButton(onClick = { onApply("", sz); draft = ""; open = false }) { Text("Clear") } },
+        )
+    }
+}

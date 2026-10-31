@@ -86,7 +86,14 @@ fun LiveScreen(controller: StreamController) {
             Notice(ui.message, if (ui.phase == LivePhase.FAILED) MaterialTheme.colorScheme.error else Ok)
         } else if (ui.message.isNotBlank()) Text(ui.message, style = MaterialTheme.typography.bodySmall)
 
-        if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) Expander("Details") { StatsPanel(ui) }
+        if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) Expander("Details") {
+            Column {
+                StatsPanel(ui)
+                if (ui.phase == LivePhase.LIVE) OutlinedButton(onClick = controller::simulateDrop, modifier = Modifier.fillMaxWidth().padding(8.dp)) { Text("Simulate network drop") }
+            }
+        }
+
+        if (ui.phase == LivePhase.LIVE) TickerControl(ui.tickerText, ui.tickerSize) { t, z -> controller.setTicker(t, z) }
 
         val links = resolveLiveLinks(
             ui.request?.destinationIds.orEmpty(), ui.request?.liveLinks.orEmpty(),
@@ -170,6 +177,7 @@ fun LiveScreen(controller: StreamController) {
 private fun LiveBanners(ui: LiveUi, controller: StreamController) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) SendQualityChip(ui.quality)
+        ReconnectBanner(ui.reconnect)
         ui.thumbnailNotice?.let { ThumbnailNoticeBar(it, onDismiss = controller::dismissThumbnailNotice) }
     }
 }

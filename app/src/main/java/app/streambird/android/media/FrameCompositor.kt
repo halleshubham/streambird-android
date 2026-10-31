@@ -1,6 +1,11 @@
 package app.streambird.android.media
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.os.SystemClock
 import android.graphics.Matrix
 import android.opengl.GLES20
 import android.opengl.GLUtils
@@ -53,6 +58,14 @@ class FrameCompositor(
     /** Front-camera frames arrive mirrored (selfie style); the published picture must not be. Changed by a live camera switch. */
     @Volatile var unmirror: Boolean = unmirror
 
+    /** News ticker to draw (null = none). Set from any thread; the bitmap is only re-rendered on the GL thread when its [TickerSpec.version] changes. */
+    @Volatile var ticker: TickerSpec? = null
+    private var tickerTex = 0
+    private var tickerBarTex = 0
+    private var tickerVersion = -1L
+    private var tickerTexW = 0
+    private var tickerBarPx = 0
+
     /** Frames skipped because all texture slots were still held downstream (encoder start-up, slow preview). */
     @Volatile var droppedNoSlot = 0L; private set
     /** Frames lost to an exception in the GL code (should stay 0). */
@@ -81,6 +94,7 @@ class FrameCompositor(
 
             frameDrawer!!.drawFrame(frame, drawer!!, cropMatrix(frame), 0, 0, outWidth, outHeight)
             drawLogo()
+            drawTicker()
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             // The texture is consumed from other GL contexts (encoder, preview): make sure the writes are visible.
             GLES20.glFinish()
@@ -135,6 +149,49 @@ class FrameCompositor(
         return tex[0]
     }
 
+    /**
+     * Bar + scrolling text at the bottom, like the web's drawNewsline. The text is a prebuilt bitmap texture (rebuilt only when the
+     * text/size changes); per frame it is two textured quads positioned from the wall clock, no bitmap work.
+     */
+    private fun drawTicker() {
+        val spec = ticker
+        if (spec == null) { if (tickerTex != 0) freeTicker(); return }
+        if (spec.version != tickerVersion || tickerTex == 0) buildTicker(spec)
+        val now = SystemClock.elapsedRealtime()
+        val slide = Ticker.slideOffsetPx(spec.entranceAtMs?.let { now - it }, tickerBarPx)
+        val y = -slide.toInt() // GL origin is bottom-left: the bar rests at y = 0 and slides up from below the frame
+        val x = Ticker.scrollX(now - spec.startedAtMs, outWidth, tickerTexW.toFloat()).toInt()
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        drawer!!.drawRgb(tickerBarTex, FLIP_Y, 1, 1, 0, y, outWidth, tickerBarPx)
+        if (x < outWidth && x + tickerTexW > 0) drawer!!.drawRgb(tickerTex, FLIP_Y, tickerTexW, tickerBarPx, x, y, tickerTexW, tickerBarPx)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    private fun buildTicker(spec: TickerSpec) {
+        freeTicker()
+        val m = Ticker.metrics(spec.size, outWidth, outHeight)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = m.fontPx; typeface = Typeface.SANS_SERIF }
+        val natural = paint.measureText(spec.text)
+        val w = Math.ceil(natural.toDouble()).toInt().coerceIn(1, Ticker.MAX_TEXTURE_WIDTH)
+        if (natural > w) paint.textScaleX = w / natural
+        val bmp = Bitmap.createBitmap(w, m.barPx, Bitmap.Config.ARGB_8888)
+        val fm = paint.fontMetrics
+        Canvas(bmp).drawText(spec.text, 0f, m.barPx / 2f - (fm.ascent + fm.descent) / 2f, paint)
+        tickerTex = uploadLogo(bmp)
+        bmp.recycle()
+        val bar = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.argb(Ticker.BAR_ALPHA, 0, 0, 0)) }
+        tickerBarTex = uploadLogo(bar)
+        bar.recycle()
+        tickerTexW = w; tickerBarPx = m.barPx; tickerVersion = spec.version
+    }
+
+    private fun freeTicker() {
+        if (tickerTex != 0) GLES20.glDeleteTextures(1, intArrayOf(tickerTex), 0)
+        if (tickerBarTex != 0) GLES20.glDeleteTextures(1, intArrayOf(tickerBarTex), 0)
+        tickerTex = 0; tickerBarTex = 0; tickerVersion = -1
+    }
+
     private fun setupTex() {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
@@ -166,6 +223,7 @@ class FrameCompositor(
                     GLES20.glDeleteTextures(1, intArrayOf(it.texture), 0)
                 }
                 if (logoTexture != 0) GLES20.glDeleteTextures(1, intArrayOf(logoTexture), 0)
+                freeTicker()
                 drawer?.release(); frameDrawer?.release(); yuv?.release()
             }
             slots = emptyList(); drawer = null

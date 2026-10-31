@@ -43,6 +43,8 @@ data class StudioUi(
     val logoChoice: LogoChoice = LogoChoice.TEST,
     /** Photo-picker Uri of the optional stream thumbnail. */
     val thumbnailUri: String? = null,
+    val tickerText: String = "",
+    val tickerSize: app.streambird.android.media.TickerSize = app.streambird.android.media.TickerSize.S,
 ) {
     val brandAllowed get() = (limits?.assetStorageMb ?: 0) > 0
     val allowedTiers get() = StreamTier.allowed(limits?.maxResolution ?: "sd")
@@ -57,7 +59,12 @@ class StudioViewModel @Inject constructor(
     val controller: StreamController,
     private val brand: app.streambird.android.brand.BrandRepository,
 ) : ViewModel() {
-    private val _ui = MutableStateFlow(StudioUi())
+    private val _ui = MutableStateFlow(
+        StudioUi(
+            tickerText = settings.tickerText,
+            tickerSize = runCatching { app.streambird.android.media.TickerSize.valueOf(settings.tickerSize) }.getOrDefault(app.streambird.android.media.TickerSize.S),
+        ),
+    )
     val ui: StateFlow<StudioUi> = _ui.asStateFlow()
 
     init { refresh() }
@@ -106,11 +113,13 @@ class StudioViewModel @Inject constructor(
 
     fun goLive() {
         val s = _ui.value
+        settings.tickerText = app.streambird.android.media.Ticker.sanitize(s.tickerText); settings.tickerSize = s.tickerSize.name
         controller.start(
             GoLiveRequest(
                 title = s.title, visibility = s.visibility, destinationIds = s.selected, tier = s.tier, orientation = s.orientation, priority = s.priority,
                 frontCamera = s.frontCamera, h264HighProfile = s.h264HighProfile, forceKeyFrames = s.forceKeyFrames,
                 logoChoice = if (s.logoChoice == LogoChoice.BRAND && !s.brandAllowed) LogoChoice.NONE else s.logoChoice,
+                tickerText = app.streambird.android.media.Ticker.sanitize(s.tickerText), tickerSize = s.tickerSize,
                 brandKitId = brand.selectedKitId.value, thumbnailUri = s.thumbnailUri,
                 liveLinks = s.connections.filter { it.id in s.selected }.associate { it.id to it.liveLinkUrl },
             ),

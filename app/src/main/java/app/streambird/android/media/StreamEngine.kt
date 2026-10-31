@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.AudioSource
@@ -49,6 +50,7 @@ data class EngineConfig(
     val logo: LogoOverlay?,
     val iceServers: List<IceServerSpec>,
     val whipUrl: String,
+    val ticker: TickerSpec? = null,
 )
 
 val EngineConfig.outWidth get() = tier.width(orientation)
@@ -94,8 +96,14 @@ class StreamEngine(
     private var config: EngineConfig? = null
     private var prevStats: EncoderStats? = null
 
-    @Volatile private var gatheringDone = false
-    @Volatile private var connState: PeerConnection.PeerConnectionState = PeerConnection.PeerConnectionState.NEW
+    /** One per PeerConnection we create: events of a connection that is no longer the active one are only logged. */
+    private class Link(val gen: Int, val conn: PeerConnection, val sender: org.webrtc.RtpSender, @Volatile var resourceUrl: String? = null) {
+        @Volatile var state: PeerConnection.PeerConnectionState = PeerConnection.PeerConnectionState.NEW
+        @Volatile var gathered = false
+    }
+    private var genCounter = 0
+    @Volatile private var activeGen = 0
+    private val republishLock = kotlinx.coroutines.sync.Mutex()
 
     var preview: PreviewHandle? = null; private set
     val droppedFrames: Long get() = compositor?.droppedFrames ?: 0
@@ -160,6 +168,7 @@ class StreamEngine(
         val h = SurfaceTextureHelper.create("sb-capture", egl.eglBaseContext).also { helper = it }
         val source = f.createVideoSource(false).also { videoSource = it }
         val comp = FrameCompositor(source.capturerObserver, h, cfg.outWidth, cfg.outHeight, cfg.logo, unmirror = cfg.frontCamera)
+        comp.ticker = cfg.ticker
         compositor = comp
 
         val enumerator = Camera2Enumerator(context).also { this.enumerator = it }
@@ -193,27 +202,46 @@ class StreamEngine(
     }
 
     private suspend fun publish(cfg: EngineConfig) {
+        val link = connect(cfg)
+        pc = link.conn; videoSender = link.sender; resourceUrl = link.resourceUrl; activeGen = link.gen
+        applySenderParameters(cfg)
+        startStats()
+    }
+
+    private fun rtcConfig(cfg: EngineConfig) = PeerConnection.RTCConfiguration(
+        cfg.iceServers.map { s ->
+            PeerConnection.IceServer.builder(s.urls).also { b ->
+                s.username?.let { b.setUsername(it) }
+                s.credential?.let { b.setPassword(it) }
+            }.createIceServer()
+        },
+    ).apply {
+        sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+        rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+        // After a network switch libwebrtc gathers on the new interface and checks new pairs by itself (the server learns the new
+        // address as a peer-reflexive candidate); the stall detector + republish are the fallback when that does not happen.
+        continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+        stunCandidateKeepaliveIntervalMs = 10_000
+    }
+
+    /**
+     * Creates a NEW PeerConnection on the existing tracks, negotiates it with a fresh WHIP POST and waits until it is connected.
+     * Used for the first publish and for every re-publish. Throws (after cleaning up the new connection) on any failure.
+     */
+    private suspend fun connect(cfg: EngineConfig): Link {
         val f = factory!!
-        val rtc = PeerConnection.RTCConfiguration(
-            cfg.iceServers.map { s ->
-                PeerConnection.IceServer.builder(s.urls).also { b ->
-                    s.username?.let { b.setUsername(it) }
-                    s.credential?.let { b.setPassword(it) }
-                }.createIceServer()
-            },
-        ).apply {
-            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
-            rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-        }
-        val conn = f.createPeerConnection(rtc, object : PeerConnection.Observer {
-            override fun onIceGatheringChange(s: PeerConnection.IceGatheringState) { if (s == PeerConnection.IceGatheringState.COMPLETE) gatheringDone = true }
+        val gen = ++genCounter
+        var link: Link? = null
+        val observer = object : PeerConnection.Observer {
+            override fun onIceGatheringChange(s: PeerConnection.IceGatheringState) { if (s == PeerConnection.IceGatheringState.COMPLETE) link?.gathered = true }
             override fun onConnectionChange(s: PeerConnection.PeerConnectionState) {
-                connState = s
-                listener.onConnection(s.name)
-                listener.onEvent("peer connection $s")
+                link?.state = s
+                val current = gen == activeGen || activeGen == 0
+                listener.onEvent("peer connection $s" + if (current) "" else " (pc #$gen, not active)")
+                if (current) listener.onConnection(s.name)
             }
-            override fun onIceConnectionChange(s: PeerConnection.IceConnectionState) { listener.onEvent("ice $s") }
+            override fun onIceConnectionChange(s: PeerConnection.IceConnectionState) { listener.onEvent("ice $s" + if (gen == activeGen || activeGen == 0) "" else " (pc #$gen)") }
             override fun onSignalingChange(s: PeerConnection.SignalingState) {}
             override fun onIceConnectionReceivingChange(b: Boolean) {}
             override fun onIceCandidate(c: IceCandidate) {}
@@ -222,41 +250,79 @@ class StreamEngine(
             override fun onRemoveStream(s: MediaStream) {}
             override fun onDataChannel(d: org.webrtc.DataChannel) {}
             override fun onRenegotiationNeeded() {}
-        }) ?: throw IllegalStateException("PeerConnection could not be created")
-        pc = conn
-
-        val vTrans = conn.addTransceiver(videoTrack, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY))
-        conn.addTransceiver(audioTrack, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY))
-        videoSender = vTrans.sender
-
-        // H.264 first (web: setCodecPreferences). Belt and braces: the offer SDP is also re-ordered below.
-        val codecs = f.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
-        val h264 = codecs.filter { it.name.equals("H264", true) }
-        vTrans.setCodecPreferences(h264 + codecs.filterNot { it.name.equals("H264", true) })
-
-        val offer = conn.awaitOffer()
-        val munged = SessionDescription(SessionDescription.Type.OFFER, Sdp.preferH264(offer.description))
-        conn.awaitSetLocal(munged)
-        // WHIP is one HTTP exchange, not trickle ICE: wait for gathering, capped (the web studio waits 3 s).
-        withTimeoutOrNull(3000) { while (!gatheringDone) delay(50) }
-        val localSdp = conn.localDescription?.description ?: munged.description
-        if (!Sdp.hasH264(localSdp)) throw NoH264Exception("The offer contains no H.264. ${CodecProbe.summary()}")
-
-        val session = whip.publish(cfg.whipUrl, localSdp)
-        resourceUrl = session.resourceUrl
-        conn.awaitSetRemote(SessionDescription(SessionDescription.Type.ANSWER, session.answerSdp))
-
-        applySenderParameters(cfg)
-        val ok = withTimeoutOrNull(15_000) {
-            while (connState != PeerConnection.PeerConnectionState.CONNECTED) {
-                if (connState == PeerConnection.PeerConnectionState.FAILED) throw IllegalStateException("Connection to the StreamBird ingest failed (ICE). Check the network/UDP.")
-                delay(100)
-            }
-            true
         }
-        if (ok == null) throw IllegalStateException("Timed out connecting to the StreamBird ingest (15 s).")
-        startStats()
+        val conn = f.createPeerConnection(rtcConfig(cfg), observer) ?: throw IllegalStateException("PeerConnection could not be created")
+        try {
+            val vTrans = conn.addTransceiver(videoTrack, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY))
+            conn.addTransceiver(audioTrack, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY))
+            val l = Link(gen, conn, vTrans.sender).also { link = it }
+
+            // H.264 first (web: setCodecPreferences). Belt and braces: the offer SDP is also re-ordered below.
+            val codecs = f.getRtpSenderCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO).codecs
+            val h264 = codecs.filter { it.name.equals("H264", true) }
+            vTrans.setCodecPreferences(h264 + codecs.filterNot { it.name.equals("H264", true) })
+
+            val offer = conn.awaitOffer()
+            val munged = SessionDescription(SessionDescription.Type.OFFER, Sdp.preferH264(offer.description))
+            conn.awaitSetLocal(munged)
+            // WHIP is one HTTP exchange, not trickle ICE: wait for gathering, capped (the web studio waits 3 s).
+            withTimeoutOrNull(3000) { while (!l.gathered) delay(50) }
+            val localSdp = conn.localDescription?.description ?: munged.description
+            if (!Sdp.hasH264(localSdp)) throw NoH264Exception("The offer contains no H.264. ${CodecProbe.summary()}")
+
+            val session = whip.publish(cfg.whipUrl, localSdp)
+            l.resourceUrl = session.resourceUrl
+            conn.awaitSetRemote(SessionDescription(SessionDescription.Type.ANSWER, session.answerSdp))
+
+            val ok = withTimeoutOrNull(15_000) {
+                while (l.state != PeerConnection.PeerConnectionState.CONNECTED) {
+                    if (l.state == PeerConnection.PeerConnectionState.FAILED) throw IllegalStateException("Connection to the StreamBird ingest failed (ICE). Check the network/UDP.")
+                    delay(100)
+                }
+                true
+            }
+            if (ok == null) throw IllegalStateException("Timed out connecting to the StreamBird ingest (15 s).")
+            return l
+        } catch (t: Throwable) {
+            // Failed or cancelled attempt: hang up what the server may already have accepted, and free the new connection.
+            val res = link?.resourceUrl
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                runCatching { whip.hangUp(res) }
+                runCatching { conn.close() }
+                runCatching { conn.dispose() }
+            }
+            throw t
+        }
     }
+
+    /**
+     * Recovers a dead transport WITHOUT touching camera, compositor, encoder pipeline, tracks or the server-side stream:
+     * new PeerConnection -> WHIP POST to the same URL -> (connected) swap -> DELETE the old WHIP resource, close the old connection.
+     * The server's MediaMTX path accepts the new publisher (the old session is dead or replaced); during the gap the backend
+     * shows its "technical difficulties" slate (see docs/FEATURES.md). Throws on failure; the caller retries with backoff.
+     */
+    suspend fun republish() = republishLock.withLock {
+        val cfg = config ?: error("not started")
+        val old = pc
+        val oldRes = resourceUrl
+        val link = connect(cfg)
+        pc = link.conn; videoSender = link.sender; resourceUrl = link.resourceUrl; activeGen = link.gen
+        prevStats = null
+        applySenderParameters(cfg)
+        scope.launch(Dispatchers.IO) {
+            runCatching { whip.hangUp(oldRes) }
+            runCatching { old?.close() }
+            runCatching { old?.dispose() }
+        }
+    }
+
+    /** Debug aid: kills the transport the way a network switch would (the connection closes under the running stream). */
+    fun simulateDrop() {
+        runCatching { pc?.close() }
+        listener.onConnection("CLOSED")
+    }
+
+    fun setTicker(spec: TickerSpec?) { compositor?.ticker = spec }
 
     /** maxBitrate per tier (web: sender.setParameters), degradationPreference (web: applyPicturePriority), BWE start/max hints. */
     private fun applySenderParameters(cfg: EngineConfig) {

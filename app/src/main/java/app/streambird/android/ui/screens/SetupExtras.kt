@@ -82,3 +82,25 @@ fun ThumbnailPickerSection(uri: String?, onPick: (String?) -> Unit) {
     }
 }
 
+
+/** Optional news ticker for the bottom of the picture; remembered between runs. */
+@Composable
+fun TickerSetupSection(text: String, size: app.streambird.android.media.TickerSize, onChange: (String, app.streambird.android.media.TickerSize) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Ticker (optional)", style = MaterialTheme.typography.titleSmall)
+        androidx.compose.material3.OutlinedTextField(
+            value = text, onValueChange = { onChange(it.take(app.streambird.android.media.Ticker.MAX_LENGTH), size) },
+            label = { Text("Scrolling text at the bottom") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            supportingText = { Text("Shown on every plan. You can change it while live.") },
+        )
+        Segmented(app.streambird.android.media.TickerSize.entries, size, { it.label }, { onChange(text, it) })
+    }
+}
+
+/** Amber hint when the phone is on mobile data. */
+@Composable
+fun CellularHint(tier: app.streambird.android.media.StreamTier) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val hint = androidx.compose.runtime.remember(tier) { app.streambird.android.media.cellularHint(app.streambird.android.media.DeviceTelemetry(ctx).networkName(), tier) }
+    if (hint != null) Notice(hint, app.streambird.android.ui.theme.Amber)
+}

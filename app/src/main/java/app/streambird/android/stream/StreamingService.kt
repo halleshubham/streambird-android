@@ -50,7 +50,7 @@ class StreamingService : Service() {
         scope.launch {
             controller.ui.collect { ui ->
                 val text = when (ui.phase) {
-                    LivePhase.LIVE -> "LIVE ${ui.stats?.let { "${it.width}x${it.height} ${formatBitrate((ui.kbps ?: 0.0) * 1000)}" } ?: ""}"
+                    LivePhase.LIVE -> if (ui.reconnect.phaseBusy) "Reconnecting..." else "LIVE ${ui.stats?.let { "${it.width}x${it.height} ${formatBitrate((ui.kbps ?: 0.0) * 1000)}" } ?: ""}"
                     LivePhase.STARTING -> "Starting..."
                     LivePhase.ENDING -> "Ending..."
                     else -> ""

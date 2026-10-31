@@ -22,6 +22,10 @@ data class EncoderStats(
     val availableOutgoingBps: Double?,
     /** Average encode time per frame in ms (totalEncodeTime / framesEncoded). */
     val avgEncodeMs: Double?,
+    /** Receive-side counters of the transport; they advance with every RTCP report, so a frozen value means dead feedback. */
+    val pairBytesReceived: Long? = null,
+    val pairResponsesReceived: Long? = null,
+    val rttMeasurements: Long? = null,
 )
 
 object StatsParser {
@@ -38,6 +42,7 @@ object StatsParser {
         val reason = (m["qualityLimitationReason"] as? String)?.takeIf { it != "none" }
         val remote = stats.firstOrNull { it.type == "remote-inbound-rtp" && ((it.members["kind"] ?: it.members["mediaType"]) == "video") }
         val pair = stats.firstOrNull { it.type == "candidate-pair" && (it.members["nominated"] == true || it.members["state"] == "succeeded") && it.members.num("currentRoundTripTime") != null }
+        val active = stats.firstOrNull { it.type == "candidate-pair" && it.members["nominated"] == true } ?: stats.firstOrNull { it.type == "candidate-pair" && it.members["state"] == "succeeded" }
         val rttS = remote?.members?.num("roundTripTime") ?: pair?.members?.num("currentRoundTripTime")
         val frames = m.long("framesEncoded")
         val encodeTime = m.num("totalEncodeTime")
@@ -57,6 +62,9 @@ object StatsParser {
             rttMs = rttS?.times(1000.0),
             lossPct = remote?.members?.num("fractionLost")?.times(100.0),
             availableOutgoingBps = pair?.members?.num("availableOutgoingBitrate"),
+            pairBytesReceived = (active?.members?.get("bytesReceived") as? Number)?.toLong(),
+            pairResponsesReceived = (active?.members?.get("responsesReceived") as? Number)?.toLong(),
+            rttMeasurements = (remote?.members?.get("roundTripTimeMeasurements") as? Number)?.toLong(),
             avgEncodeMs = if (encodeTime != null && frames > 0) encodeTime / frames * 1000.0 else null,
         )
     }

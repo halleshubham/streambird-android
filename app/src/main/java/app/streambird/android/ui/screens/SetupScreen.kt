@@ -77,6 +77,8 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
+        CellularHint(s.tier)
+
         Text("Picture priority", style = MaterialTheme.typography.titleSmall)
         Segmented(PicturePriority.entries, s.priority, { it.label }, { p -> vm.update { it.copy(priority = p) } })
         Text(s.priority.hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -91,6 +93,7 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
         }
 
         if (s.logoChoice == LogoChoice.BRAND && s.brandAllowed) BrandSetupSection(s.selected, onBrand)
+        TickerSetupSection(s.tickerText, s.tickerSize) { t, z -> vm.update { it.copy(tickerText = t, tickerSize = z) } }
         ThumbnailPickerSection(s.thumbnailUri) { u -> vm.update { it.copy(thumbnailUri = u) } }
 
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
