@@ -30,10 +30,13 @@ class NetworkWatcher(context: Context, private val onTrigger: (Trigger) -> Unit)
         return NetState(n?.toString(), transportOf(n?.let { cm.getNetworkCapabilities(it) }))
     }
 
+    @Volatile private var startedAt = Long.MAX_VALUE
+
     @Synchronized private fun update(cur: NetState) {
         val t = networkTrigger(state, cur)
         state = cur
-        if (t != null) onTrigger(t)
+        // registerDefaultNetworkCallback replays the current network right away: that is not a change.
+        if (t != null && System.currentTimeMillis() - startedAt > 2_000) onTrigger(t)
     }
 
     fun start() {
@@ -43,6 +46,7 @@ class NetworkWatcher(context: Context, private val onTrigger: (Trigger) -> Unit)
             override fun onLost(network: Network) = update(current().let { if (it.id == network.toString()) NetState(null, "none") else it })
         }
         cb = c
+        startedAt = System.currentTimeMillis()
         runCatching { cm.registerDefaultNetworkCallback(c) }
     }
 

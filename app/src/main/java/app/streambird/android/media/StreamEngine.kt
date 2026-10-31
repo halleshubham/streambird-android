@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -90,9 +91,6 @@ class StreamEngine(
     private var audioSource: AudioSource? = null
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
-    private var pc: PeerConnection? = null
-    private var videoSender: org.webrtc.RtpSender? = null
-    private var resourceUrl: String? = null
     private var config: EngineConfig? = null
     private var prevStats: EncoderStats? = null
 
@@ -100,6 +98,8 @@ class StreamEngine(
     private class Link(val gen: Int, val conn: PeerConnection, val sender: org.webrtc.RtpSender, @Volatile var resourceUrl: String? = null) {
         @Volatile var state: PeerConnection.PeerConnectionState = PeerConnection.PeerConnectionState.NEW
         @Volatile var gathered = false
+        /** Set before the connection is closed/disposed: nobody may call into it any more. */
+        @Volatile var closed = false
     }
     private var genCounter = 0
     @Volatile private var activeGen = 0
@@ -201,13 +201,29 @@ class StreamEngine(
         preview = PreviewHandle(egl.eglBaseContext, vt)
     }
 
+    /**
+     * Every PeerConnection lifecycle call (create, negotiate, setParameters, getStats, close, dispose) runs on THIS ONE thread,
+     * so nothing can touch a connection while another thread closes or disposes it. [Link.gen] / [Link.closed] guard the rest.
+     */
+    private val pcExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "sb-pc") }
+    private val pcDispatcher = pcExecutor.asCoroutineDispatcher()
+    private val statsInFlight = java.util.concurrent.atomic.AtomicInteger(0)
+
+    @Volatile private var cur: Link? = null
+
+    private fun trace(text: String) { app.streambird.android.diag.Diag.log("engine: $text") }
+
     private suspend fun publish(cfg: EngineConfig) {
-        val link = connect(cfg)
-        pc = link.conn; videoSender = link.sender; resourceUrl = link.resourceUrl; activeGen = link.gen
-        applySenderParameters(cfg)
+        withContext(pcDispatcher) {
+            trace("publish: creating the peer connection")
+            val link = connect(cfg)
+            cur = link; activeGen = link.gen
+            applySenderParameters(cfg)
+        }
         startStats()
     }
 
+    // Same configuration as 0.2.0 (the 0.2.1 GATHER_CONTINUALLY / STUN keep-alive options were removed: see docs/FEATURES.md).
     private fun rtcConfig(cfg: EngineConfig) = PeerConnection.RTCConfiguration(
         cfg.iceServers.map { s ->
             PeerConnection.IceServer.builder(s.urls).also { b ->
@@ -219,15 +235,12 @@ class StreamEngine(
         sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
         rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-        // After a network switch libwebrtc gathers on the new interface and checks new pairs by itself (the server learns the new
-        // address as a peer-reflexive candidate); the stall detector + republish are the fallback when that does not happen.
-        continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        stunCandidateKeepaliveIntervalMs = 10_000
     }
 
     /**
      * Creates a NEW PeerConnection on the existing tracks, negotiates it with a fresh WHIP POST and waits until it is connected.
      * Used for the first publish and for every re-publish. Throws (after cleaning up the new connection) on any failure.
+     * Must run on [pcDispatcher].
      */
     private suspend fun connect(cfg: EngineConfig): Link {
         val f = factory!!
@@ -236,12 +249,14 @@ class StreamEngine(
         val observer = object : PeerConnection.Observer {
             override fun onIceGatheringChange(s: PeerConnection.IceGatheringState) { if (s == PeerConnection.IceGatheringState.COMPLETE) link?.gathered = true }
             override fun onConnectionChange(s: PeerConnection.PeerConnectionState) {
-                link?.state = s
+                val l = link
+                l?.state = s
+                if (l == null || l.closed) return
                 val current = gen == activeGen || activeGen == 0
                 listener.onEvent("peer connection $s" + if (current) "" else " (pc #$gen, not active)")
                 if (current) listener.onConnection(s.name)
             }
-            override fun onIceConnectionChange(s: PeerConnection.IceConnectionState) { listener.onEvent("ice $s" + if (gen == activeGen || activeGen == 0) "" else " (pc #$gen)") }
+            override fun onIceConnectionChange(s: PeerConnection.IceConnectionState) { if (link?.closed == false) listener.onEvent("ice $s" + if (gen == activeGen || activeGen == 0) "" else " (pc #$gen)") }
             override fun onSignalingChange(s: PeerConnection.SignalingState) {}
             override fun onIceConnectionReceivingChange(b: Boolean) {}
             override fun onIceCandidate(c: IceCandidate) {}
@@ -252,6 +267,7 @@ class StreamEngine(
             override fun onRenegotiationNeeded() {}
         }
         val conn = f.createPeerConnection(rtcConfig(cfg), observer) ?: throw IllegalStateException("PeerConnection could not be created")
+        trace("pc #$gen created")
         try {
             val vTrans = conn.addTransceiver(videoTrack, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY))
             conn.addTransceiver(audioTrack, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY))
@@ -263,6 +279,7 @@ class StreamEngine(
             vTrans.setCodecPreferences(h264 + codecs.filterNot { it.name.equals("H264", true) })
 
             val offer = conn.awaitOffer()
+            trace("pc #$gen offer created")
             val munged = SessionDescription(SessionDescription.Type.OFFER, Sdp.preferH264(offer.description))
             conn.awaitSetLocal(munged)
             // WHIP is one HTTP exchange, not trickle ICE: wait for gathering, capped (the web studio waits 3 s).
@@ -270,8 +287,10 @@ class StreamEngine(
             val localSdp = conn.localDescription?.description ?: munged.description
             if (!Sdp.hasH264(localSdp)) throw NoH264Exception("The offer contains no H.264. ${CodecProbe.summary()}")
 
+            trace("pc #$gen WHIP POST")
             val session = whip.publish(cfg.whipUrl, localSdp)
             l.resourceUrl = session.resourceUrl
+            trace("pc #$gen WHIP answer received")
             conn.awaitSetRemote(SessionDescription(SessionDescription.Type.ANSWER, session.answerSdp))
 
             val ok = withTimeoutOrNull(15_000) {
@@ -282,11 +301,14 @@ class StreamEngine(
                 true
             }
             if (ok == null) throw IllegalStateException("Timed out connecting to the StreamBird ingest (15 s).")
+            trace("pc #$gen connected")
             return l
         } catch (t: Throwable) {
             // Failed or cancelled attempt: hang up what the server may already have accepted, and free the new connection.
+            trace("pc #$gen attempt failed: ${t.message ?: t.javaClass.simpleName}")
             val res = link?.resourceUrl
-            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+            link?.closed = true
+            withContext(kotlinx.coroutines.NonCancellable + pcDispatcher) {
                 runCatching { whip.hangUp(res) }
                 runCatching { conn.close() }
                 runCatching { conn.dispose() }
@@ -298,54 +320,75 @@ class StreamEngine(
     /**
      * Recovers a dead transport WITHOUT touching camera, compositor, encoder pipeline, tracks or the server-side stream:
      * new PeerConnection -> WHIP POST to the same URL -> (connected) swap -> DELETE the old WHIP resource, close the old connection.
-     * The server's MediaMTX path accepts the new publisher (the old session is dead or replaced); during the gap the backend
-     * shows its "technical difficulties" slate (see docs/FEATURES.md). Throws on failure; the caller retries with backoff.
+     * The old connection is only closed once the new one is CONNECTED, and only disposed after in-flight getStats calls finished.
+     * Throws on failure; the caller retries with backoff.
      */
     suspend fun republish() = republishLock.withLock {
-        val cfg = config ?: error("not started")
-        val old = pc
-        val oldRes = resourceUrl
-        val link = connect(cfg)
-        pc = link.conn; videoSender = link.sender; resourceUrl = link.resourceUrl; activeGen = link.gen
-        prevStats = null
-        applySenderParameters(cfg)
-        scope.launch(Dispatchers.IO) {
-            runCatching { whip.hangUp(oldRes) }
-            runCatching { old?.close() }
-            runCatching { old?.dispose() }
+        withContext(pcDispatcher) {
+            val cfg = config ?: error("not started")
+            val old = cur
+            trace("republish: start (old pc #${old?.gen})")
+            val link = connect(cfg)
+            cur = link; activeGen = link.gen
+            old?.closed = true
+            prevStats = null
+            applySenderParameters(cfg)
+            trace("republish: swapped to pc #${link.gen}")
+            scope.launch(pcDispatcher) {
+                if (old != null) {
+                    runCatching { whip.hangUp(old.resourceUrl) }
+                    runCatching { old.conn.close() }
+                    awaitStatsIdle()
+                    delay(1000)
+                    runCatching { old.conn.dispose() }
+                }
+            }
         }
     }
 
+    private suspend fun awaitStatsIdle() { withTimeoutOrNull(4000) { while (statsInFlight.get() > 0) delay(50) } }
+
     /** Debug aid: kills the transport the way a network switch would (the connection closes under the running stream). */
     fun simulateDrop() {
-        runCatching { pc?.close() }
-        listener.onConnection("CLOSED")
+        scope.launch(pcDispatcher) {
+            val l = cur
+            trace("simulate drop (pc #${l?.gen})")
+            l?.closed = true
+            runCatching { l?.conn?.close() }
+            listener.onConnection("CLOSED")
+        }
     }
 
     fun setTicker(spec: TickerSpec?) { compositor?.ticker = spec }
 
-    /** maxBitrate per tier (web: sender.setParameters), degradationPreference (web: applyPicturePriority), BWE start/max hints. */
+    /** maxBitrate per tier (web: sender.setParameters), degradationPreference (web: applyPicturePriority), BWE start/max hints. Run on [pcDispatcher]. */
     private fun applySenderParameters(cfg: EngineConfig) {
-        val sender = videoSender ?: return
-        val p = sender.parameters
-        p.encodings.firstOrNull()?.let {
-            it.maxBitrateBps = cfg.tier.maxBitrateBps
-            it.maxFramerate = FPS
+        val l = cur ?: return
+        if (l.closed) return
+        try {
+            val sender = l.sender
+            val p = sender.parameters
+            p.encodings.firstOrNull()?.let {
+                it.maxBitrateBps = cfg.tier.maxBitrateBps
+                it.maxFramerate = FPS
+            }
+            p.degradationPreference = when (cfg.priority) {
+                PicturePriority.MAINTAIN_RESOLUTION -> RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
+                PicturePriority.BALANCED -> RtpParameters.DegradationPreference.BALANCED
+            }
+            val ok = sender.setParameters(p)
+            // Without a hint the bandwidth estimator starts near 300 kbps and ramps slowly -> low-res start.
+            val bwe = l.conn.setBitrate(cfg.tier.maxBitrateBps / 10, cfg.tier.startBitrateBps, cfg.tier.maxBitrateBps)
+            listener.onEvent("sender params applied=$ok maxBitrate=${cfg.tier.maxBitrateBps} priority=${cfg.priority} bwe=$bwe")
+        } catch (t: Throwable) {
+            trace("applySenderParameters failed: ${t.message ?: t.javaClass.simpleName}")
         }
-        p.degradationPreference = when (cfg.priority) {
-            PicturePriority.MAINTAIN_RESOLUTION -> RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
-            PicturePriority.BALANCED -> RtpParameters.DegradationPreference.BALANCED
-        }
-        val ok = sender.setParameters(p)
-        // Without a hint the bandwidth estimator starts near 300 kbps and ramps slowly -> low-res start.
-        val bwe = pc?.setBitrate(cfg.tier.maxBitrateBps / 10, cfg.tier.startBitrateBps, cfg.tier.maxBitrateBps)
-        listener.onEvent("sender params applied=$ok maxBitrate=${cfg.tier.maxBitrateBps} priority=${cfg.priority} bwe=$bwe")
     }
 
     fun setPicturePriority(p: PicturePriority) {
         val cfg = config ?: return
         config = cfg.copy(priority = p)
-        applySenderParameters(config!!)
+        scope.launch(pcDispatcher) { applySenderParameters(config!!) }
     }
 
     // ---- stats ----
@@ -353,21 +396,47 @@ class StreamEngine(
     private fun startStats() {
         statsJob = scope.launch {
             while (isActive) {
-                val raw = suspendCancellableCoroutine<List<RawStat>> { cont ->
-                    val c = pc
-                    if (c == null) cont.resume(emptyList())
-                    else c.getStats { report ->
-                        cont.resume(report.statsMap.values.map { RawStat(it.type, it.id, it.timestampUs, it.members) })
+                try {
+                    val raw = readStats()
+                    val cur = StatsParser.parse(raw)
+                    if (cur != null) {
+                        val kbps = StatsParser.bitrateBetween(prevStats, cur)?.div(1000.0)
+                        prevStats = cur
+                        listener.onStats(cur, kbps, StatsParser.isHardwareEncoder(cur.encoderImpl, cur.powerEfficientEncoder))
                     }
-                }
-                val cur = StatsParser.parse(raw)
-                if (cur != null) {
-                    val kbps = StatsParser.bitrateBetween(prevStats, cur)?.div(1000.0)
-                    prevStats = cur
-                    listener.onStats(cur, kbps, StatsParser.isHardwareEncoder(cur.encoderImpl, cur.powerEfficientEncoder))
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    trace("stats error: ${t.message ?: t.javaClass.simpleName}")
                 }
                 delay(2000)
             }
+        }
+    }
+
+    /** getStats on the PC thread, only for the active, not-closed connection; never waits forever (a closing PC may not answer). */
+    private suspend fun readStats(): List<RawStat> {
+        val l = cur ?: return emptyList()
+        if (l.closed) return emptyList()
+        statsInFlight.incrementAndGet()
+        try {
+            return withTimeoutOrNull(5000) {
+                suspendCancellableCoroutine<List<RawStat>> { cont ->
+                    val done = java.util.concurrent.atomic.AtomicBoolean(false)
+                    fun finish(v: List<RawStat>) { if (done.compareAndSet(false, true) && cont.isActive) cont.resume(v) }
+                    try {
+                        pcExecutor.execute {
+                            try {
+                                if (l.closed) finish(emptyList())
+                                else l.conn.getStats { report -> finish(report.statsMap.values.map { RawStat(it.type, it.id, it.timestampUs, it.members) }) }
+                            } catch (t: Throwable) { finish(emptyList()) }
+                        }
+                    } catch (t: Throwable) { finish(emptyList()) }
+                }
+            } ?: emptyList()
+        } finally {
+            // The callback may still arrive after a timeout; give it a moment before anyone disposes the connection.
+            scope.launch { delay(500); statsInFlight.decrementAndGet() }
         }
     }
 
@@ -375,23 +444,28 @@ class StreamEngine(
 
     suspend fun stop() {
         statsJob?.cancel()
+        statsJob?.join()
         withContext(Dispatchers.IO) {
-            runCatching { whip.hangUp(resourceUrl) }
+            val l = cur
+            l?.closed = true
+            runCatching { whip.hangUp(l?.resourceUrl) }
             runCatching { capturer?.stopCapture() }
-            runCatching { pc?.close() }
+            awaitStatsIdle()
+            withContext(pcDispatcher) { runCatching { l?.conn?.close() } }
             runCatching { compositor?.release() }
             runCatching { capturer?.dispose() }
             runCatching { videoTrack?.dispose() }
             runCatching { audioTrack?.dispose() }
             runCatching { videoSource?.dispose() }
             runCatching { audioSource?.dispose() }
-            runCatching { pc?.dispose() }
+            withContext(pcDispatcher) { runCatching { l?.conn?.dispose() } }
             runCatching { helper?.dispose() }
             runCatching { factory?.dispose() }
             runCatching { adm?.release() }
             runCatching { eglBase?.release() }
         }
-        preview = null; pc = null; factory = null; capturer = null
+        cur = null; preview = null; factory = null; capturer = null
+        pcExecutor.shutdown()
     }
 
     // ---- SDP plumbing ----

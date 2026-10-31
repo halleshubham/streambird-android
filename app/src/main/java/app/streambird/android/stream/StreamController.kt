@@ -139,6 +139,7 @@ class StreamController @Inject constructor(
 
     fun start(req: GoLiveRequest) {
         if (_ui.value.active) return
+        app.streambird.android.diag.Diag.log("GO LIVE requested: tier=${req.tier.label} ${req.orientation} dests=${req.destinationIds.size} ticker=${req.tickerText.isNotBlank()} thumb=${req.thumbnailUri != null}")
         _ui.value = LiveUi(phase = LivePhase.STARTING, message = "Creating the stream...", request = req)
         ContextCompat.startForegroundService(context, Intent(context, StreamingService::class.java))
         scope.launch { run(req) }
@@ -182,7 +183,8 @@ class StreamController @Inject constructor(
             _ui.update { it.copy(tickerText = tickerSpec?.text.orEmpty(), tickerSize = req.tickerSize) }
             event("ticker ${if (tickerSpec != null) "on size=${req.tickerSize.label} len=${tickerSpec!!.text.length}" else "off"}", withRow = false)
             eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec))
-            startReconnector()
+            // The first connection is left alone: watchers start only once it has been healthy for a few seconds.
+            scope.launch { armReconnector(stream.id) }
 
             startedAtMs = System.currentTimeMillis()
             _ui.update { it.copy(canFlipCamera = eng.hasBothCameras, frontCamera = eng.frontCamera) }
@@ -303,6 +305,15 @@ class StreamController @Inject constructor(
 
     // ---- reconnect (network change / dead transport) ----
 
+    /** Waits for first stats + 8 s of LIVE, then starts network/stall supervision (so nothing can disturb the initial connect). */
+    private suspend fun armReconnector(streamId: String) {
+        delay(8_000)
+        while (_ui.value.phase == LivePhase.LIVE && _ui.value.stats == null) delay(500)
+        if (_ui.value.phase != LivePhase.LIVE || _ui.value.stream?.id != streamId || reconnector != null) return
+        event("reconnect supervision armed", withRow = false)
+        startReconnector()
+    }
+
     private fun startReconnector() {
         val host = object : ReconnectHost {
             override suspend fun republish() { engine?.republish() ?: error("stream engine is gone") }
@@ -347,6 +358,7 @@ class StreamController @Inject constructor(
     }
 
     private fun event(text: String, withRow: Boolean) {
+        app.streambird.android.diag.Diag.log(text)
         val stamp = SampleLog.iso(System.currentTimeMillis()).substring(11, 19)
         _ui.update { it.copy(events = (it.events + "$stamp $text").takeLast(40)) }
         if (withRow) log?.add(

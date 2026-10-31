@@ -15,6 +15,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -103,4 +105,17 @@ fun CellularHint(tier: app.streambird.android.media.StreamTier) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val hint = androidx.compose.runtime.remember(tier) { app.streambird.android.media.cellularHint(app.streambird.android.media.DeviceTelemetry(ctx).networkName(), tier) }
     if (hint != null) Notice(hint, app.streambird.android.ui.theme.Amber)
+}
+
+/** "The app closed unexpectedly last time": dismissible, with a Share crash report button. */
+@Composable
+fun CrashReportCard() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var report by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(app.streambird.android.diag.CrashReporter.pendingReport(ctx)) }
+    val r = report ?: return
+    Notice("The app closed unexpectedly last time. Sharing the crash report helps fix it.", app.streambird.android.ui.theme.Amber)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { app.streambird.android.diag.CrashReporter.share(ctx, r) }) { Text("Share crash report") }
+        OutlinedButton(onClick = { app.streambird.android.diag.CrashReporter.dismiss(ctx); report = null }) { Text("Dismiss") }
+    }
 }
