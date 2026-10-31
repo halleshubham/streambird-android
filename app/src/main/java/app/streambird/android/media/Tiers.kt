@@ -3,14 +3,28 @@ package app.streambird.android.media
 /** Plan resolution names as returned by GET /plans/me (`maxResolution`). */
 private val PLAN_RANK = mapOf("sd" to 0, "hd" to 1, "fhd" to 2, "qhd" to 3)
 
+/** Stream shape; immutable per stream (the backend fixes `orientation` at creation). `wire` is the API value. */
+enum class StreamOrientation(val wire: String, val label: String) {
+    PORTRAIT("portrait", "Portrait (9:16)"),
+    LANDSCAPE("landscape", "Landscape (16:9)");
+
+    val isLandscape get() = this == LANDSCAPE
+}
+
 /**
- * Portrait (9:16) tiers. Bitrates are the web studio's RESOLUTIONS (web-app/src/studio/useHostStudio.ts): 1 / 3 / 6 Mbps.
- * The web "sd" tier is 360p; the app's smallest tier is 540p, so a plan limited to "sd" still gets 540p (see docs/BACKEND-NEEDS.md).
+ * Tiers. Landscape sizes are the web's RESOLUTIONS (web-app/src/studio/useHostStudio.ts: hd 1280x720, fhd 1920x1080);
+ * portrait swaps width and height exactly like `canvasSizeFor` (compose.ts). Bitrates are the web's: 1 / 3 / 6 Mbps.
+ * The web "sd" tier is 360p; the app's smallest tier is 540p (960x540), so a plan limited to "sd" still gets 540p (see docs/BACKEND-NEEDS.md).
+ * [longSide] x [shortSide] is the landscape size.
  */
-enum class StreamTier(val label: String, val width: Int, val height: Int, val maxBitrateBps: Int, val minPlan: String, val captureWidth: Int, val captureHeight: Int) {
-    P540("540p", 540, 960, 1_000_000, "sd", 1280, 720),
-    P720("720p", 720, 1280, 3_000_000, "hd", 1280, 720),
-    P1080("1080p", 1080, 1920, 6_000_000, "fhd", 1920, 1080);
+enum class StreamTier(val label: String, val longSide: Int, val shortSide: Int, val maxBitrateBps: Int, val minPlan: String, val captureWidth: Int, val captureHeight: Int) {
+    P540("540p", 960, 540, 1_000_000, "sd", 1280, 720),
+    P720("720p", 1280, 720, 3_000_000, "hd", 1280, 720),
+    P1080("1080p", 1920, 1080, 6_000_000, "fhd", 1920, 1080);
+
+    fun width(o: StreamOrientation) = if (o.isLandscape) longSide else shortSide
+    fun height(o: StreamOrientation) = if (o.isLandscape) shortSide else longSide
+    fun sizeLabel(o: StreamOrientation) = "${width(o)}x${height(o)}"
 
     fun allowedBy(planMaxResolution: String): Boolean =
         (PLAN_RANK[planMaxResolution] ?: 0) >= (PLAN_RANK[minPlan] ?: 0)

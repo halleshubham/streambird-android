@@ -41,6 +41,7 @@ data class IceServerSpec(val urls: List<String>, val username: String? = null, v
 
 data class EngineConfig(
     val tier: StreamTier,
+    val orientation: StreamOrientation,
     val priority: PicturePriority,
     val frontCamera: Boolean,
     val h264HighProfile: Boolean,
@@ -49,6 +50,9 @@ data class EngineConfig(
     val iceServers: List<IceServerSpec>,
     val whipUrl: String,
 )
+
+val EngineConfig.outWidth get() = tier.width(orientation)
+val EngineConfig.outHeight get() = tier.height(orientation)
 
 class NoH264Exception(message: String) : Exception(message)
 
@@ -95,6 +99,36 @@ class StreamEngine(
 
     var preview: PreviewHandle? = null; private set
     val droppedFrames: Long get() = compositor?.droppedFrames ?: 0
+    fun dropSummary(): String = compositor?.let {
+        "compositor: composed=${it.composedFrames} droppedNoSlot=${it.droppedNoSlot} droppedError=${it.droppedError} lastDropAtFrame=${it.lastDropAtFrame}" +
+            (it.lastError?.let { e -> " lastError=$e" } ?: "")
+    } ?: ""
+
+    private var enumerator: Camera2Enumerator? = null
+    @Volatile var frontCamera: Boolean = false; private set
+    /** True when the phone has both a front and a back camera, so the flip button makes sense. */
+    var hasBothCameras: Boolean = false; private set
+
+    /**
+     * Switches to the other camera without touching the PeerConnection or encoder (the stream keeps going).
+     * [done] gets null on success or an error text; on error the old camera stays active.
+     */
+    fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit) {
+        val cam = capturer
+        val en = enumerator
+        if (cam == null || en == null || !hasBothCameras) { done("This phone has only one camera.", frontCamera); return }
+        val wantFront = !frontCamera
+        val target = en.deviceNames.firstOrNull { if (wantFront) en.isFrontFacing(it) else en.isBackFacing(it) }
+        if (target == null) { done("No ${if (wantFront) "front" else "back"} camera found.", frontCamera); return }
+        cam.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+            override fun onCameraSwitchDone(isFront: Boolean) {
+                frontCamera = isFront
+                compositor?.unmirror = isFront
+                done(null, isFront)
+            }
+            override fun onCameraSwitchError(errorDescription: String?) = done(errorDescription ?: "camera switch failed", frontCamera)
+        }, target)
+    }
 
     suspend fun start(cfg: EngineConfig) {
         config = cfg
@@ -125,10 +159,11 @@ class StreamEngine(
 
         val h = SurfaceTextureHelper.create("sb-capture", egl.eglBaseContext).also { helper = it }
         val source = f.createVideoSource(false).also { videoSource = it }
-        val comp = FrameCompositor(source.capturerObserver, h, cfg.tier.width, cfg.tier.height, cfg.logo, unmirror = cfg.frontCamera)
+        val comp = FrameCompositor(source.capturerObserver, h, cfg.outWidth, cfg.outHeight, cfg.logo, unmirror = cfg.frontCamera)
         compositor = comp
 
-        val enumerator = Camera2Enumerator(context)
+        val enumerator = Camera2Enumerator(context).also { this.enumerator = it }
+        hasBothCameras = enumerator.deviceNames.any { enumerator.isFrontFacing(it) } && enumerator.deviceNames.any { enumerator.isBackFacing(it) }
         val name = enumerator.deviceNames.firstOrNull { if (cfg.frontCamera) enumerator.isFrontFacing(it) else enumerator.isBackFacing(it) }
             ?: enumerator.deviceNames.firstOrNull()
             ?: throw IllegalStateException("No camera found")
@@ -141,13 +176,15 @@ class StreamEngine(
             override fun onCameraClosed() {}
         }) ?: throw IllegalStateException("Could not open camera $name")
         capturer = cam
+        frontCamera = enumerator.isFrontFacing(name)
+        compositor?.unmirror = frontCamera
         cam.initialize(h, context, comp)
         val size = CameraEnumerationAndroid.getClosestSupportedSize(
             enumerator.getSupportedFormats(name).orEmpty().map { org.webrtc.Size(it.width, it.height) }, cfg.tier.captureWidth, cfg.tier.captureHeight,
         )
         cam.startCapture(size.width, size.height, FPS)
-        listener.onEvent("camera $name capture ${size.width}x${size.height}@$FPS -> output ${cfg.tier.width}x${cfg.tier.height}")
-        source.adaptOutputFormat(cfg.tier.width, cfg.tier.height, FPS)
+        listener.onEvent("camera $name capture ${size.width}x${size.height}@$FPS -> output ${cfg.outWidth}x${cfg.outHeight}")
+        source.adaptOutputFormat(cfg.outWidth, cfg.outHeight, FPS)
 
         val vt = f.createVideoTrack("sb-video", source).also { videoTrack = it }
         val asrc = f.createAudioSource(MediaConstraints()).also { audioSource = it }

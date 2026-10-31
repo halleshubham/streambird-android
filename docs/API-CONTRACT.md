@@ -61,7 +61,7 @@ The cookie is kept in a persistent `CookieJar` (DataStore), so the session survi
   ```json
   {"title":"Mobile test","visibility":"public","orientation":"portrait","destinationConnectionIds":["<uuid>"]}
   ```
-  (`CreateStreamDto`: title <= 200, 1..50 uuid ids; `orientation` defaults to landscape server-side, so the app **always** sends `portrait`.)
+  (`CreateStreamDto`: title <= 200, 1..50 uuid ids; `orientation` defaults to landscape server-side, so the app sends the chosen orientation explicitly, `portrait` or `landscape`; the serializer is configured with `encodeDefaults`, with a regression test.)
   Response (`StreamResponseDto`): `{"id","title","status":"live","whipUrl":"https://<mediamtx>/<path>/whip","orientation":"portrait","studioSessionId","destinations":[{"id","platformConnectionId","status","watchUrl","errorMessage"}], ...}`.
   The stream is `live` as soon as it is created (platform broadcasts are created and MediaMTX forwards are registered); nothing else is called to "start" it.
   Throttled by `StreamCreateThrottlerGuard`.

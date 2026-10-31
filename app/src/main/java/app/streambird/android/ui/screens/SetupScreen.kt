@@ -34,6 +34,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.streambird.android.media.CodecProbe
 import app.streambird.android.media.PicturePriority
+import app.streambird.android.media.StreamOrientation
 import app.streambird.android.media.StreamTier
 import app.streambird.android.stream.LogoChoice
 import app.streambird.android.ui.StudioViewModel
@@ -66,12 +67,20 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit) {
             }
         }
 
-        Text("Quality (portrait 9:16, 30 fps)", style = MaterialTheme.typography.titleSmall)
+        Text("Shape (fixed once the stream is created)", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StreamOrientation.entries.forEach { o ->
+                FilterChip(selected = s.orientation == o, onClick = { vm.update { it.copy(orientation = o) } }, label = { Text(o.label) })
+            }
+        }
+        if (s.orientation.isLandscape) Text("Landscape: the screen turns to landscape while you stream. Hold the phone sideways.", style = MaterialTheme.typography.bodySmall)
+
+        Text("Quality (${s.orientation.label.substringBefore(" ").lowercase()}, 30 fps)", style = MaterialTheme.typography.titleSmall)
         StreamTier.entries.forEach { t ->
             val ok = t in s.allowedTiers
             Row(Modifier.fillMaxWidth().clickable(enabled = ok) { vm.update { it.copy(tier = t) } }, verticalAlignment = Alignment.CenterVertically) {
                 RadioButton(selected = s.tier == t, onClick = { vm.update { it.copy(tier = t) } }, enabled = ok)
-                Text("${t.label}  ${t.width}x${t.height}, up to ${t.maxBitrateBps / 1_000_000} Mbps" + if (ok) "" else "  (needs a higher plan)")
+                Text("${t.label}  ${t.sizeLabel(s.orientation)}, up to ${t.maxBitrateBps / 1_000_000} Mbps" + if (ok) "" else "  (needs a higher plan)")
             }
         }
 

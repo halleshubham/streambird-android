@@ -30,6 +30,7 @@ import app.streambird.android.media.SampleLog
 import app.streambird.android.media.SendQuality
 import app.streambird.android.media.SendSample
 import app.streambird.android.media.StreamEngine
+import app.streambird.android.media.StreamOrientation
 import app.streambird.android.media.StreamTier
 import app.streambird.android.media.classifySendQuality
 import app.streambird.android.media.pickBrandKit
@@ -56,6 +57,7 @@ data class GoLiveRequest(
     val visibility: String,
     val destinationIds: Set<String>,
     val tier: StreamTier,
+    val orientation: StreamOrientation,
     val priority: PicturePriority,
     val frontCamera: Boolean,
     val h264HighProfile: Boolean,
@@ -81,6 +83,9 @@ data class LiveUi(
     val events: List<String> = emptyList(),
     val logRows: Int = 0,
     val logoNote: String = "",
+    val canFlipCamera: Boolean = false,
+    val frontCamera: Boolean = false,
+    val dropDetail: String = "",
 ) {
     val active get() = phase == LivePhase.STARTING || phase == LivePhase.LIVE || phase == LivePhase.ENDING
 }
@@ -121,7 +126,7 @@ class StreamController @Inject constructor(
         var stream: StreamDto? = null
         try {
             stream = api.createStream(
-                CreateStreamRequest(title = req.title.ifBlank { "Mobile stream" }, visibility = req.visibility, orientation = "portrait", destinationConnectionIds = req.destinationIds.toList()),
+                CreateStreamRequest(title = req.title.ifBlank { "Mobile stream" }, visibility = req.visibility, orientation = req.orientation.wire, destinationConnectionIds = req.destinationIds.toList()),
             )
             val whipUrl = stream.whipUrl ?: error("The server returned no publish (WHIP) URL for this stream.")
             _ui.update { it.copy(stream = stream, message = "Preparing camera and encoder...") }
@@ -136,7 +141,7 @@ class StreamController @Inject constructor(
                 "device" to "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT})",
                 "server" to settings.baseUrl,
                 "stream_id" to stream.id,
-                "tier" to "${req.tier.label} ${req.tier.width}x${req.tier.height} max ${req.tier.maxBitrateBps / 1000} kbps",
+                "tier" to "${req.tier.label} ${req.orientation.wire} ${req.tier.sizeLabel(req.orientation)} max ${req.tier.maxBitrateBps / 1000} kbps",
                 "picture_priority" to req.priority.name,
                 "camera" to if (req.frontCamera) "front" else "back",
                 "h264_high_profile" to req.h264HighProfile.toString(),
@@ -149,9 +154,10 @@ class StreamController @Inject constructor(
             val eng = StreamEngine(context, WhipClient(whipHttp), listener)
             engine = eng
             unwatchNetwork = telemetry.watchNetwork { event(it, withRow = true) }
-            eng.start(EngineConfig(req.tier, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl))
+            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl))
 
             startedAtMs = System.currentTimeMillis()
+            _ui.update { it.copy(canFlipCamera = eng.hasBothCameras, frontCamera = eng.frontCamera) }
             _ui.update { it.copy(phase = LivePhase.LIVE, message = "Live. Platforms need a few seconds to show the picture.") }
             event("LIVE", withRow = true)
             pollJob = scope.launch { pollStatus(stream.id) }
@@ -175,6 +181,7 @@ class StreamController @Inject constructor(
         scope.launch {
             pollJob?.cancel()
             unwatchNetwork?.invoke(); unwatchNetwork = null
+            engine?.dropSummary()?.takeIf { it.isNotEmpty() }?.let { event(it, withRow = true) }
             event("END requested", withRow = true)
             runCatching { engine?.stop() }
             engine = null
@@ -201,6 +208,23 @@ class StreamController @Inject constructor(
         event("picture priority -> $p", withRow = true)
     }
 
+    /** Flip front/back while live. The stream, encoder and connection are untouched; failures keep the current camera. */
+    fun flipCamera() {
+        val eng = engine ?: return
+        if (_ui.value.phase != LivePhase.LIVE) return
+        val before = if (eng.frontCamera) "front" else "back"
+        eng.switchCamera { error, nowFront ->
+            if (error == null) {
+                val after = if (nowFront) "front" else "back"
+                _ui.update { it.copy(frontCamera = nowFront, message = "Camera: $after.") }
+                event("camera $before -> $after", withRow = true)
+            } else {
+                _ui.update { it.copy(message = "Could not switch camera ($error). Still using the $before camera.") }
+                event("camera switch failed: $error", withRow = true)
+            }
+        }
+    }
+
     fun logCsv(): String? = log?.toCsv()
 
     private val listener = object : EngineListener {
@@ -208,13 +232,13 @@ class StreamController @Inject constructor(
             val req = _ui.value.request ?: return
             val elapsed = (System.currentTimeMillis() - startedAtMs) / 1000
             val warming = elapsed < 8
-            val q = classifySendQuality(SendSample(stats.width, stats.height, stats.fps, kbps?.times(1000), stats.limitationReason), req.tier.width, req.tier.height, warming)
+            val q = classifySendQuality(SendSample(stats.width, stats.height, stats.fps, kbps?.times(1000), stats.limitationReason), req.tier.width(req.orientation), req.tier.height(req.orientation), warming)
             val dev = telemetry.read()
             log?.add(LogRow(System.currentTimeMillis(), elapsed, stats, kbps, q.limited, dev))
             _ui.update {
                 it.copy(
                     stats = stats, kbps = kbps, quality = q, hardware = hardware, device = dev, elapsedS = elapsed,
-                    droppedFrames = engine?.droppedFrames ?: 0, logRows = log?.size ?: 0,
+                    droppedFrames = engine?.droppedFrames ?: 0, dropDetail = engine?.dropSummary().orEmpty(), logRows = log?.size ?: 0,
                 )
             }
         }

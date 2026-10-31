@@ -59,7 +59,10 @@ some phone it would cost roughly one 1080x1920 NV12/I420 conversion plus an over
 
 ### Other design points
 
-* **Resolution tiers** (portrait 9:16, 30 fps): 540p = 540x960 / 1 Mbps, 720p = 720x1280 / 3 Mbps, 1080p = 1080x1920 / 6 Mbps (web `RESOLUTIONS` bitrates). The camera is opened at 1280x720 (540p, 720p) or 1920x1080 (1080p).
+* **Orientation** is chosen on the Setup screen (default Portrait) and sent as `orientation` in `POST /streams`; the backend fixes it per stream. Landscape output sizes are the web's `RESOLUTIONS` (960x540 / 1280x720 / 1920x1080); portrait swaps them like `canvasSizeFor` (540x960 / 720x1280 / 1080x1920). Bitrates 1 / 3 / 6 Mbps either way, 30 fps. The camera is opened at 1280x720 (540p, 720p) or 1920x1080 (1080p); `VideoFrameDrawer` rotates each frame from the camera's per-frame rotation and the compositor aspect-fills it into the output.
+* **Screen rotation**: a landscape stream locks the activity to sensor-landscape (either way up) while it runs, a portrait stream to portrait. The activity declares `configChanges`, and the engine lives in the application-scoped `StreamController`, so rotating never restarts the stream. The Live screen switches to a side-by-side layout in landscape.
+* **Flip camera** (Live screen, shown only if the phone has a front and a back camera): `CameraVideoCapturer.switchCamera(handler, deviceName)` to the explicit other-facing device; the PeerConnection, encoder and compositor keep running. The compositor's un-mirror flag follows the active camera (the web studio never mirrors the published canvas; front frames are un-mirrored here). A failed switch shows a message and keeps the current camera. The CSV gets a `camera back -> front` event row.
+* **Resolution tiers**: 540p / 720p / 1080p as above.
 * **Picture priority**: "Sharp picture" = `degradationPreference MAINTAIN_RESOLUTION`; off = `BALANCED`. Switchable while live.
 * **Start bitrate**: `PeerConnection.setBitrate(min = max/10, start = 70% of max, max)` so the estimator does not spend a minute climbing from about 300 kbps.
 * **H.264 profile** switch (High vs Constrained Baseline) and **keyframe every 2 s** switch are on the setup screen so you can compare.
@@ -106,6 +109,12 @@ audio in sync, how many seconds from the phone to the platform, and whether the 
 The Live screen shows the sent size, fps, bitrate, `qualityLimitationReason`, encoder, RTT/loss, NACK/PLI/keyframes, encode time per frame,
 estimated uplink, battery %, battery temperature, thermal status and network type, every 2 s. The panel turns the size amber and shows a banner when the sent
 short side is under 75% of the chosen tier or the limitation reason is not `none` (same rule as the web's `sendQuality.ts`).
+
+## Notes from the first phone test and 0.1.1
+
+* First test (Xiaomi 24115RA8EI, Android 15, 720p portrait, Wi-Fi): full 720x1280 at 30 fps, hardware encoder `c2.qti.avc.encoder`, no limitation, 0% loss, bitrate ramped 0.6 -> 2.4 Mbps over about 40 s.
+* **"Dropped by compositor" (10 after 30 s)**: the only place a frame is skipped without an error is "all texture slots still held downstream". Both the encoder and the preview hold a texture until they finish with it, and at start-up the MediaCodec encoder and the preview surface take a few hundred ms to come up, so a handful of drops in the first second is expected and harmless (10 frames = 0.33 s at 30 fps). The ring is now 6 slots (was 4) and the counter is split into `droppedNoSlot`, `droppedError` and `lastDropAtFrame`, shown on the Live screen and written to the log when the stream ends. Interpretation: if `lastDropAtFrame` is small (under about 60) it was start-up and does not matter; if it keeps growing, the encoder or preview is not releasing textures fast enough and that needs a look. `droppedError` must be 0.
+* **CSV event rows**: the code always wrote 20 cells per row, but a viewer that collapses runs of commas made the device columns appear under width/height. Missing values are now written as `NA`, so every row has the same columns even after such processing. Event text is in the `event` column.
 
 ## Status: what is verified and what is not
 

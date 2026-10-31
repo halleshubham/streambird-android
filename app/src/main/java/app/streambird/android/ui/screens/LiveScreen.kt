@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
@@ -64,14 +70,20 @@ fun LiveScreen(controller: StreamController) {
         onDispose { view.keepScreenOn = false }
     }
 
-    Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Header(ui)
-
-        val handle = if (ui.phase == LivePhase.LIVE) controller.preview else null
-        Box(Modifier.fillMaxWidth().heightIn(max = 420.dp).aspectRatio(9f / 16f).align(Alignment.CenterHorizontally).clip(RoundedCornerShape(12.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
+    val landscape = ui.request?.orientation?.isLandscape == true
+    val handle = if (ui.phase == LivePhase.LIVE) controller.preview else null
+    val preview: @Composable (Modifier) -> Unit = { mod ->
+        Box(mod.aspectRatio(if (landscape) 16f / 9f else 9f / 16f).clip(RoundedCornerShape(12.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
             if (handle != null) PreviewView(handle) else CircularProgressIndicator()
+            if (ui.phase == LivePhase.LIVE && ui.canFlipCamera) {
+                IconButton(
+                    onClick = controller::flipCamera,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape),
+                ) { Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip camera (now ${if (ui.frontCamera) "front" else "back"})", tint = Color.White) }
+            }
         }
-
+    }
+    val controls: @Composable ColumnScope.() -> Unit = {
         ui.quality?.takeIf { it.limited }?.let { Notice("${it.message}", Amber) }
         if (ui.phase == LivePhase.FAILED || ui.phase == LivePhase.ENDED) {
             Notice(ui.message, if (ui.phase == LivePhase.FAILED) MaterialTheme.colorScheme.error else Ok)
@@ -120,6 +132,23 @@ fun LiveScreen(controller: StreamController) {
         }
     }
 
+    if (landscape) {
+        // Landscape stream: preview on the left, everything else scrolls on the right. Same composition => no restart on rotation.
+        Row(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Header(ui)
+                preview(Modifier.fillMaxWidth())
+            }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp), content = controls)
+        }
+    } else {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Header(ui)
+            preview(Modifier.fillMaxWidth().heightIn(max = 420.dp).align(Alignment.CenterHorizontally))
+            controls()
+        }
+    }
+
     if (confirmEnd) AlertDialog(
         onDismissRequest = { confirmEnd = false },
         title = { Text("End the stream?") },
@@ -159,7 +188,7 @@ private fun StatsPanel(ui: LiveUi) {
             Text("What is really being sent", style = MaterialTheme.typography.titleSmall)
             if (s == null) Text("Waiting for the first stats (2 s)...", style = MaterialTheme.typography.bodySmall)
             else {
-                KeyValue("Sent size", "${s.width}x${s.height}" + (tier?.let { "  (chosen ${it.width}x${it.height})" } ?: ""), if (warn) Amber else Color.Unspecified)
+                KeyValue("Sent size", "${s.width}x${s.height}" + (tier?.let { "  (chosen ${it.sizeLabel(ui.request!!.orientation)})" } ?: ""), if (warn) Amber else Color.Unspecified)
                 KeyValue("Frame rate", "${Math.round(s.fps)} fps")
                 KeyValue("Bitrate", formatBitrate(ui.kbps?.times(1000)) + (tier?.let { " / max ${it.maxBitrateBps / 1000} kbps" } ?: ""))
                 KeyValue("Limited by", s.limitationReason ?: "none", if (s.limitationReason != null) Amber else Ok)
@@ -169,6 +198,7 @@ private fun StatsPanel(ui: LiveUi) {
                 KeyValue("Encode time", s.avgEncodeMs?.let { String.format(java.util.Locale.US, "%.1f ms/frame", it) } ?: "--")
                 s.availableOutgoingBps?.let { KeyValue("Estimated uplink", formatBitrate(it)) }
                 KeyValue("Dropped by compositor", ui.droppedFrames.toString())
+                if (ui.dropDetail.isNotEmpty()) Text(ui.dropDetail, style = MaterialTheme.typography.bodySmall)
             }
             if (d != null) {
                 KeyValue("Battery", "${d.batteryPct ?: "?"}%  ${d.batteryTempC?.let { "$it C" } ?: ""}${if (d.charging == true) "  charging" else ""}")

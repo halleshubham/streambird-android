@@ -7,10 +7,17 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class TiersTest {
-    @Test fun `tiers follow the web RESOLUTIONS bitrates and are 9 by 16`() {
+    @Test fun `tiers follow the web RESOLUTIONS bitrates, 16 by 9 landscape and 9 by 16 portrait`() {
         assertEquals(listOf(1_000_000, 3_000_000, 6_000_000), StreamTier.entries.map { it.maxBitrateBps })
-        StreamTier.entries.forEach { assertEquals(it.width * 16, it.height * 9) }
-        assertEquals(1920, StreamTier.P1080.height)
+        val L = StreamOrientation.LANDSCAPE; val P = StreamOrientation.PORTRAIT
+        StreamTier.entries.forEach {
+            assertEquals(it.width(L) * 9, it.height(L) * 16)
+            assertEquals(it.width(P) * 16, it.height(P) * 9)
+            assertEquals(it.width(L), it.height(P)); assertEquals(it.height(L), it.width(P))   // canvasSizeFor swaps
+        }
+        assertEquals(listOf("960x540", "1280x720", "1920x1080"), StreamTier.entries.map { it.sizeLabel(L) })
+        assertEquals(listOf("540x960", "720x1280", "1080x1920"), StreamTier.entries.map { it.sizeLabel(P) })
+        assertEquals("landscape", L.wire); assertEquals("portrait", P.wire)
     }
 
     @Test fun `plan max resolution limits tiers`() {
