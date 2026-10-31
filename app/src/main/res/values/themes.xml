@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.StreamBird" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/sb_bg_light</item>
+    </style>
+    <style name="Theme.StreamBird.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/sb_bg_light</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
+        <item name="postSplashScreenTheme">@style/Theme.StreamBird</item>
+    </style>
+</resources>
