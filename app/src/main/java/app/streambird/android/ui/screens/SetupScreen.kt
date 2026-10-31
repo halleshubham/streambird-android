@@ -95,6 +95,10 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
         }
 
         if (s.logoChoice == LogoChoice.BRAND && s.brandAllowed) BrandSetupSection(s.selected, onBrand)
+        AdsSetupBlock(
+            freePlan = s.limits?.watermark == true, useKit = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, destinationIds = s.selected,
+            overrides = s.adOverrides, onChange = { o -> vm.update { it.copy(adOverrides = o) } }, serverUrl = vm.baseUrl,
+        )
         TickerSetupSection(s.tickerText, s.tickerSize) { t, z -> vm.update { it.copy(tickerText = t, tickerSize = z) } }
         ThumbnailPickerSection(s.thumbnailUri) { u -> vm.update { it.copy(thumbnailUri = u) } }
 

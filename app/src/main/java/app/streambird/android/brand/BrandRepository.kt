@@ -78,6 +78,9 @@ class BrandRepository @Inject constructor(
 
     fun assetUrl(assetId: String) = api.assetFileUrl(assetId)
 
+    /** Server origin, for links to the website (billing). */
+    val serverUrl: String get() = assetUrl("x").substringBefore("/api/")
+
     /** Loads plan, kits and library. Throws [ApiException] for 401 / pending so the caller can route it. */
     suspend fun refresh() {
         _state.update { it.copy(loading = true, error = null) }
@@ -131,8 +134,8 @@ class BrandRepository @Inject constructor(
         refresh()
     }
 
-    /** Reads the picked image (<= 4 MB), checks it like the backend would, uploads it as a logo. */
-    suspend fun uploadPicked(uri: Uri): UploadedAsset = withContext(Dispatchers.IO) {
+    /** Reads the picked image (<= 4 MB), checks it like the backend would, uploads it (kind logo or ad). */
+    suspend fun uploadPicked(uri: Uri, kind: String = "logo"): UploadedAsset = withContext(Dispatchers.IO) {
         val cr = context.contentResolver
         val bytes = (cr.openInputStream(uri) ?: throw UploadRefused("Cannot open the chosen image.")).use { readLimited(it, MAX_ASSET_BYTES + 1) }
         val info = when (val c = checkAssetUpload(bytes, allowGif = true)) {
@@ -143,7 +146,7 @@ class BrandRepository @Inject constructor(
             cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
         }.getOrNull()
         val fileName = (display ?: "logo").let { if (it.contains('.')) it else "$it.${info.format.ext}" }
-        val up = api.uploadAsset(bytes, info.format.mime, fileName, kind = "logo", name = display?.substringBeforeLast('.')?.take(120))
+        val up = api.uploadAsset(bytes, info.format.mime, fileName, kind = kind, name = display?.substringBeforeLast('.')?.take(120))
         refresh()
         up
     }

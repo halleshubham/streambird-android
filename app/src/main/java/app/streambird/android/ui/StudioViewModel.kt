@@ -47,6 +47,8 @@ data class StudioUi(
     val tickerText: String = "",
     val tickerSize: app.streambird.android.media.TickerSize = app.streambird.android.media.TickerSize.S,
     /** Streams the server still lists as live that this phone is not publishing (e.g. left by a crash). */
+    /** Per-stream ad changes made on the Setup screen (kit ads apply automatically with the kit). */
+    val adOverrides: Map<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdOverride> = emptyMap(),
     val staleStreams: List<app.streambird.android.data.StreamListItem> = emptyList(),
     val staleNote: String? = null,
 ) {
@@ -152,7 +154,8 @@ class StudioViewModel @Inject constructor(
                 frontCamera = s.frontCamera, h264HighProfile = s.h264HighProfile, forceKeyFrames = s.forceKeyFrames,
                 logoChoice = if (s.logoChoice == LogoChoice.BRAND && !s.brandAllowed) LogoChoice.NONE else s.logoChoice,
                 tickerText = app.streambird.android.media.Ticker.sanitize(s.tickerText), tickerSize = s.tickerSize,
-                brandKitId = brand.selectedKitId.value, thumbnailUri = s.thumbnailUri,
+                brandKitId = brand.selectedKitId.value,
+                adOverrides = s.adOverrides, useKitAds = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, freePlan = s.limits?.watermark == true, thumbnailUri = s.thumbnailUri,
                 liveLinks = s.connections.filter { it.id in s.selected }.associate { it.id to it.liveLinkUrl },
             ),
         )

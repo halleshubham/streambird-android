@@ -28,7 +28,18 @@ import app.streambird.android.media.ConnPhase
 import app.streambird.android.media.WARMUP_SECONDS
 import app.streambird.android.media.classifySendQuality
 import app.streambird.android.media.pickBrandKit
+import app.streambird.android.ads.AdLoadFailure
+import app.streambird.android.ads.AdManual
+import app.streambird.android.ads.AdOverride
+import app.streambird.android.ads.AdPlacement
+import app.streambird.android.ads.mergeStreamAds
+import app.streambird.android.ads.AdSource
+import app.streambird.android.ads.ResolvedAd
+import app.streambird.android.ads.describeAdFailures
+import app.streambird.android.ads.describeSchedule
 import app.streambird.android.data.StreamPrefs
+import app.streambird.android.media.AdInput
+import app.streambird.android.media.AdsConfig
 import app.streambird.android.media.EnginePort
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -70,7 +81,14 @@ data class GoLiveRequest(
     /** News ticker at the bottom of the picture (empty = none) and its S/M/L size. */
     val tickerText: String = "",
     val tickerSize: TickerSize = TickerSize.S,
+    /** Per-stream changes to the kit's ads (switch off, schedule, a picture from the phone). Kit ads apply when [useKitAds] (a kit is in use). */
+    val adOverrides: Map<AdPlacement, AdOverride> = emptyMap(),
+    val useKitAds: Boolean = false,
+    /** Free plan: no custom ads; the StreamBird banner and the "Powered by" mark are drawn. */
+    val freePlan: Boolean = false,
 )
+
+data class LiveAd(val placement: AdPlacement, val manual: AdManual? = null)
 
 enum class LivePhase { IDLE, STARTING, LIVE, ENDING, ENDED, FAILED }
 
@@ -99,6 +117,11 @@ data class LiveUi(
     val dropDetail: String = "",
     /** The camera stopped delivering pictures (the engine is retrying) or failed. */
     val cameraNote: String? = null,
+    /** Ads that run on this stream with their manual state (null = follows the schedule). */
+    val adSlots: List<LiveAd> = emptyList(),
+    /** Ads that could not be loaded / a GIF shown as a still: shown to the host. */
+    val adsNote: String? = null,
+    val freePlan: Boolean = false,
 ) {
     val active get() = phase == LivePhase.STARTING || phase == LivePhase.LIVE || phase == LivePhase.ENDING
 }
@@ -187,6 +210,11 @@ class StreamController @Inject constructor(
             val (logo, logoNote) = loadLogo(req)
             currentCoroutineContext().ensureActive()
             startUpdate(g) { it.copy(logoNote = logoNote) }
+            // Each ad loads on its own: one failing fetch drops only that ad, and the host is told which.
+            val (adInputs, adFailures) = loadAds(req)
+            currentCoroutineContext().ensureActive()
+            startUpdate(g) { it.copy(adSlots = adInputs.map { a -> LiveAd(a.placement) }, adsNote = describeAdFailures(adFailures), freePlan = req.freePlan) }
+            adFailures.forEach { event("ad ${it.placement.wire} failed to load: ${it.reason}", withRow = true) }
 
             log = SampleLog(
                 env.logHeader() + listOf(
@@ -198,6 +226,7 @@ class StreamController @Inject constructor(
                     "force_keyframes_2s" to req.forceKeyFrames.toString(),
                     "ticker" to if (req.tickerText.isBlank()) "off" else "on size=${req.tickerSize.label} len=${req.tickerText.length}",
                     "logo" to "${req.logoChoice} $logoNote",
+                    "ads" to if (req.freePlan) "free plan: StreamBird banner + mark" else adInputs.joinToString(", ") { "${it.placement.wire} ${if (it.enabled) "on" else "off"} ${describeSchedule(it.schedule)}" }.ifEmpty { "none" },
                 ),
             )
 
@@ -207,14 +236,17 @@ class StreamController @Inject constructor(
             tickerSpec = TickerSpec.next(null, req.tickerText, req.tickerSize, android.os.SystemClock.elapsedRealtime())
             startUpdate(g) { it.copy(tickerText = tickerSpec?.text.orEmpty(), tickerSize = req.tickerSize) }
             event("ticker ${if (tickerSpec != null) "on size=${req.tickerSize.label} len=${tickerSpec!!.text.length}" else "off"}", withRow = false)
-            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec))
+            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec, AdsConfig(adInputs, req.freePlan)))
             currentCoroutineContext().ensureActive()
 
             startedAtMs = System.currentTimeMillis()
+            adInputs.forEach { event("ad ${it.placement.wire} ${if (it.enabled) "on" else "off"} (${describeSchedule(it.schedule)})", withRow = true) }
+            if (req.freePlan) event("ad lower_third (StreamBird banner) on, Powered by mark on", withRow = true)
             val live = tryMove(LivePhase.STARTING) {
                 if (gen != g) it else it.copy(phase = LivePhase.LIVE, canFlipCamera = eng.hasBothCameras, frontCamera = eng.frontCamera, message = "Live. Platforms need a few seconds to show the picture.")
             }
             if (!live || gen != g) return // end() claimed the stream meanwhile: it tears everything down
+            eng.startAdClock() // the ad clock starts at 0 on the real go-live and is never restarted by a reconnect
             event("LIVE", withRow = true)
             armJob = scope.launch { armReconnector(stream.id, g) }
             pollJob = scope.launch { pollStatus(stream.id, g) }
@@ -359,6 +391,7 @@ class StreamController @Inject constructor(
         override fun onCameraProblem(text: String) { _ui.update { if (it.phase == LivePhase.LIVE) it.copy(cameraNote = text) else it } }
         override fun onCameraRecovered() { _ui.update { it.copy(cameraNote = null) } }
         override fun onCameraFatal(text: String) { end(reason = text) }
+        override fun onAdNote(text: String) { _ui.update { it.copy(adsNote = listOfNotNull(it.adsNote, text).joinToString("\n")) } }
     }
 
     // ---- reconnect (network change / dead transport) ----
@@ -404,6 +437,15 @@ class StreamController @Inject constructor(
         event("SIMULATED network drop", withRow = true)
         engine?.simulateDrop()
     }
+
+    /** Show now / Hide / Follow schedule for one ad (never saved). */
+    fun setAdManual(p: AdPlacement, m: AdManual?) {
+        engine?.setAdManual(p, m)
+        _ui.update { it.copy(adSlots = it.adSlots.map { a -> if (a.placement == p) a.copy(manual = m) else a }) }
+        event("ad ${p.wire} " + when (m) { AdManual.SHOWN -> "shown by hand"; AdManual.HIDDEN -> "hidden by hand"; null -> "follows the schedule" }, withRow = true)
+    }
+
+    fun dismissAdsNote() = _ui.update { it.copy(adsNote = null) }
 
     /** Live ticker edit: text and size apply to the running picture without restarting anything. */
     fun setTicker(rawText: String, size: TickerSize) {
@@ -470,6 +512,35 @@ class StreamController @Inject constructor(
     /** The ended summary returns to the start by itself after a few seconds (or on Done / Back); an old timer never touches a later stream. */
     private fun scheduleAutoReturn(g: Int) {
         scope.launch { delay(autoReturnMs); if (gen == g && _ui.value.phase == LivePhase.ENDED) acknowledge() }
+    }
+
+    // ---- ads ----
+
+    /** Loads every custom ad independently (library file via the API, or the phone picture from memory). Never on Free. */
+    private suspend fun loadAds(req: GoLiveRequest): Pair<List<AdInput>, List<AdLoadFailure>> {
+        if (req.freePlan) return emptyList<AdInput>() to emptyList()
+        val inputs = ArrayList<AdInput>(); val failures = ArrayList<AdLoadFailure>()
+        // The kit (fresh from the server, same choice as the logo) supplies the ads unless the stream runs without a kit.
+        var kitAds: List<app.streambird.android.data.KitAd>? = null
+        if (req.useKitAds) {
+            try {
+                val kits = api.brandKits()
+                kitAds = (kits.firstOrNull { it.id == req.brandKitId } ?: pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds }))?.ads
+            } catch (e: CancellationException) { throw e } catch (t: Throwable) {
+                failures.add(AdLoadFailure(AdPlacement.LOWER_THIRD, "brand kit ads unavailable: ${(t as? ApiException)?.message ?: t.message}"))
+            }
+        }
+        for (a in mergeStreamAds(kitAds, req.adOverrides, freePlan = false)) {
+            try {
+                val bytes = if (a.source == AdSource.PHONE) a.phone!!.bytes else api.assetFile(a.assetId!!)
+                inputs.add(AdInput(a.placement, bytes, a.enabled, a.schedule))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                failures.add(AdLoadFailure(a.placement, (t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName))
+            }
+        }
+        return inputs to failures
     }
 
     // ---- logo ----

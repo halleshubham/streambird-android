@@ -65,6 +65,19 @@ data class BrandKit(
     val lowerThirdStyle: String = "accent",
     val isDefault: Boolean = false,
     val connectionIds: List<String> = emptyList(),
+    /** Up to three ads (lower_third, side_third, full_screen), one per placement. Absent on older servers. */
+    val ads: List<KitAd> = emptyList(),
+)
+
+/** One ad of a brand kit. `everySec` is the HIDDEN time between showings (not the period); continuous ads have null seconds. */
+@Serializable
+data class KitAd(
+    val placement: String,
+    val assetId: String,
+    val enabled: Boolean = true,
+    val mode: String = "continuous",
+    val showSec: Int? = null,
+    val everySec: Int? = null,
 )
 
 @Serializable

@@ -60,6 +60,8 @@ class FrameCompositor(
 
     /** News ticker to draw (null = none). Set from any thread; the bitmap is only re-rendered on the GL thread when its [TickerSpec.version] changes. */
     @Volatile var ticker: TickerSpec? = null
+    /** Advertisements (null = none: the frame is then exactly what it was before ads existed). */
+    @Volatile var ads: AdLayerGl? = null
     private var tickerTex = 0
     private var tickerBarTex = 0
     private var tickerVersion = -1L
@@ -95,6 +97,7 @@ class FrameCompositor(
             frameDrawer!!.drawFrame(frame, drawer!!, cropMatrix(frame), 0, 0, outWidth, outHeight)
             drawLogo()
             drawTicker()
+            ads?.draw(if (ticker != null) tickerBarPx else 0)   // after camera, logo and ticker; the Free "Powered by" mark is drawn last inside
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             // The texture is consumed from other GL contexts (encoder, preview): make sure the writes are visible.
             GLES20.glFinish()
@@ -200,7 +203,7 @@ class FrameCompositor(
     private fun freeTicker() {
         if (tickerTex != 0) GLES20.glDeleteTextures(1, intArrayOf(tickerTex), 0)
         if (tickerBarTex != 0) GLES20.glDeleteTextures(1, intArrayOf(tickerBarTex), 0)
-        tickerTex = 0; tickerBarTex = 0; tickerVersion = -1
+        tickerTex = 0; tickerBarTex = 0; tickerVersion = -1; tickerBarPx = 0
     }
 
     private fun setupTex() {
@@ -239,6 +242,7 @@ class FrameCompositor(
                 }
                 if (logoTexture != 0) GLES20.glDeleteTextures(1, intArrayOf(logoTexture), 0)
                 freeTicker()
+                runCatching { ads?.release() }
                 drawer?.release(); frameDrawer?.release(); yuv?.release()
             }
             slots = emptyList(); drawer = null

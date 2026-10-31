@@ -26,6 +26,7 @@ class BrandViewModel @Inject constructor(
 ) : ViewModel() {
     val state = repo.state
     val selectedKitId = repo.selectedKitId
+    val serverUrl: String get() = repo.serverUrl
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -64,8 +65,8 @@ class BrandViewModel @Inject constructor(
     }
     fun deleteKit(id: String, onDone: () -> Unit) = run("Brand kit deleted.", onDone) { repo.deleteKit(id) }
     fun deleteAsset(id: String) = run("File deleted.") { repo.deleteAsset(id) }
-    fun upload(uri: Uri, onDone: (String) -> Unit) {
+    fun upload(uri: Uri, kind: String = "logo", onDone: (String) -> Unit) {
         var id: String? = null
-        run("Logo uploaded.", onDone = { id?.let(onDone) }) { id = repo.uploadPicked(uri).id }
+        run(if (kind == "ad") "Ad picture uploaded." else "Logo uploaded.", onDone = { id?.let(onDone) }) { id = repo.uploadPicked(uri, kind).id }
     }
 }

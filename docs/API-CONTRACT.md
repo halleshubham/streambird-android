@@ -97,3 +97,11 @@ Sources: `src/assets/assets.controller.ts`, `brand-kits.service.ts`, `assets.ser
 | `GET /api/platform-connections` | `liveLinkUrl` per YouTube/Facebook connection (`https://streambird.app/stream/<slug>`) | Shown with Copy/Share on Channels, shared from Live. Fallback: destination `watchUrl` from `/streams/:id/status`. |
 
 Brand kit choice for a stream (web `useHostStudio.ts` auto-apply): the kit the user picked on Setup; else the kit of the first ticked destination that has one; else the account default; else the first kit.
+
+## Ads (0.3.0)
+
+Source: the web studio's ads.ts / backend `brand-kits.service.ts` + DTOs. Asset kind `ad`: `POST /api/assets` multipart `kind=ad`, `file`, optional `name` (PNG/JPG/WebP/GIF, <= 4 MB, <= 8192 px); `GET /api/assets` lists them (`usedBy` includes ad usage); deleting a used file is `409 "used by the brand kit(s) ..."` (shown verbatim).
+
+`GET /api/brand-kits` (and the POST/PATCH responses): every kit has `ads: [{placement: "lower_third"|"side_third"|"full_screen", assetId, enabled, mode: "continuous"|"interval", showSec, everySec}]` ordered lower_third, side_third, full_screen; continuous ads have `showSec`/`everySec` = null. `everySec` is the HIDDEN time between showings (not the period).
+
+`POST`/`PATCH /api/brand-kits`: `ads` has REPLACE-ALL semantics: omitted or null = unchanged (POST: none), `[]` = clear. The app sends `ads` ONLY when the user changed them, so other edits never touch them, and sends `[]` for "Remove ads". Rules: max 3, one per placement, assets owned and of kind `ad`, `showSec` integer 1..3600, `everySec` integer 1..86400, interval needs both (400 otherwise); a non-empty `ads` on a plan with `watermark: true` (Free) is `403 "Your own ads are on the paid plans..."` (clearing is always allowed); kits also need `assetStorageMb > 0`; a logo/wallpaper cannot use an `ad` asset (400); conflicts 409. The app does not call the kit editor's ad actions until `GET /plans/me` has loaded (`watermark`, `assetStorageMb`).

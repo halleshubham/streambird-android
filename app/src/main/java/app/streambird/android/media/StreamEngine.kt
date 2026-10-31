@@ -1,6 +1,7 @@
 package app.streambird.android.media
 
 import android.content.Context
+import app.streambird.android.ads.AdPlacement
 import app.streambird.android.whip.Sdp
 import app.streambird.android.whip.WhipClient
 import kotlinx.coroutines.CoroutineScope
@@ -55,7 +56,11 @@ data class EngineConfig(
     val iceServers: List<IceServerSpec>,
     val whipUrl: String,
     val ticker: TickerSpec? = null,
+    val ads: AdsConfig? = null,
 )
+
+/** Custom ads of this stream (empty on Free) and the Free-plan flag (StreamBird banner + "Powered by" mark instead). */
+class AdsConfig(val inputs: List<AdInput>, val freePlan: Boolean)
 
 val EngineConfig.outWidth get() = tier.width(orientation)
 val EngineConfig.outHeight get() = tier.height(orientation)
@@ -75,6 +80,8 @@ interface EngineListener {
     fun onCameraRecovered() {}
     /** The camera could not be brought back: the stream has no picture and cannot continue. */
     fun onCameraFatal(text: String) {}
+    /** A note about an ad (e.g. an animated GIF that is shown as a still). */
+    fun onAdNote(text: String) {}
 }
 
 /**
@@ -185,6 +192,11 @@ class StreamEngine(
         val source = f.createVideoSource(false).also { videoSource = it }
         val comp = FrameCompositor(source.capturerObserver, h, cfg.outWidth, cfg.outHeight, cfg.logo, unmirror = cfg.frontCamera)
         comp.ticker = cfg.ticker
+        cfg.ads?.takeIf { it.freePlan || it.inputs.isNotEmpty() }?.let { ac ->
+            val layer = AdLayerGl(cfg.outWidth, cfg.outHeight, { t -> listener.onEvent(t) }, { t -> listener.onEvent(t); listener.onAdNote(t) })
+            layer.prepare(context, ac.inputs, ac.freePlan)
+            comp.ads = layer
+        }
         compositor = comp
 
         val enumerator = Camera2Enumerator(context).also { this.enumerator = it }
@@ -474,6 +486,9 @@ class StreamEngine(
             trace("applySenderParameters failed: ${t.message ?: t.javaClass.simpleName}")
         }
     }
+
+    override fun startAdClock() { compositor?.ads?.clockStartMs = android.os.SystemClock.elapsedRealtime() }
+    override fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?) { compositor?.ads?.setManual(p, m) }
 
     override fun setPicturePriority(p: PicturePriority) {
         val cfg = config ?: return

@@ -92,3 +92,29 @@ jobs:
             Install: download `streambird-brand-debug.apk` on the phone, allow "install unknown apps" for the browser, open it.
             See docs/FEATURES.md.
           files: streambird-brand-debug.apk
+
+      # Ads build: its own pre-release (ads-latest); the spike-latest and brand-latest steps above are untouched.
+      - name: Name the ads APK
+        if: github.ref == 'refs/heads/claude/android-ads'
+        run: cp app/build/outputs/apk/debug/app-debug.apk streambird-ads-debug.apk
+
+      - name: Move the ads-latest tag to this commit
+        if: github.ref == 'refs/heads/claude/android-ads'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f ads-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/ads-latest
+
+      - name: Publish APK to the ads-latest pre-release
+        if: github.ref == 'refs/heads/claude/android-ads'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ads-latest
+          name: Ads build (latest)
+          prerelease: true
+          body: |
+            Debug APK of StreamBird Android 0.3.0-ads (advertisements: three placements, images and animated GIFs, brand-kit ads with per-stream override, Free-plan StreamBird banner), built from ${{ github.sha }} (${{ github.ref_name }}).
+            Install: download `streambird-ads-debug.apk` on the phone, allow "install unknown apps" for the browser, open it.
+            See docs/FEATURES.md.
+          files: streambird-ads-debug.apk
