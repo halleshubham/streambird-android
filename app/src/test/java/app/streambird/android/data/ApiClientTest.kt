@@ -1,6 +1,7 @@
 package app.streambird.android.data
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -12,6 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
+import app.streambird.android.media.StreamOrientation
 
 /** Sample JSON is copied from the backend DTOs / controllers (see docs/API-CONTRACT.md for the source of each). */
 class ApiClientTest {
@@ -178,5 +180,18 @@ class ApiClientTest {
             http.newCall(okhttp3.Request.Builder().url(other.url("/x")).build()).execute().close()
             assertNull(other.takeRequest().getHeader("Origin"))
         } finally { other.shutdown() }
+    }
+
+    @Test fun `landscape stream request carries orientation landscape`() = runBlocking {
+        server.enqueue(json("""{"id":"s2","title":"L","status":"live","whipUrl":"https://mtx/x/whip","orientation":"landscape","destinations":[]}"""))
+        val s = api.createStream(CreateStreamRequest("L", "unlisted", StreamOrientation.LANDSCAPE.wire, listOf("c1", "c2")))
+        assertEquals("""{"title":"L","visibility":"unlisted","orientation":"landscape","destinationConnectionIds":["c1","c2"]}""", server.takeRequest().body.readUtf8())
+        assertEquals("landscape", s.orientation)
+    }
+
+    @Test fun `default valued fields are still serialised (encodeDefaults regression)`() {
+        val body = ApiJson.encodeToString(CreateStreamRequest(title = "t", destinationConnectionIds = listOf("c1")))
+        assertTrue(body, body.contains(""""visibility":"public"""") && body.contains(""""orientation":"portrait""""))
+        assertTrue(ApiJson.encodeToString(CreateStreamRequest("t", orientation = "landscape", destinationConnectionIds = listOf("c"))).contains(""""orientation":"landscape""""))
     }
 }

@@ -34,6 +34,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.streambird.android.media.CodecProbe
 import app.streambird.android.media.PicturePriority
+import app.streambird.android.media.StreamOrientation
 import app.streambird.android.media.StreamTier
 import app.streambird.android.stream.LogoChoice
 import app.streambird.android.ui.StudioViewModel
@@ -62,10 +63,14 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
         Text("Visibility (YouTube)", style = MaterialTheme.typography.titleSmall)
         Segmented(listOf("public", "unlisted", "private"), s.visibility, { it.replaceFirstChar { c -> c.uppercase() } }, { v -> vm.update { it.copy(visibility = v) } })
 
-        Text("Quality (portrait 9:16, 30 fps)", style = MaterialTheme.typography.titleSmall)
+        Text("Shape (fixed once the stream is created)", style = MaterialTheme.typography.titleSmall)
+        Segmented(StreamOrientation.entries, s.orientation, { it.label }, { o -> vm.update { it.copy(orientation = o) } })
+        if (s.orientation.isLandscape) Text("Landscape: the screen turns to landscape while you stream. Hold the phone sideways.", style = MaterialTheme.typography.bodySmall)
+
+        Text("Quality (${s.orientation.label.substringBefore(" ").lowercase()}, 30 fps)", style = MaterialTheme.typography.titleSmall)
         Segmented(
             StreamTier.entries, s.tier, { it.label }, { t -> vm.update { it.copy(tier = t) } },
-            sub = { "${it.width}x${it.height}" }, enabled = { it in s.allowedTiers },
+            sub = { it.sizeLabel(s.orientation) }, enabled = { it in s.allowedTiers },
         )
         Text(
             "Up to ${s.tier.maxBitrateBps / 1_000_000} Mbps" + if (s.allowedTiers.size < StreamTier.entries.size) ". Higher qualities need a higher plan." else "",

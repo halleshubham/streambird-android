@@ -24,7 +24,7 @@ class SampleLogTest {
         assertEquals("81", row[15]); assertEquals("36.4", row[16]); assertEquals("LIGHT", row[17]); assertEquals("wifi", row[18])
         val ev = lines.last().split(",")
         assertEquals(SampleLog.COLUMNS.size, ev.size)
-        assertEquals("cellular", ev[18]); assertEquals("network wifi -> cellular", ev[19]); assertEquals("", ev[2])
+        assertEquals("cellular", ev[18]); assertEquals("network wifi -> cellular", ev[19]); assertEquals("NA", ev[2])
     }
 
     @Test fun `csv escaping`() {
@@ -32,5 +32,18 @@ class SampleLogTest {
         assertEquals("\"a,b\"", SampleLog.csv("a,b"))
         assertEquals("\"say \"\"hi\"\"\"", SampleLog.csv("say \"hi\""))
         assertTrue(SampleLog(emptyList()).toCsv().contains("timestamp_utc"))
+    }
+
+    @Test fun `event rows keep device readings in their own columns even if empty runs are collapsed`() {
+        val log = SampleLog(emptyList())
+        log.add(LogRow(1_700_000_000_000, 0, null, null, false, DeviceReading(40, 33.0, false, "NONE", "wifi"), event = "LIVE"))
+        val cells = log.toCsv().trim().lines().last().split(",")
+        assertEquals(SampleLog.COLUMNS.size, cells.size)
+        assertEquals("NA", cells[SampleLog.COLUMNS.indexOf("width")])
+        assertEquals("40", cells[SampleLog.COLUMNS.indexOf("battery_pct")])
+        assertEquals("NONE", cells[SampleLog.COLUMNS.indexOf("thermal")])
+        assertEquals("LIVE", cells[SampleLog.COLUMNS.indexOf("event")])
+        // no run of two commas anywhere, so a collapsing viewer cannot shift columns
+        assertTrue(!log.toCsv().trim().lines().last().contains(",,"))
     }
 }

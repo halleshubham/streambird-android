@@ -38,7 +38,7 @@ class FrameCompositor(
     private val outHeight: Int,
     private val logo: LogoOverlay?,
     /** Camera drivers/libwebrtc mirror front-camera frames for a selfie preview; the broadcast should not be mirrored. */
-    private val unmirror: Boolean,
+    unmirror: Boolean,
 ) : CapturerObserver {
 
     private class Slot(val texture: Int, val fbo: Int) { val busy = AtomicBoolean(false) }
@@ -50,8 +50,18 @@ class FrameCompositor(
     private var logoTexture = 0
     private var released = false
 
-    @Volatile var droppedFrames = 0L; private set
+    /** Front-camera frames arrive mirrored (selfie style); the published picture must not be. Changed by a live camera switch. */
+    @Volatile var unmirror: Boolean = unmirror
+
+    /** Frames skipped because all texture slots were still held downstream (encoder start-up, slow preview). */
+    @Volatile var droppedNoSlot = 0L; private set
+    /** Frames lost to an exception in the GL code (should stay 0). */
+    @Volatile var droppedError = 0L; private set
     @Volatile var composedFrames = 0L; private set
+    /** composedFrames at the time of the most recent drop: a value near 0 means the drops were start-up only. */
+    @Volatile var lastDropAtFrame = -1L; private set
+    @Volatile var lastError: String? = null; private set
+    val droppedFrames: Long get() = droppedNoSlot + droppedError
 
     override fun onCapturerStarted(success: Boolean) = target.onCapturerStarted(success)
     override fun onCapturerStopped() = target.onCapturerStopped()
@@ -62,7 +72,7 @@ class FrameCompositor(
         try {
             ensureGl()
             val slot = slots.firstOrNull { it.busy.compareAndSet(false, true) }
-            if (slot == null) { droppedFrames++; return }
+            if (slot == null) { droppedNoSlot++; lastDropAtFrame = composedFrames; return }
 
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, slot.fbo)
             GLES20.glViewport(0, 0, outWidth, outHeight)
@@ -85,7 +95,7 @@ class FrameCompositor(
             composedFrames++
         } catch (t: Throwable) {
             // Never throw into the camera thread; the Live screen shows the drop counter.
-            droppedFrames++
+            droppedError++; lastDropAtFrame = composedFrames; lastError = t.toString()
         }
     }
 
@@ -165,7 +175,7 @@ class FrameCompositor(
     }
 
     companion object {
-        private const val RING = 4
+        private const val RING = 6
         private const val MARGIN = 16
 
         /** Bitmaps are uploaded top-row-first, GL textures are bottom-row-first: flip t. Column-major 4x4. */

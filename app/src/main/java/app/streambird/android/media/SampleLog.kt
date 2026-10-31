@@ -46,25 +46,27 @@ class SampleLog(private val header: List<Pair<String, String>>) {
     private fun line(r: LogRow): String {
         val s = r.stats
         val d = r.device
+        // Always exactly COLUMNS.size cells. Missing values are written as NA (not empty), so tools that collapse
+        // runs of commas cannot shift the battery/network values into the width/height columns of event rows.
         val cells = listOf(
             iso(r.timeMs), r.elapsedS.toString(),
-            s?.width?.toString().orEmpty(), s?.height?.toString().orEmpty(),
-            s?.fps?.let { f1(it) }.orEmpty(),
-            r.kbps?.let { Math.round(it).toString() }.orEmpty(),
-            s?.limitationReason ?: if (s != null) "none" else "",
-            if (s == null) "" else if (r.warning) "WARN" else "ok",
-            s?.encoderImpl.orEmpty(),
-            s?.rttMs?.let { f1(it) }.orEmpty(),
-            s?.lossPct?.let { f1(it) }.orEmpty(),
-            s?.nackCount?.toString().orEmpty(),
-            s?.pliCount?.toString().orEmpty(),
-            s?.keyFramesEncoded?.toString().orEmpty(),
-            s?.avgEncodeMs?.let { f1(it) }.orEmpty(),
-            d.batteryPct?.toString().orEmpty(),
-            d.batteryTempC?.let { f1(it) }.orEmpty(),
-            d.thermal.orEmpty(),
+            s?.width?.toString() ?: NA, s?.height?.toString() ?: NA,
+            s?.fps?.let { f1(it) } ?: NA,
+            r.kbps?.let { Math.round(it).toString() } ?: NA,
+            s?.let { it.limitationReason ?: "none" } ?: NA,
+            if (s == null) NA else if (r.warning) "WARN" else "ok",
+            s?.encoderImpl ?: NA,
+            s?.rttMs?.let { f1(it) } ?: NA,
+            s?.lossPct?.let { f1(it) } ?: NA,
+            s?.nackCount?.toString() ?: NA,
+            s?.pliCount?.toString() ?: NA,
+            s?.keyFramesEncoded?.toString() ?: NA,
+            s?.avgEncodeMs?.let { f1(it) } ?: NA,
+            d.batteryPct?.toString() ?: NA,
+            d.batteryTempC?.let { f1(it) } ?: NA,
+            d.thermal ?: NA,
             d.network,
-            r.event.orEmpty(),
+            r.event ?: "",
         )
         return cells.joinToString(",") { csv(it) }
     }
@@ -75,6 +77,8 @@ class SampleLog(private val header: List<Pair<String, String>>) {
             "rtt_ms", "loss_pct", "nack_count", "pli_count", "keyframes", "avg_encode_ms",
             "battery_pct", "battery_temp_c", "thermal", "network", "event",
         )
+
+        const val NA = "NA"
 
         private fun f1(v: Double) = String.format(Locale.US, "%.1f", v)
 

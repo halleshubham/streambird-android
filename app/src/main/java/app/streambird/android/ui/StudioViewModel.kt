@@ -8,6 +8,7 @@ import app.streambird.android.data.AuthRepository
 import app.streambird.android.data.EffectiveLimits
 import app.streambird.android.data.PlatformConnection
 import app.streambird.android.media.PicturePriority
+import app.streambird.android.media.StreamOrientation
 import app.streambird.android.media.StreamTier
 import app.streambird.android.media.canSelectMore
 import app.streambird.android.stream.GoLiveRequest
@@ -34,6 +35,7 @@ data class StudioUi(
     val title: String = "",
     val visibility: String = "public",
     val tier: StreamTier = StreamTier.P720,
+    val orientation: StreamOrientation = StreamOrientation.PORTRAIT,
     val priority: PicturePriority = PicturePriority.MAINTAIN_RESOLUTION,
     val frontCamera: Boolean = false,
     val h264HighProfile: Boolean = true,
@@ -106,7 +108,7 @@ class StudioViewModel @Inject constructor(
         val s = _ui.value
         controller.start(
             GoLiveRequest(
-                title = s.title, visibility = s.visibility, destinationIds = s.selected, tier = s.tier, priority = s.priority,
+                title = s.title, visibility = s.visibility, destinationIds = s.selected, tier = s.tier, orientation = s.orientation, priority = s.priority,
                 frontCamera = s.frontCamera, h264HighProfile = s.h264HighProfile, forceKeyFrames = s.forceKeyFrames,
                 logoChoice = if (s.logoChoice == LogoChoice.BRAND && !s.brandAllowed) LogoChoice.NONE else s.logoChoice,
                 brandKitId = brand.selectedKitId.value, thumbnailUri = s.thumbnailUri,
