@@ -28,6 +28,7 @@ data class AssetLibrary(
     val items: List<AssetItem> = emptyList(),
 ) {
     val logos get() = items.filter { it.kind == "logo" }
+    val adFiles get() = items.filter { it.kind == "ad" }
 }
 
 /** Response of POST /assets (the stored row; only what the app needs). */

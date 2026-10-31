@@ -41,12 +41,16 @@ import java.util.concurrent.atomic.AtomicInteger
 class StreamControllerTest {
     private class FakeEngine(val gateStart: CompletableDeferred<Unit>? = null, val failStart: Boolean = false) : EnginePort {
         val stops = AtomicInteger(); val starts = AtomicInteger(); val republishes = AtomicInteger()
-        override suspend fun start(cfg: EngineConfig) { starts.incrementAndGet(); if (failStart) error("no camera"); gateStart?.await() }
+        override suspend fun start(cfg: EngineConfig) { lastConfig = cfg; starts.incrementAndGet(); if (failStart) error("no camera"); gateStart?.await() }
         override suspend fun stop() { stops.incrementAndGet(); delay(20) }
         override suspend fun republish() { republishes.incrementAndGet() }
         override fun simulateDrop() {}
         override fun setTicker(spec: TickerSpec?) {}
         override fun setPicturePriority(p: PicturePriority) {}
+        val clockStarts = AtomicInteger(); val manuals = CopyOnWriteArrayList<Pair<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdManual?>>()
+        var lastConfig: EngineConfig? = null
+        override fun startAdClock() { clockStarts.incrementAndGet() }
+        override fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?) { manuals.add(p to m) }
         override fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit) { done(null, false) }
         override val preview: PreviewHandle? = null
         override val droppedFrames = 0L
@@ -89,6 +93,9 @@ class StreamControllerTest {
                 key == "POST /api/streams" -> 201 to """{"id":"s${streamCounter.incrementAndGet()}","title":"t","status":"live","ingestUrl":null,"streamKey":null,"whipUrl":"https://mtx.test/p/whip","visibility":"public","orientation":"portrait","description":null,"scheduledAt":null,"isScheduledEvent":false,"timezone":null,"expectedDurationMinutes":null,"cancelledAt":null,"destinations":[]}"""
                 key.endsWith("/end") -> 201 to """{"id":"s1","title":"t","status":"ended","whipUrl":null,"orientation":"portrait","destinations":[]}"""
                 key.endsWith("/status") -> statusJson()
+                key == "GET /api/brand-kits" -> 200 to """[{"id":"k1","name":"Kit","logoAssetId":null,"logoPosition":"left","logoSize":90,"wallpaperAssetId":null,"wallpaperDim":0,"lowerThirdStyle":"accent","isDefault":true,"connectionIds":[],"ads":[{"placement":"lower_third","assetId":"good","enabled":true,"mode":"continuous","showSec":null,"everySec":null},{"placement":"side_third","assetId":"bad","enabled":true,"mode":"interval","showSec":15,"everySec":180}]}]"""
+                key == "GET /api/assets/good/file" -> 200 to "PNGBYTES"
+                key == "GET /api/assets/bad/file" -> 404 to """{"statusCode":404,"message":"File not found."}"""
                 key.endsWith("/turn-credentials") -> 200 to """{"iceServers":[]}"""
                 else -> 404 to """{"statusCode":404,"message":"Not Found"}"""
             }
@@ -221,5 +228,28 @@ class StreamControllerTest {
         env.triggers?.invoke(Trigger.Stall)                         // a late detection must be ignored
         runBlocking { delay(150) }
         assertEquals(0, engineQueue[0].republishes.get())
+    }
+
+    @Test fun `ads load independently, a failing kit ad is named, the others run, the clock starts at LIVE once`() {
+        controller.start(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true, adOverrides = mapOf(
+            app.streambird.android.ads.AdPlacement.FULL_SCREEN to app.streambird.android.ads.AdOverride(phone = app.streambird.android.ads.PhoneAd(byteArrayOf(1, 2, 3), "p.png", false)),
+        )))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        val ui = controller.ui.value
+        assertEquals(listOf(app.streambird.android.ads.AdPlacement.LOWER_THIRD, app.streambird.android.ads.AdPlacement.FULL_SCREEN), ui.adSlots.map { it.placement })
+        assertTrue(ui.adsNote!!.contains("Left third")); assertFalse(ui.adsNote!!.contains("Lower third"))
+        assertEquals(listOf("lower_third", "full_screen"), engineQueue[0].lastConfig!!.ads!!.inputs.map { it.placement.wire })
+        assertEquals(1, engineQueue[0].clockStarts.get())
+        controller.setAdManual(app.streambird.android.ads.AdPlacement.LOWER_THIRD, app.streambird.android.ads.AdManual.HIDDEN)
+        assertEquals(app.streambird.android.ads.AdManual.HIDDEN, controller.ui.value.adSlots.first().manual)
+        assertEquals(1, engineQueue[0].manuals.size)
+    }
+
+    @Test fun `free plan carries no custom ads, only the StreamBird banner flag`() {
+        controller.start(req.copy(freePlan = true, useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        val cfg = engineQueue[0].lastConfig!!.ads!!
+        assertTrue(cfg.freePlan); assertTrue(cfg.inputs.isEmpty())
+        assertEquals(0, server.count("GET /api/brand-kits"))           // nothing is even fetched
     }
 }

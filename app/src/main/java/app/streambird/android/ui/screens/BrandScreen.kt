@@ -49,7 +49,8 @@ fun BrandScreen(connections: List<PlatformConnection>, serverUrl: String, onBack
     val ctx = LocalContext.current
     var deleteAsset by remember { mutableStateOf<AssetItem?>(null) }
     LaunchedEffect(Unit) { vm.refresh() }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) vm.upload(uri) { } }
+    var uploadKind by remember { mutableStateOf("logo") }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) vm.upload(uri, uploadKind) { } }
     val labels = connections.associate { it.id to it.label }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -141,9 +142,13 @@ fun BrandScreen(connections: List<PlatformConnection>, serverUrl: String, onBack
                         if (lib.items.isEmpty()) Text("No files yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     OutlinedButton(
-                        onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        onClick = { uploadKind = "logo"; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         enabled = st.storageEnabled && !busy, modifier = Modifier.fillMaxWidth(),
                     ) { Text("Upload a logo from the gallery") }
+                    OutlinedButton(
+                        onClick = { uploadKind = "ad"; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        enabled = st.storageEnabled && !busy && app.streambird.android.ads.adsAccess(st.plan) == app.streambird.android.ads.AdsAccess.EDITABLE, modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Upload an ad picture or GIF") }
                     Text("PNG, JPG or WebP (GIF for logos), up to 4 MB and 8192 px.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }

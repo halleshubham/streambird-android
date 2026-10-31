@@ -62,6 +62,7 @@ fun LiveScreen(controller: StreamController) {
     val ui by controller.ui.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     var confirmEnd by remember { mutableStateOf(false) }
+    var showAds by remember { mutableStateOf(false) }
 
     // Keep the screen on while the stream (and its preview) is running.
     val view = LocalView.current
@@ -113,6 +114,10 @@ fun LiveScreen(controller: StreamController) {
             }
         }
 
+        if (ui.phase == LivePhase.LIVE && ui.adSlots.isNotEmpty() && !ui.freePlan) {
+            OutlinedButton(onClick = { showAds = true }, modifier = Modifier.fillMaxWidth()) { Text("Ads") }
+        }
+        ui.adsNote?.let { AdsNoteBar(it, controller::dismissAdsNote) }
         if (ui.phase == LivePhase.LIVE) TickerControl(ui.tickerText, ui.tickerSize) { t, z -> controller.setTicker(t, z) }
 
         val links = resolveLiveLinks(
@@ -193,6 +198,8 @@ fun LiveScreen(controller: StreamController) {
             bottomBar()
         }
     }
+
+    if (showAds) AdsLiveSheet(ui.adSlots, controller::setAdManual) { showAds = false }
 
     if (confirmEnd) AlertDialog(
         onDismissRequest = { confirmEnd = false },

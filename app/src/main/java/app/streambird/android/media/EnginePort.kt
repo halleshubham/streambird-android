@@ -12,6 +12,10 @@ interface EnginePort {
     fun simulateDrop()
     fun setTicker(spec: TickerSpec?)
     fun setPicturePriority(p: PicturePriority)
+    /** The ad clock starts at 0 on the real go-live and keeps counting through a quiet republish. */
+    fun startAdClock()
+    /** Show now / Hide (null = follow the schedule). Never saved. */
+    fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?)
     fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit)
     val preview: PreviewHandle?
     val droppedFrames: Long

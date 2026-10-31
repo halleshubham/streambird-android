@@ -142,3 +142,19 @@ fun StaleStreamsCard(streams: List<app.streambird.android.data.StreamListItem>, 
         }
     }
 }
+
+/** Setup: ads of the kit in use (automatic) with per-stream changes; Free shows the banner explanation. */
+@Composable
+fun AdsSetupBlock(
+    freePlan: Boolean, useKit: Boolean, destinationIds: Set<String>,
+    overrides: Map<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdOverride>,
+    onChange: (Map<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdOverride>) -> Unit,
+    serverUrl: String,
+) {
+    val vm: BrandViewModel = hiltViewModel()
+    val st by vm.state.collectAsStateWithLifecycle()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.LaunchedEffect(useKit) { if (useKit && !st.loaded && !st.loading) vm.refresh() }
+    val kit = if (useKit && !freePlan) vm.repo.effectiveKit(destinationIds, st) else null
+    AdsSetupSection(freePlan, kit?.ads.orEmpty(), overrides, onChange) { openUrl(ctx, "$serverUrl/billing") }
+}

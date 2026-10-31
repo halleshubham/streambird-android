@@ -35,6 +35,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.streambird.android.ads.AdPlacement
+import app.streambird.android.ads.AdsAccess
+import app.streambird.android.ads.adsAccess
+import app.streambird.android.ads.adsEdited
+import app.streambird.android.ads.kitAdsFromSlots
+import app.streambird.android.ads.slotsFromKit
+import app.streambird.android.ads.validateSlots
 import app.streambird.android.data.BrandKitPayload
 import app.streambird.android.data.KitDraft
 import app.streambird.android.data.PlatformConnection
@@ -61,12 +68,21 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
     var style by remember(key) { mutableStateOf(original?.lowerThirdStyle ?: "accent") }
     var isDefault by remember(key) { mutableStateOf(original?.isDefault ?: false) }
     var channels by remember(key) { mutableStateOf(original?.connectionIds?.toSet() ?: emptySet()) }
+    var adSlots by remember(key) { mutableStateOf(slotsFromKit(original?.ads.orEmpty())) }
+    var adUploadFor by remember { mutableStateOf<AdPlacement?>(null) }
+    val adPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val p = adUploadFor; adUploadFor = null
+        if (uri != null && p != null) vm.upload(uri, "ad") { id -> adSlots = adSlots.map { if (it.placement == p) it.copy(assetId = id) else it } }
+    }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var showLibrary by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) vm.upload(uri) { logoId = it } }
 
     val kitNames = st.kits.flatMap { k -> k.connectionIds.map { it to k } }.toMap()
-    val canSave = name.isNotBlank() && name.length <= 80 && !busy && !st.blocked
+    val access = adsAccess(st.plan)
+    val adsError = if (access == AdsAccess.EDITABLE) validateSlots(adSlots) else null
+    val canSave = name.isNotBlank() && name.length <= 80 && !busy && !st.blocked && adsError == null
     val title = if (kitId == null) "New brand kit" else "Edit brand kit"
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -140,9 +156,21 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
             Text("Unticked channels go back to the account default.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
+        KitAdsSection(
+            access = access, savedAds = original?.ads.orEmpty(), slots = adSlots, onSlots = { adSlots = it },
+            library = st.library?.adFiles.orEmpty(), loader = vm.repo.imageLoader, assetUrl = vm.repo::assetUrl,
+            storageEnabled = st.storageEnabled,
+            onUpload = { p -> adUploadFor = p; adPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            onRemoveAds = { original?.let { o -> vm.save(o, KitDraft(o.name, o.logoAssetId, o.logoPosition, o.logoSize, o.lowerThirdStyle, o.isDefault, ads = emptyList()), o.connectionIds.toSet()) { } } },
+            onBilling = { openUrl(ctx, "${vm.serverUrl}/billing") }, busy = busy,
+        )
+        adsError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+
         Button(
             onClick = {
-                vm.save(original, KitDraft(name, logoId, position, size.toInt(), style, isDefault), channels) { onBack() }
+                // `ads` is sent ONLY when the user changed them (omitted otherwise: other edits never touch the ads).
+                val ads = if (access == AdsAccess.EDITABLE && adsEdited(original?.ads.orEmpty(), adSlots)) kitAdsFromSlots(adSlots) else null
+                vm.save(original, KitDraft(name, logoId, position, size.toInt(), style, isDefault, ads), channels) { onBack() }
             },
             enabled = canSave && (kitId == null || original != null), modifier = Modifier.fillMaxWidth(),
         ) { Text(if (kitId == null) "Create brand kit" else "Save changes") }

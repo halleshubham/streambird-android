@@ -18,6 +18,8 @@ data class KitDraft(
     val logoSize: Int,
     val lowerThirdStyle: String,
     val isDefault: Boolean,
+    /** null = the user did not touch the ads: `ads` is OMITTED from the request (replace-all semantics: omitted = unchanged). [] clears them. */
+    val ads: List<KitAd>? = null,
 )
 
 object BrandKitPayload {
@@ -42,6 +44,7 @@ object BrandKitPayload {
         put("wallpaperAssetId", original.wallpaperAssetId?.let { JsonPrimitive(it) } ?: JsonNull)
         put("wallpaperDim", original.wallpaperDim)
         if (d.isDefault && !original.isDefault) put("isDefault", true)
+        d.ads?.let { put("ads", adsJson(it)) }
     }
 
     /** POST /brand-kits body (no wallpaper: the backend defaults it). */
@@ -52,6 +55,18 @@ object BrandKitPayload {
         put("logoSize", clampSize(d.logoSize))
         put("lowerThirdStyle", d.lowerThirdStyle)
         if (d.isDefault) put("isDefault", true)
+        d.ads?.let { put("ads", adsJson(it)) }
+    }
+
+    /** The exact shape the backend expects: placement, assetId, enabled, mode, showSec, everySec (null for continuous). */
+    fun adsJson(ads: List<KitAd>) = kotlinx.serialization.json.buildJsonArray {
+        ads.forEach { a ->
+            add(buildJsonObject {
+                put("placement", a.placement); put("assetId", a.assetId); put("enabled", a.enabled); put("mode", a.mode)
+                put("showSec", a.showSec?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("everySec", a.everySec?.let { JsonPrimitive(it) } ?: JsonNull)
+            })
+        }
     }
 }
 
