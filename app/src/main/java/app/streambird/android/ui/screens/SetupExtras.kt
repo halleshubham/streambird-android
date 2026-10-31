@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -117,5 +118,27 @@ fun CrashReportCard() {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { app.streambird.android.diag.CrashReporter.share(ctx, r) }) { Text("Share crash report") }
         OutlinedButton(onClick = { app.streambird.android.diag.CrashReporter.dismiss(ctx); report = null }) { Text("Dismiss") }
+    }
+}
+
+/** "A stream is still marked live": left behind by a crash or another device. End it, or dismiss if you are streaming elsewhere on purpose. */
+@Composable
+fun StaleStreamsCard(streams: List<app.streambird.android.data.StreamListItem>, note: String?, onEnd: (String) -> Unit, onDismiss: (String) -> Unit) {
+    note?.let { Notice(it, app.streambird.android.ui.theme.Ok) }
+    streams.forEach { st ->
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("A stream is still marked live", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "\"${st.title}\"" + app.streambird.android.stream.formatStarted(st.startedAt ?: st.createdAt).let { if (it.isEmpty()) "" else ", started $it" } +
+                        ". If you are not streaming from another device right now, end it.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onEnd(st.id) }) { Text("End stream") }
+                    OutlinedButton(onClick = { onDismiss(st.id) }) { Text("Dismiss") }
+                }
+            }
+        }
     }
 }

@@ -214,23 +214,32 @@ class StreamController @Inject constructor(
             unwatchNetwork?.invoke(); unwatchNetwork = null
             engine?.dropSummary()?.takeIf { it.isNotEmpty() }?.let { event(it, withRow = true) }
             event("END requested", withRow = true)
-            runCatching { engine?.stop() }
+            runCatching { kotlinx.coroutines.withTimeoutOrNull(10_000) { engine?.stop() } }
             engine = null
             val id = cur.stream?.id
             val err = id?.let { runCatching { api.endStream(it) }.exceptionOrNull() }
+            // Show the real destination statuses after the end (not the stale "live" from the last poll).
+            val last = id?.let { runCatching { api.streamStatus(it) }.getOrNull() }
             _ui.update {
                 it.copy(
                     phase = LivePhase.ENDED,
-                    message = if (err == null) "Stream ended." else "Stopped sending, but the server did not confirm: ${err.message}",
+                    message = StatusFollow.endMessage(last?.status ?: if (err == null) "ended" else null, byUs = true, confirmed = err == null),
+                    destinations = StatusFollow.finalDestinations(last?.status ?: "ended", last?.destinations ?: it.destinations),
                 )
             }
             stopService()
+            scheduleAutoReturn()
         }
     }
 
     /** Back to the setup screen after Ended/Failed (keeps the log for sharing until the next start). */
     fun acknowledge() {
-        if (_ui.value.phase == LivePhase.ENDED || _ui.value.phase == LivePhase.FAILED) _ui.update { it.copy(phase = LivePhase.IDLE) }
+        val p = _ui.value.phase
+        if (p == LivePhase.ENDED || p == LivePhase.FAILED) {
+            // Clean slate: nothing of the finished stream may leak into the next Go live.
+            stopReconnector(); pollJob?.cancel(); engine = null
+            _ui.value = LiveUi()
+        }
     }
 
     fun setPriority(p: PicturePriority) {
@@ -366,18 +375,50 @@ class StreamController @Inject constructor(
         )
     }
 
+    /** Follows the server every 5 s (same fields as the web): when the stream is no longer live, stop everything here. */
     private suspend fun pollStatus(streamId: String) {
+        var failures = 0
         while (scope.isActive) {
-            delay(10_000)
-            val st = runCatching { api.streamStatus(streamId) }.getOrNull() ?: continue
-            _ui.update { it.copy(destinations = st.destinations) }
-            if (st.status != "live" && _ui.value.phase == LivePhase.LIVE) {
+            delay(5_000)
+            val st = try { api.streamStatus(streamId).also { failures = 0 } } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) {
+                failures++
+                if (e is ApiException && StatusFollow.gone(e.status)) { scope.launch { endedByServer("gone", emptyList()) }; return }
+                if (failures == 3) event("status poll failing: ${e.message}", withRow = true)
+                continue
+            }
+            _ui.update { it.copy(destinations = StatusFollow.finalDestinations(st.status, st.destinations)) }
+            if (StatusFollow.mustStop(st.status) && _ui.value.phase == LivePhase.LIVE) {
                 event("server says stream is ${st.status}", withRow = true)
-                _ui.update { it.copy(message = "The server ended this stream (${st.status}).") }
-                end()
+                scope.launch { endedByServer(st.status, st.destinations) }
                 return
             }
         }
+    }
+
+    /** The stream ended on the server (website, another device, force-end, failure): stop publishing, camera and service; do NOT call /end. */
+    private suspend fun endedByServer(status: String, dests: List<StreamStatusDestination>) {
+        val cur = _ui.value
+        if (!cur.active || cur.phase == LivePhase.ENDING) return
+        _ui.update { it.copy(phase = LivePhase.ENDING, message = "The stream was ended elsewhere. Stopping...") }
+        pollJob?.cancel()
+        unwatchNetwork?.invoke(); unwatchNetwork = null
+        stopReconnector()
+        runCatching { kotlinx.coroutines.withTimeoutOrNull(10_000) { engine?.stop() } }
+        engine = null
+        _ui.update {
+            it.copy(
+                phase = LivePhase.ENDED, message = StatusFollow.endMessage(status, byUs = false),
+                destinations = StatusFollow.finalDestinations(status, dests.ifEmpty { it.destinations }),
+            )
+        }
+        event("ended by the server ($status)", withRow = true)
+        stopService()
+        scheduleAutoReturn()
+    }
+
+    /** The ended summary returns to the start by itself after a few seconds (or on Done / Back). */
+    private fun scheduleAutoReturn() {
+        scope.launch { delay(8_000); if (_ui.value.phase == LivePhase.ENDED) acknowledge() }
     }
 
     // ---- logo ----

@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -70,14 +72,32 @@ fun LiveScreen(controller: StreamController) {
 
     val landscape = ui.request?.orientation?.isLandscape == true
     val handle = if (ui.phase == LivePhase.LIVE) controller.preview else null
+    val frameRatio = if (landscape) 16f / 9f else 9f / 16f
+
+    // Back: a finished stream goes back to the start; a running one keeps streaming and the app moves to the background.
+    androidx.activity.compose.BackHandler(enabled = ui.phase != LivePhase.IDLE) {
+        when (ui.phase) {
+            LivePhase.ENDED, LivePhase.FAILED -> controller.acknowledge()
+            else -> (ctx as? android.app.Activity)?.moveTaskToBack(true)
+        }
+    }
+
+    // The preview lives in its own box, sized to FIT (letterbox, never crop) the stream's aspect inside the space it is given,
+    // so it can never extend under other widgets. Overlay buttons sit in the TOP corners only (the ticker bar is at the bottom of the frame).
     val preview: @Composable (Modifier) -> Unit = { mod ->
-        Box(mod.aspectRatio(if (landscape) 16f / 9f else 9f / 16f).clip(RoundedCornerShape(12.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
-            if (handle != null) PreviewView(handle) else CircularProgressIndicator()
-            if (ui.phase == LivePhase.LIVE && ui.canFlipCamera) {
-                IconButton(
-                    onClick = controller::flipCamera,
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape),
-                ) { Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip camera (now ${if (ui.frontCamera) "front" else "back"})", tint = Color.White) }
+        androidx.compose.foundation.layout.BoxWithConstraints(mod, contentAlignment = Alignment.Center) {
+            val fit = fitInside(maxWidth.value, maxHeight.value, frameRatio)
+            Box(Modifier.size(fit.first.dp, fit.second.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
+                if (handle != null) PreviewView(handle) else CircularProgressIndicator()
+                if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) {
+                    StatusPill(ui, Modifier.align(Alignment.TopStart).padding(6.dp))
+                }
+                if (ui.phase == LivePhase.LIVE && ui.canFlipCamera) {
+                    IconButton(
+                        onClick = controller::flipCamera,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(36.dp).background(Color.Black.copy(alpha = 0.5f), CircleShape),
+                    ) { Icon(Icons.Filled.FlipCameraAndroid, contentDescription = "Flip camera (now ${if (ui.frontCamera) "front" else "back"})", tint = Color.White) }
+                }
             }
         }
     }
@@ -127,6 +147,13 @@ fun LiveScreen(controller: StreamController) {
             }
         }
 
+        if (ui.events.isNotEmpty()) {
+            Text("Events", style = MaterialTheme.typography.titleSmall)
+            ui.events.takeLast(12).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+    }
+
+    val bottomBar: @Composable () -> Unit = {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(onClick = { controller.logCsv()?.let { shareLog(ctx, it) } }, enabled = ui.logRows > 0 || ui.phase == LivePhase.ENDED || ui.phase == LivePhase.FAILED, modifier = Modifier.weight(1f)) {
                 Text("Share log (${ui.logRows})")
@@ -138,28 +165,32 @@ fun LiveScreen(controller: StreamController) {
             }
         }
 
-        if (ui.events.isNotEmpty()) {
-            Text("Events", style = MaterialTheme.typography.titleSmall)
-            ui.events.takeLast(12).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-        }
     }
 
     if (landscape) {
-        // Landscape stream: preview on the left, everything else scrolls on the right. Same composition => no restart on rotation.
+        // Landscape stream: preview on the left, controls scroll on the right, End/Done pinned at the bottom right.
         Row(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1.3f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Header(ui)
-                LiveBanners(ui, controller)
-                preview(Modifier.fillMaxWidth())
+                preview(Modifier.weight(1f).fillMaxWidth())
             }
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp), content = controls)
+            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    LiveBanners(ui, controller)
+                    controls()
+                }
+                bottomBar()
+            }
         }
     } else {
-        Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Header(ui)
-            LiveBanners(ui, controller)
-            preview(Modifier.fillMaxWidth().heightIn(max = 420.dp).align(Alignment.CenterHorizontally))
-            controls()
+            preview(Modifier.weight(1.25f).fillMaxWidth())
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                LiveBanners(ui, controller)
+                controls()
+            }
+            bottomBar()
         }
     }
 
@@ -257,4 +288,22 @@ private fun PreviewView(handle: PreviewHandle) {
             }
         }
     }
+}
+
+/** Largest (width, height) in dp with [ratio] = width / height that fits inside maxW x maxH. */
+internal fun fitInside(maxW: Float, maxH: Float, ratio: Float): Pair<Float, Float> {
+    if (maxW <= 0f || maxH <= 0f) return 0f to 0f
+    return if (maxW / maxH > ratio) (maxH * ratio) to maxH else maxW to (maxW / ratio)
+}
+
+/** Small status pill in the top-left corner of the preview. */
+@Composable
+private fun StatusPill(ui: LiveUi, modifier: Modifier = Modifier) {
+    val busy = ui.reconnect.phaseBusy
+    val (label, color) = when {
+        ui.phase == LivePhase.ENDING -> "ENDING" to Amber
+        busy -> "RECONNECTING" to Amber
+        else -> "LIVE" to Color(0xFFE53935)
+    }
+    Text(label, color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = modifier.clip(RoundedCornerShape(6.dp)).background(color.copy(alpha = 0.9f)).padding(horizontal = 6.dp, vertical = 2.dp))
 }

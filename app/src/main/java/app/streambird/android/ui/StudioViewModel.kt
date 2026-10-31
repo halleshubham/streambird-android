@@ -7,6 +7,7 @@ import app.streambird.android.data.ApiException
 import app.streambird.android.data.AuthRepository
 import app.streambird.android.data.EffectiveLimits
 import app.streambird.android.data.PlatformConnection
+import app.streambird.android.data.recentStreams
 import app.streambird.android.media.PicturePriority
 import app.streambird.android.media.StreamOrientation
 import app.streambird.android.media.StreamTier
@@ -45,6 +46,9 @@ data class StudioUi(
     val thumbnailUri: String? = null,
     val tickerText: String = "",
     val tickerSize: app.streambird.android.media.TickerSize = app.streambird.android.media.TickerSize.S,
+    /** Streams the server still lists as live that this phone is not publishing (e.g. left by a crash). */
+    val staleStreams: List<app.streambird.android.data.StreamListItem> = emptyList(),
+    val staleNote: String? = null,
 ) {
     val brandAllowed get() = (limits?.assetStorageMb ?: 0) > 0
     val allowedTiers get() = StreamTier.allowed(limits?.maxResolution ?: "sd")
@@ -67,9 +71,10 @@ class StudioViewModel @Inject constructor(
     )
     val ui: StateFlow<StudioUi> = _ui.asStateFlow()
 
-    init { refresh() }
+    init { refresh(); checkStaleStreams() }
 
     fun refresh() {
+        checkStaleStreams()
         viewModelScope.launch {
             _ui.update { it.copy(loading = true, error = null) }
             try {
@@ -96,6 +101,30 @@ class StudioViewModel @Inject constructor(
                 }
             } catch (e: IOException) {
                 _ui.update { it.copy(loading = false, error = "Cannot reach the server: ${e.message}") }
+            }
+        }
+    }
+
+    private val dismissedStale = mutableSetOf<String>()
+
+    /** Looks for streams still marked live that this phone is not publishing. Silent on errors. */
+    fun checkStaleStreams() {
+        viewModelScope.launch {
+            val items = runCatching { api.recentStreams() }.getOrNull() ?: return@launch
+            val active = controller.ui.value.takeIf { it.active }?.stream?.id
+            _ui.update { it.copy(staleStreams = app.streambird.android.stream.staleLiveStreams(items, active, dismissedStale)) }
+        }
+    }
+
+    fun dismissStale(id: String) { dismissedStale.add(id); _ui.update { it.copy(staleStreams = it.staleStreams.filter { s -> s.id != id }) } }
+
+    fun endStale(id: String) {
+        viewModelScope.launch {
+            try {
+                api.endStream(id)
+                _ui.update { it.copy(staleStreams = it.staleStreams.filter { s -> s.id != id }, staleNote = "Stream ended.") }
+            } catch (e: Exception) {
+                _ui.update { it.copy(staleNote = "Could not end it: ${e.message}") }
             }
         }
     }

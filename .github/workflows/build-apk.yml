@@ -88,7 +88,7 @@ jobs:
           name: Brand build (latest)
           prerelease: true
           body: |
-            Debug APK of StreamBird Android 0.2.2-brand (brand kits, thumbnail, share live link, send-quality chip, website look), built from ${{ github.sha }} (${{ github.ref_name }}).
+            Debug APK of StreamBird Android 0.2.3-brand (brand kits, thumbnail, share live link, send-quality chip, website look), built from ${{ github.sha }} (${{ github.ref_name }}).
             Install: download `streambird-brand-debug.apk` on the phone, allow "install unknown apps" for the browser, open it.
             See docs/FEATURES.md.
           files: streambird-brand-debug.apk

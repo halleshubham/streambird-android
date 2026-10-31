@@ -48,7 +48,10 @@ private fun MainNav() {
         when (live.phase) {
             LivePhase.STARTING, LivePhase.LIVE, LivePhase.ENDING, LivePhase.ENDED, LivePhase.FAILED ->
                 if (nav.currentDestination?.route != "live") nav.navigate("live") { launchSingleTop = true }
-            LivePhase.IDLE -> if (nav.currentDestination?.route == "live") nav.popBackStack("setup", inclusive = false)
+            LivePhase.IDLE -> if (nav.currentDestination?.route == "live") {
+                // "setup" may not be in the back stack (app reopened from the notification): fall back to a fresh start screen.
+                if (!nav.popBackStack("setup", inclusive = false)) nav.navigate("channels") { popUpTo(nav.graph.id) { inclusive = true }; launchSingleTop = true }
+            }
         }
     }
     NavHost(nav, startDestination = if (live.active) "live" else "channels") {

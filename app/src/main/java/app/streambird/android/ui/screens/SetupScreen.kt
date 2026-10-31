@@ -57,6 +57,7 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
     }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        StaleStreamsCard(s.staleStreams, s.staleNote, vm::endStale, vm::dismissStale)
         CrashReportCard()
         PageHeading("Stream setup", "Pick a title and quality, then go live.")
         OutlinedTextField(value = s.title, onValueChange = { v -> vm.update { it.copy(title = v) } }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())

@@ -42,6 +42,7 @@ fun ChannelsScreen(vm: StudioViewModel, onNext: () -> Unit, onBrand: () -> Unit 
     val server = vm.baseUrl
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         BirdTopBar { TextButton(onClick = { vm.logout() }) { Text("Sign out") } }
+        StaleStreamsCard(s.staleStreams, s.staleNote, vm::endStale, vm::dismissStale)
         CrashReportCard()
         PageHeading("Where do you want to go live?")
         s.limits?.let {
