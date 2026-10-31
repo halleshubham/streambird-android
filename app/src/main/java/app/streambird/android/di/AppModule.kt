@@ -21,7 +21,12 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
     @Provides @Singleton
-    fun appScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    fun appScope(): CoroutineScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + kotlinx.coroutines.CoroutineExceptionHandler { _, t ->
+            // Never let a stray exception in a background job kill the process (and leave a live stream behind): log it for the crash report.
+            app.streambird.android.diag.Diag.log("UNCAUGHT in app scope: $t")
+        },
+    )
 
     @Provides @Singleton
     fun settings(@ApplicationContext ctx: Context, scope: CoroutineScope) = Settings(ctx, scope)
@@ -36,6 +41,12 @@ object AppModule {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    @Provides @Singleton
+    fun streamEnv(@ApplicationContext ctx: Context): app.streambird.android.stream.StreamEnv = app.streambird.android.stream.AndroidStreamEnv(ctx)
+
+    @Provides @Singleton
+    fun prefs(s: Settings): app.streambird.android.data.StreamPrefs = s
 
     @Provides @Singleton
     fun api(http: OkHttpClient, settings: Settings) = ApiClient(http) { settings.baseUrl }

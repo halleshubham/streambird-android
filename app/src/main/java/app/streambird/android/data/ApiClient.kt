@@ -34,13 +34,16 @@ val ApiJson = Json {
 }
 
 /** "https://streambird.app/" -> "https://streambird.app"; adds https:// when missing. Throws IllegalArgumentException when unusable. */
-fun normalizeBaseUrl(raw: String): String {
+fun normalizeBaseUrl(raw: String, allowCleartext: Boolean = app.streambird.android.BuildConfig.DEBUG): String {
     var s = raw.trim().trimEnd('/')
     if (s.endsWith("/api")) s = s.removeSuffix("/api")
     if (!s.startsWith("http://") && !s.startsWith("https://")) s = "https://$s"
     val url = s.toHttpUrl()
+    if (url.scheme == "http" && !allowCleartext && !isLocalHost(url.host)) throw IllegalArgumentException("Use an https:// address: the sign-in cookie must not travel unencrypted.")
     return originOf(url)
 }
+
+private fun isLocalHost(h: String) = h == "localhost" || h.startsWith("127.") || h.startsWith("10.") || h.startsWith("192.168.") || h.endsWith(".local")
 
 /** The exact string a browser would send as `Origin` for this server: scheme://host[:port], default ports omitted. */
 fun originOf(url: HttpUrl): String {
@@ -78,12 +81,30 @@ class ApiClient(
 
     internal fun url(path: String): HttpUrl = (baseUrl().trimEnd('/') + "/api" + path).toHttpUrl()
 
-    internal suspend fun <T> call(req: Request, parse: (String) -> T): T = withContext(Dispatchers.IO) {
-        http.newCall(req).execute().use { res ->
-            val text = res.body?.string().orEmpty()
-            if (!res.isSuccessful) throw ApiException(res.code, errorMessage(res.code, text))
+    /** Cancellable: cancelling the coroutine cancels the HTTP call, also while the body is being read. Unexpected bodies (HTML from a captive portal, missing fields) become [ApiException]. */
+    internal suspend fun <T> call(req: Request, parse: (String) -> T): T {
+        val (code, text) = exec(req) { res -> res.code to res.body?.string().orEmpty() }
+        if (code !in 200..299) throw ApiException(code, errorMessage(code, text))
+        return try {
             parse(text)
+        } catch (e: kotlinx.serialization.SerializationException) {
+            throw ApiException(-1, "The server sent an unexpected answer. Check the server address or your connection.")
+        } catch (e: IllegalArgumentException) {
+            throw ApiException(-1, "The server sent an unexpected answer. Check the server address or your connection.")
         }
+    }
+
+    /** Runs [read] on OkHttp's thread as soon as the response arrives (the body is read there, so a cancel interrupts it). */
+    private suspend fun <R> exec(req: Request, read: (Response) -> R): R = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+        val call = http.newCall(req)
+        cont.invokeOnCancellation { runCatching { call.cancel() } }
+        call.enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: IOException) { if (cont.isActive) cont.resumeWith(Result.failure(e)) }
+            override fun onResponse(call: okhttp3.Call, response: Response) {
+                val r = try { response.use(read) } catch (t: Throwable) { if (cont.isActive) cont.resumeWith(Result.failure(t)); return }
+                if (cont.isActive) cont.resumeWith(Result.success(r))
+            }
+        })
     }
 
     internal fun get(path: String) = Request.Builder().url(url(path)).get().build()
@@ -111,11 +132,19 @@ class ApiClient(
     suspend fun myLimits(): EffectiveLimits = call(get("/plans/me")) { ApiJson.decodeFromString(it) }
     suspend fun brandKits(): List<BrandKit> = call(get("/brand-kits")) { ApiJson.decodeFromString(it) }
 
-    suspend fun assetFile(id: String): ByteArray = withContext(Dispatchers.IO) {
-        http.newCall(get("/assets/$id/file")).execute().use { res ->
-            if (!res.isSuccessful) throw ApiException(res.code, errorMessage(res.code, res.body?.string().orEmpty()))
-            res.body!!.bytes()
+    /** The image bytes of a library asset; refuses anything over [MAX_ASSET_DOWNLOAD] (the backend's own cap is 4 MB). */
+    suspend fun assetFile(id: String): ByteArray {
+        val r = exec(get("/assets/$id/file")) { res ->
+            if (!res.isSuccessful) Triple(res.code, res.body?.string().orEmpty(), null)
+            else {
+                val src = res.body!!.source()
+                src.request(MAX_ASSET_DOWNLOAD + 1)
+                if (src.buffer.size > MAX_ASSET_DOWNLOAD) Triple(-1, "", null) else Triple(200, "", src.buffer.readByteArray())
+            }
         }
+        if (r.first == -1) throw ApiException(-1, "The logo file is too large to use.")
+        if (r.first != 200) throw ApiException(r.first, errorMessage(r.first, r.second))
+        return r.third!!
     }
 
     suspend fun turnCredentials(): TurnCredentialsResponse =
@@ -133,6 +162,8 @@ class ApiClient(
     suspend fun endStream(id: String): StreamDto = call(post("/streams/$id/end")) { ApiJson.decodeFromString(it) }
 
     companion object {
+        const val MAX_ASSET_DOWNLOAD = 10L * 1024 * 1024
+
         /** Pulls a human message out of Nest's error body, whatever its shape (string, string[], or nested). */
         fun errorMessage(status: Int, body: String): String {
             val parsed = runCatching { ApiJson.decodeFromString<ErrorBody>(body) }.getOrNull()

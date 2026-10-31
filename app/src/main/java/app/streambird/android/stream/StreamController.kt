@@ -1,23 +1,13 @@
 package app.streambird.android.stream
 
-import android.content.Context
-import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.os.Build
-import androidx.core.content.ContextCompat
-import app.streambird.android.R
 import app.streambird.android.data.ApiClient
 import app.streambird.android.data.ApiException
 import app.streambird.android.data.BrandKit
 import app.streambird.android.data.CreateStreamRequest
-import app.streambird.android.data.Settings
 import app.streambird.android.data.StreamDto
 import app.streambird.android.data.StreamStatusDestination
 import app.streambird.android.data.uploadStreamThumbnail
-import app.streambird.android.media.CodecProbe
 import app.streambird.android.media.DeviceReading
-import app.streambird.android.media.DeviceTelemetry
 import app.streambird.android.media.EncoderStats
 import app.streambird.android.media.EngineConfig
 import app.streambird.android.media.EngineListener
@@ -29,20 +19,24 @@ import app.streambird.android.media.PreviewHandle
 import app.streambird.android.media.SampleLog
 import app.streambird.android.media.SendQuality
 import app.streambird.android.media.SendSample
-import app.streambird.android.media.StreamEngine
 import app.streambird.android.media.StreamOrientation
 import app.streambird.android.media.StreamTier
 import app.streambird.android.media.TickerSize
 import app.streambird.android.media.TickerSpec
-import app.streambird.android.media.NetworkWatcher
 import app.streambird.android.media.Trigger
 import app.streambird.android.media.ConnPhase
 import app.streambird.android.media.WARMUP_SECONDS
 import app.streambird.android.media.classifySendQuality
 import app.streambird.android.media.pickBrandKit
-import app.streambird.android.whip.WhipClient
-import dagger.hilt.android.qualifiers.ApplicationContext
+import app.streambird.android.data.StreamPrefs
+import app.streambird.android.media.EnginePort
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,8 +45,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -105,141 +97,192 @@ data class LiveUi(
     val canFlipCamera: Boolean = false,
     val frontCamera: Boolean = false,
     val dropDetail: String = "",
+    /** The camera stopped delivering pictures (the engine is retrying) or failed. */
+    val cameraNote: String? = null,
 ) {
     val active get() = phase == LivePhase.STARTING || phase == LivePhase.LIVE || phase == LivePhase.ENDING
 }
 
 /**
- * Process-wide owner of the one running stream: creates it via the API, runs the [StreamEngine], samples telemetry and
+ * Process-wide owner of the one running stream: creates it via the API, runs the engine, samples telemetry and
  * exposes everything the Live screen needs. Lives in the application scope so that it survives the Activity; the
- * foreground [StreamingService] only keeps the process alive and shows the notification.
+ * foreground service only keeps the process alive and shows the notification.
+ *
+ * Concurrency rules (each was a bug once): phase changes are claimed atomically with [tryMove] so that exactly one of
+ * end() / endedByServer() / the start coroutine wins; the start coroutine is a cancellable Job that end() cancels and joins
+ * BEFORE touching the engine; reconnect supervision is stopped FIRST in every teardown; engine.stop() is idempotent; the stream
+ * created on the server is ended at most once; timers carry a generation so an old one cannot touch a later stream.
  */
 @Singleton
 class StreamController @Inject constructor(
-    @ApplicationContext private val context: Context,
+    private val env: StreamEnv,
     private val api: ApiClient,
-    private val settings: Settings,
+    private val settings: StreamPrefs,
     private val scope: CoroutineScope,
 ) {
     private val _ui = MutableStateFlow(LiveUi())
     val ui: StateFlow<LiveUi> = _ui.asStateFlow()
 
-    private val telemetry = DeviceTelemetry(context)
-    private val whipHttp = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
-    private var engine: StreamEngine? = null
+    @Volatile private var engine: EnginePort? = null
     private var log: SampleLog? = null
-    private var startedAtMs = 0L
+    @Volatile private var startedAtMs = 0L
+    private var runJob: Job? = null
     private var pollJob: Job? = null
+    private var armJob: Job? = null
     private var unwatchNetwork: (() -> Unit)? = null
+    private var unwatchTriggers: (() -> Unit)? = null
     private var reconnector: Reconnector? = null
-    private var netWatcher: NetworkWatcher? = null
     private var tickerSpec: TickerSpec? = null
+    @Volatile private var gen = 0
+    private val created = AtomicReference<StreamDto?>(null)
+    private val endSent = AtomicBoolean(false)
+    private var logoBmp: android.graphics.Bitmap? = null
+
+    /** Timings; tests shorten them. */
+    internal var pollIntervalMs = 5_000L
+    internal var armDelayMs = 8_000L
+    internal var autoReturnMs = AUTO_RETURN_MS
 
     val preview: PreviewHandle? get() = engine?.preview
 
-    fun start(req: GoLiveRequest) {
-        if (_ui.value.active) return
-        app.streambird.android.diag.Diag.log("GO LIVE requested: tier=${req.tier.label} ${req.orientation} dests=${req.destinationIds.size} ticker=${req.tickerText.isNotBlank()} thumb=${req.thumbnailUri != null}")
-        _ui.value = LiveUi(phase = LivePhase.STARTING, message = "Creating the stream...", request = req)
-        ContextCompat.startForegroundService(context, Intent(context, StreamingService::class.java))
-        scope.launch { run(req) }
+    /** Id of the stream this phone has created (also during STARTING), so the stale-stream check never flags our own. */
+    val currentStreamId: String? get() = created.get()?.id
+
+    /** Atomically moves the phase from one of [from] to the state [update] returns; false when the phase was something else. */
+    private fun tryMove(vararg from: LivePhase, update: (LiveUi) -> LiveUi): Boolean {
+        while (true) {
+            val c = _ui.value
+            if (c.phase !in from) return false
+            if (_ui.compareAndSet(c, update(c))) return true
+        }
     }
 
-    private suspend fun run(req: GoLiveRequest) {
-        var stream: StreamDto? = null
+    fun start(req: GoLiveRequest) {
+        val ok = tryMove(LivePhase.IDLE, LivePhase.ENDED, LivePhase.FAILED) { LiveUi(phase = LivePhase.STARTING, message = "Creating the stream...", request = req) }
+        if (!ok) return
+        app.streambird.android.diag.Diag.log("GO LIVE requested: tier=${req.tier.label} ${req.orientation} dests=${req.destinationIds.size} ticker=${req.tickerText.isNotBlank()} thumb=${req.thumbnailUri != null}")
+        val g = ++gen
+        created.set(null); endSent.set(false); engine = null; tickerSpec = null; log = null
+        env.startForegroundService()
+        runJob = scope.launch { run(req, g) }
+    }
+
+    /** UI updates of the start coroutine only apply while that very start is still STARTING. */
+    private fun startUpdate(g: Int, f: (LiveUi) -> LiveUi) = _ui.update { if (gen == g && it.phase == LivePhase.STARTING) f(it) else it }
+
+    private suspend fun run(req: GoLiveRequest, g: Int) {
         try {
-            stream = api.createStream(
+            val stream = api.createStream(
                 CreateStreamRequest(title = req.title.ifBlank { "Mobile stream" }, visibility = req.visibility, orientation = req.orientation.wire, destinationConnectionIds = req.destinationIds.toList()),
             )
-            launchThumbnail(stream, req)
+            created.set(stream)
+            currentCoroutineContext().ensureActive()
+            startUpdate(g) { it.copy(stream = stream, message = "Preparing camera and encoder...") }
+            launchThumbnail(stream, req, g)
             val whipUrl = stream.whipUrl ?: error("The server returned no publish (WHIP) URL for this stream.")
-            _ui.update { it.copy(stream = stream, message = "Preparing camera and encoder...") }
 
             val ice = runCatching { api.turnCredentials().iceServers.map { IceServerSpec(it.urlList(), it.username, it.credential) } }
                 .getOrDefault(emptyList()).ifEmpty { listOf(IceServerSpec(listOf("stun:stun.l.google.com:19302"))) }
+            currentCoroutineContext().ensureActive()
             val (logo, logoNote) = loadLogo(req)
-            _ui.update { it.copy(logoNote = logoNote) }
+            currentCoroutineContext().ensureActive()
+            startUpdate(g) { it.copy(logoNote = logoNote) }
 
-            val header = listOf(
-                "app" to "StreamBird Android spike ${app.streambird.android.BuildConfig.VERSION_NAME}",
-                "device" to "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT})",
-                "server" to settings.baseUrl,
-                "stream_id" to stream.id,
-                "tier" to "${req.tier.label} ${req.orientation.wire} ${req.tier.sizeLabel(req.orientation)} max ${req.tier.maxBitrateBps / 1000} kbps",
-                "picture_priority" to req.priority.name,
-                "camera" to if (req.frontCamera) "front" else "back",
-                "h264_high_profile" to req.h264HighProfile.toString(),
-                "force_keyframes_2s" to req.forceKeyFrames.toString(),
-                "ticker" to if (req.tickerText.isBlank()) "off" else "on size=${req.tickerSize.label} len=${req.tickerText.length}",
-                "logo" to "${req.logoChoice} $logoNote",
-                "codecs" to CodecProbe.summary(),
+            log = SampleLog(
+                env.logHeader() + listOf(
+                    "server" to settings.baseUrl, "stream_id" to stream.id,
+                    "tier" to "${req.tier.label} ${req.orientation.wire} ${req.tier.sizeLabel(req.orientation)} max ${req.tier.maxBitrateBps / 1000} kbps",
+                    "picture_priority" to req.priority.name,
+                    "camera" to if (req.frontCamera) "front" else "back",
+                    "h264_high_profile" to req.h264HighProfile.toString(),
+                    "force_keyframes_2s" to req.forceKeyFrames.toString(),
+                    "ticker" to if (req.tickerText.isBlank()) "off" else "on size=${req.tickerSize.label} len=${req.tickerText.length}",
+                    "logo" to "${req.logoChoice} $logoNote",
+                ),
             )
-            log = SampleLog(header)
 
-            val eng = StreamEngine(context, WhipClient(whipHttp), listener)
+            val eng = env.createEngine(listener)
             engine = eng
-            unwatchNetwork = telemetry.watchNetwork { event(it, withRow = true) }
+            unwatchNetwork = env.watchDeviceNetwork { event(it, withRow = true) }
             tickerSpec = TickerSpec.next(null, req.tickerText, req.tickerSize, android.os.SystemClock.elapsedRealtime())
-            _ui.update { it.copy(tickerText = tickerSpec?.text.orEmpty(), tickerSize = req.tickerSize) }
+            startUpdate(g) { it.copy(tickerText = tickerSpec?.text.orEmpty(), tickerSize = req.tickerSize) }
             event("ticker ${if (tickerSpec != null) "on size=${req.tickerSize.label} len=${tickerSpec!!.text.length}" else "off"}", withRow = false)
             eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec))
-            // The first connection is left alone: watchers start only once it has been healthy for a few seconds.
-            scope.launch { armReconnector(stream.id) }
+            currentCoroutineContext().ensureActive()
 
             startedAtMs = System.currentTimeMillis()
-            _ui.update { it.copy(canFlipCamera = eng.hasBothCameras, frontCamera = eng.frontCamera) }
-            _ui.update { it.copy(phase = LivePhase.LIVE, message = "Live. Platforms need a few seconds to show the picture.") }
+            val live = tryMove(LivePhase.STARTING) {
+                if (gen != g) it else it.copy(phase = LivePhase.LIVE, canFlipCamera = eng.hasBothCameras, frontCamera = eng.frontCamera, message = "Live. Platforms need a few seconds to show the picture.")
+            }
+            if (!live || gen != g) return // end() claimed the stream meanwhile: it tears everything down
             event("LIVE", withRow = true)
-            pollJob = scope.launch { pollStatus(stream.id) }
+            armJob = scope.launch { armReconnector(stream.id, g) }
+            pollJob = scope.launch { pollStatus(stream.id, g) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (t: Throwable) {
             val msg = (t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName
             event("start failed: $msg", withRow = false)
+            stopReconnector()
             runCatching { engine?.stop() }
             engine = null
             unwatchNetwork?.invoke(); unwatchNetwork = null
-            stopReconnector()
-            // The stream row was created and is LIVE server-side: end it so it does not linger.
-            stream?.let { runCatching { api.endStream(it.id) } }
-            _ui.update { it.copy(phase = LivePhase.FAILED, message = "Could not go live: $msg") }
-            stopService()
+            // The stream row was created and is LIVE server-side: end it (once) so it does not linger.
+            endCreated()
+            if (gen == g && tryMove(LivePhase.STARTING) { it.copy(phase = LivePhase.FAILED, message = "Could not go live: $msg") }) env.stopForegroundService()
         }
     }
 
-    fun end() {
-        val cur = _ui.value
-        if (!cur.active || cur.phase == LivePhase.ENDING) return
-        _ui.update { it.copy(phase = LivePhase.ENDING, message = "Ending the stream...") }
+    /** POST /streams/:id/end for the stream this phone created, at most once. Returns the failure, or null when ended / nothing to end. */
+    private suspend fun endCreated(): Throwable? {
+        val s = created.get() ?: return null
+        if (!endSent.compareAndSet(false, true)) return null
+        return try { api.endStream(s.id); null } catch (e: CancellationException) { throw e } catch (e: Throwable) { e }
+    }
+
+    /** End pressed on the phone (or the camera died: [reason]). */
+    fun end(reason: String? = null) {
+        if (!tryMove(LivePhase.STARTING, LivePhase.LIVE) { it.copy(phase = LivePhase.ENDING, message = "Ending the stream...") }) return
+        val g = gen
         scope.launch {
-            pollJob?.cancel()
+            stopReconnector()
+            armJob?.cancel(); pollJob?.cancel()
+            runJob?.cancelAndJoin() // the start coroutine is finished or cancelled before anything below reads the engine / created stream
             unwatchNetwork?.invoke(); unwatchNetwork = null
             engine?.dropSummary()?.takeIf { it.isNotEmpty() }?.let { event(it, withRow = true) }
-            event("END requested", withRow = true)
-            runCatching { kotlinx.coroutines.withTimeoutOrNull(10_000) { engine?.stop() } }
+            event("END requested" + (reason?.let { " ($it)" } ?: ""), withRow = true)
+            runCatching { engine?.stop() }
             engine = null
-            val id = cur.stream?.id
-            val err = id?.let { runCatching { api.endStream(it) }.exceptionOrNull() }
+            releaseLogo()
+            val err = endCreated()
+            val id = created.get()?.id
             // Show the real destination statuses after the end (not the stale "live" from the last poll).
             val last = id?.let { runCatching { api.streamStatus(it) }.getOrNull() }
             _ui.update {
-                it.copy(
+                if (gen != g) it else it.copy(
                     phase = LivePhase.ENDED,
-                    message = StatusFollow.endMessage(last?.status ?: if (err == null) "ended" else null, byUs = true, confirmed = err == null),
+                    message = reason?.let { r -> "Stopped: $r" } ?: StatusFollow.endMessage(last?.status ?: if (err == null) "ended" else null, byUs = true, confirmed = err == null),
                     destinations = StatusFollow.finalDestinations(last?.status ?: "ended", last?.destinations ?: it.destinations),
                 )
             }
-            stopService()
-            scheduleAutoReturn()
+            env.stopForegroundService()
+            scheduleAutoReturn(g)
         }
     }
 
-    /** Back to the setup screen after Ended/Failed (keeps the log for sharing until the next start). */
+    /** Back to the start after Ended/Failed (keeps the log for sharing until the next start). */
     fun acknowledge() {
         val p = _ui.value.phase
-        if (p == LivePhase.ENDED || p == LivePhase.FAILED) {
-            // Clean slate: nothing of the finished stream may leak into the next Go live.
-            stopReconnector(); pollJob?.cancel(); engine = null
-            _ui.value = LiveUi()
-        }
+        if (p != LivePhase.ENDED && p != LivePhase.FAILED) return
+        // Clean slate: nothing of the finished stream may leak into the next Go live, and old timers become no-ops.
+        gen++
+        runJob?.cancel(); pollJob?.cancel(); armJob?.cancel()
+        stopReconnector()
+        val e = engine; engine = null
+        if (e != null) scope.launch { runCatching { e.stop() } }
+        releaseLogo()
+        created.set(null)
+        _ui.value = LiveUi()
     }
 
     fun setPriority(p: PicturePriority) {
@@ -268,21 +311,23 @@ class StreamController @Inject constructor(
     fun dismissThumbnailNotice() = _ui.update { it.copy(thumbnailNotice = null) }
 
     /** Background thumbnail upload: never delays go-live and never fails the stream; the outcome becomes a dismissible notice. */
-    private fun launchThumbnail(stream: StreamDto, req: GoLiveRequest) {
+    private fun launchThumbnail(stream: StreamDto, req: GoLiveRequest, g: Int) {
         val uri = req.thumbnailUri ?: return
-        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        scope.launch {
             val notice = try {
-                val enc = ThumbnailPreparer.prepare(context, android.net.Uri.parse(uri), stream.orientation == "portrait")
-                thumbnailNotice(api.uploadStreamThumbnail(stream.id, enc.bytes))
-            } catch (t: kotlinx.coroutines.CancellationException) {
+                val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { env.prepareThumbnail(uri, stream.orientation == "portrait") }
+                thumbnailNotice(api.uploadStreamThumbnail(stream.id, bytes))
+            } catch (t: CancellationException) {
                 throw t
             } catch (t: Throwable) {
                 thumbnailFailure((t as? ApiException)?.message ?: t.message)
             }
             event("thumbnail: ${notice.kind}", withRow = false)
-            _ui.update { if (it.stream == null || it.stream.id == stream.id) it.copy(thumbnailNotice = notice) else it }
+            _ui.update { if (gen == g) it.copy(thumbnailNotice = notice) else it }
         }
     }
+
+    private fun readDevice() = env.readDevice() ?: DeviceReading(null, null, null, null, "unknown")
 
     fun logCsv(): String? = log?.toCsv()
 
@@ -292,7 +337,7 @@ class StreamController @Inject constructor(
             val elapsed = (System.currentTimeMillis() - startedAtMs) / 1000
             val warming = elapsed < WARMUP_SECONDS
             val q = classifySendQuality(SendSample(stats.width, stats.height, stats.fps, kbps?.times(1000), stats.limitationReason), req.tier.width(req.orientation), req.tier.height(req.orientation), warming)
-            val dev = telemetry.read()
+            val dev = readDevice()
             reconnector?.onStats(stats)
             log?.add(LogRow(System.currentTimeMillis(), elapsed, stats, kbps, q.limited, dev))
             _ui.update {
@@ -310,22 +355,26 @@ class StreamController @Inject constructor(
             reconnector?.onPeerState(state)
             if (state == "CONNECTED") _ui.update { if (it.phase == LivePhase.LIVE && !it.reconnect.phaseBusy) it.copy(message = "Live.") else it }
         }
+
+        override fun onCameraProblem(text: String) { _ui.update { if (it.phase == LivePhase.LIVE) it.copy(cameraNote = text) else it } }
+        override fun onCameraRecovered() { _ui.update { it.copy(cameraNote = null) } }
+        override fun onCameraFatal(text: String) { end(reason = text) }
     }
 
     // ---- reconnect (network change / dead transport) ----
 
     /** Waits for first stats + 8 s of LIVE, then starts network/stall supervision (so nothing can disturb the initial connect). */
-    private suspend fun armReconnector(streamId: String) {
-        delay(8_000)
-        while (_ui.value.phase == LivePhase.LIVE && _ui.value.stats == null) delay(500)
-        if (_ui.value.phase != LivePhase.LIVE || _ui.value.stream?.id != streamId || reconnector != null) return
+    private suspend fun armReconnector(streamId: String, g: Int) {
+        delay(armDelayMs)
+        while (gen == g && _ui.value.phase == LivePhase.LIVE && _ui.value.stats == null) delay(500)
+        if (gen != g || _ui.value.phase != LivePhase.LIVE || _ui.value.stream?.id != streamId || reconnector != null) return
         event("reconnect supervision armed", withRow = false)
         startReconnector()
     }
 
     private fun startReconnector() {
         val host = object : ReconnectHost {
-            override suspend fun republish() { engine?.republish() ?: error("stream engine is gone") }
+            override suspend fun republish() { (engine ?: error("stream engine is gone")).republish() }
             override fun log(text: String) = event(text, withRow = true)
             override fun nowMs() = System.currentTimeMillis()
             override fun onUi(ui: ReconnectUi) {
@@ -342,11 +391,11 @@ class StreamController @Inject constructor(
             }
         }
         val r = Reconnector(scope, host).also { reconnector = it }
-        netWatcher = NetworkWatcher(context) { t -> r.onTrigger(t) }.also { it.start() }
+        unwatchTriggers = env.watchNetworkTriggers { t -> r.onTrigger(t) }
     }
 
     private fun stopReconnector() {
-        netWatcher?.stop(); netWatcher = null
+        unwatchTriggers?.invoke(); unwatchTriggers = null
         reconnector?.stop(); reconnector = null
     }
 
@@ -371,61 +420,65 @@ class StreamController @Inject constructor(
         val stamp = SampleLog.iso(System.currentTimeMillis()).substring(11, 19)
         _ui.update { it.copy(events = (it.events + "$stamp $text").takeLast(40)) }
         if (withRow) log?.add(
-            LogRow(System.currentTimeMillis(), (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0) / 1000, null, null, false, telemetry.read(), event = text),
+            LogRow(System.currentTimeMillis(), (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0) / 1000, null, null, false, readDevice(), event = text),
         )
     }
 
     /** Follows the server every 5 s (same fields as the web): when the stream is no longer live, stop everything here. */
-    private suspend fun pollStatus(streamId: String) {
+    private suspend fun pollStatus(streamId: String, g: Int) {
         var failures = 0
-        while (scope.isActive) {
-            delay(5_000)
-            val st = try { api.streamStatus(streamId).also { failures = 0 } } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) {
+        while (currentCoroutineContext().isActive && gen == g) {
+            delay(pollIntervalMs)
+            val st = try { api.streamStatus(streamId).also { failures = 0 } } catch (e: CancellationException) { throw e } catch (e: Throwable) {
                 failures++
-                if (e is ApiException && StatusFollow.gone(e.status)) { scope.launch { endedByServer("gone", emptyList()) }; return }
+                if (e is ApiException && StatusFollow.gone(e.status)) { scope.launch { endedByServer("gone", emptyList(), g) }; return }
                 if (failures == 3) event("status poll failing: ${e.message}", withRow = true)
                 continue
             }
+            if (gen != g) return
             _ui.update { it.copy(destinations = StatusFollow.finalDestinations(st.status, st.destinations)) }
             if (StatusFollow.mustStop(st.status) && _ui.value.phase == LivePhase.LIVE) {
                 event("server says stream is ${st.status}", withRow = true)
-                scope.launch { endedByServer(st.status, st.destinations) }
+                scope.launch { endedByServer(st.status, st.destinations, g) }
                 return
             }
         }
     }
 
     /** The stream ended on the server (website, another device, force-end, failure): stop publishing, camera and service; do NOT call /end. */
-    private suspend fun endedByServer(status: String, dests: List<StreamStatusDestination>) {
-        val cur = _ui.value
-        if (!cur.active || cur.phase == LivePhase.ENDING) return
-        _ui.update { it.copy(phase = LivePhase.ENDING, message = "The stream was ended elsewhere. Stopping...") }
-        pollJob?.cancel()
-        unwatchNetwork?.invoke(); unwatchNetwork = null
+    private suspend fun endedByServer(status: String, dests: List<StreamStatusDestination>, g: Int) {
+        if (gen != g || !tryMove(LivePhase.LIVE) { it.copy(phase = LivePhase.ENDING, message = "The stream was ended elsewhere. Stopping...") }) return
         stopReconnector()
-        runCatching { kotlinx.coroutines.withTimeoutOrNull(10_000) { engine?.stop() } }
+        armJob?.cancel(); pollJob?.cancel()
+        runJob?.cancelAndJoin()
+        unwatchNetwork?.invoke(); unwatchNetwork = null
+        endSent.set(true) // the server already ended it: nothing for us to end
+        runCatching { engine?.stop() }
         engine = null
+        releaseLogo()
         _ui.update {
-            it.copy(
+            if (gen != g) it else it.copy(
                 phase = LivePhase.ENDED, message = StatusFollow.endMessage(status, byUs = false),
                 destinations = StatusFollow.finalDestinations(status, dests.ifEmpty { it.destinations }),
             )
         }
         event("ended by the server ($status)", withRow = true)
-        stopService()
-        scheduleAutoReturn()
+        env.stopForegroundService()
+        scheduleAutoReturn(g)
     }
 
-    /** The ended summary returns to the start by itself after a few seconds (or on Done / Back). */
-    private fun scheduleAutoReturn() {
-        scope.launch { delay(8_000); if (_ui.value.phase == LivePhase.ENDED) acknowledge() }
+    /** The ended summary returns to the start by itself after a few seconds (or on Done / Back); an old timer never touches a later stream. */
+    private fun scheduleAutoReturn(g: Int) {
+        scope.launch { delay(autoReturnMs); if (gen == g && _ui.value.phase == LivePhase.ENDED) acknowledge() }
     }
 
     // ---- logo ----
 
+    private fun releaseLogo() { runCatching { logoBmp?.recycle() }; logoBmp = null }
+
     private suspend fun loadLogo(req: GoLiveRequest): Pair<LogoOverlay?, String> = when (req.logoChoice) {
         LogoChoice.NONE -> null to "none"
-        LogoChoice.TEST -> LogoOverlay(testLogoBitmap(), onRight = false, heightPx = 120) to "test logo (StreamBird bird)"
+        LogoChoice.TEST -> env.testLogo()?.let { logoBmp = it; LogoOverlay(it, onRight = false, heightPx = 120) to "test logo (StreamBird bird)" } ?: (null to "test logo unavailable")
         LogoChoice.BRAND -> try {
             val kits = api.brandKits()
             val kit: BrandKit? = kits.firstOrNull { it.id == req.brandKitId } ?: pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds })
@@ -433,27 +486,16 @@ class StreamController @Inject constructor(
             if (kit == null || assetId == null) null to "brand kit has no logo"
             else {
                 val bytes = api.assetFile(assetId)
-                val bmp = decodeLogo(bytes) ?: error("logo image could not be decoded")
+                val bmp = env.decodeLogo(bytes) ?: error("logo image could not be decoded")
+                logoBmp = bmp
                 LogoOverlay(bmp, onRight = kit.logoPosition == "right", heightPx = kit.logoSize) to "kit '${kit.name}' ${bmp.width}x${bmp.height}, ${kit.logoPosition}, ${kit.logoSize}px"
             }
+        } catch (t: CancellationException) {
+            throw t
         } catch (t: Throwable) {
             null to "brand logo unavailable (${t.message})"
         }
     }
 
-    private fun decodeLogo(bytes: ByteArray): Bitmap? {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        var sample = 1
-        while (bounds.outHeight / (sample * 2) >= 512) sample *= 2
-        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
-    }
-
-    private fun testLogoBitmap(): Bitmap {
-        return BitmapFactory.decodeResource(context.resources, R.drawable.logo_bird)
-    }
-
-    private fun stopService() {
-        context.stopService(Intent(context, StreamingService::class.java))
-    }
+    companion object { const val AUTO_RETURN_MS = 8_000L }
 }

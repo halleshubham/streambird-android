@@ -35,7 +35,16 @@ object CrashReporter {
     }
 
     /** Call once at app start, BEFORE this run writes events: builds the report of the previous run if it ended badly. */
+    /** Shared logs / crash reports in the cache are one-shot: drop anything older than a day. */
+    fun purgeOldShares(context: Context) {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - 24 * 3600_000L
+            File(context.cacheDir, "logs").listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() }
+        }
+    }
+
     fun collectPrevious(context: Context) {
+        purgeOldShares(context)
         runCatching {
             val dir = context.filesDir
             val events = Diag.lines()

@@ -1,6 +1,7 @@
 package app.streambird.android.stream
 
 import app.streambird.android.media.ConnPhase
+import app.streambird.android.media.NETWORK_DEBOUNCE_MS
 import app.streambird.android.media.EncoderStats
 import app.streambird.android.media.ReconnectMachine
 import app.streambird.android.media.StallDetector
@@ -37,11 +38,19 @@ class Reconnector(private val scope: CoroutineScope, private val host: Reconnect
     private var job: Job? = null
     private var lastStatsMs = 0.0
     private var triggerStatsMs = 0.0
+    /** An attempt is talking to the server right now: it is never cancelled by a network change (that would flap the publisher). */
+    private var inFlight = false
+    private var changedDuringAttempt = false
 
     val phase: ConnPhase @Synchronized get() = machine.phase
 
     @Synchronized fun onTrigger(t: Trigger) {
         host.log("detected: ${t.label}")
+        if (inFlight && t is Trigger.NetworkChanged) {
+            changedDuringAttempt = true
+            host.log("network changed during a running attempt: it finishes first, then a fresh attempt follows")
+            return
+        }
         val was = machine.phase
         apply(machine.trigger(t, host.nowMs()), t)
         if (was == ConnPhase.OK) host.onUi(ReconnectUi(machine.phase, machine.attempt, t.label))
@@ -51,16 +60,19 @@ class Reconnector(private val scope: CoroutineScope, private val host: Reconnect
     /** Peer connection state of the CURRENT connection. */
     @Synchronized fun onPeerState(state: String) {
         when (state) {
-            "DISCONNECTED" -> if (machine.phase == ConnPhase.OK) onTrigger(Trigger.IceDisconnected)
-            "FAILED", "CLOSED" -> if (machine.phase == ConnPhase.OK) onTrigger(Trigger.IceFailed(state))
+            "DISCONNECTED" -> if (canRearm()) onTrigger(Trigger.IceDisconnected)
+            "FAILED", "CLOSED" -> if (canRearm()) onTrigger(Trigger.IceFailed(state))
             "CONNECTED" -> if (machine.iceRecovered()) { job?.cancel(); host.log("ICE recovered by itself, no republish needed"); host.onUi(ReconnectUi()) }
         }
     }
 
     @Synchronized fun onStats(s: EncoderStats) {
         lastStatsMs = s.timestampMs
-        if (detector.add(s.feedback()) && machine.phase == ConnPhase.OK) onTrigger(Trigger.Stall)
+        if (detector.add(s.feedback()) && canRearm()) onTrigger(Trigger.Stall)
     }
+
+    /** OK, or GAVE_UP (a new detection starts a fresh 5-minute budget). */
+    private fun canRearm() = machine.phase == ConnPhase.OK || machine.phase == ConnPhase.GAVE_UP
 
     @Synchronized fun stop() { job?.cancel(); job = null; machine.stop(); host.onUi(ReconnectUi()) }
 
@@ -86,19 +98,24 @@ class Reconnector(private val scope: CoroutineScope, private val host: Reconnect
                 host.onUi(ReconnectUi())
                 return@launch
             }
-            val n = synchronized(this@Reconnector) { machine.attemptStarted() }
+            val n = synchronized(this@Reconnector) { inFlight = true; changedDuringAttempt = false; machine.attemptStarted() }
             host.log("republish attempt $n")
             host.onUi(ReconnectUi(ConnPhase.RECONNECTING, n, "reconnecting"))
             try {
                 host.republish()
-                val secs = synchronized(this@Reconnector) { detector.reset(); machine.attemptSucceeded(host.nowMs()) }
+                val secs = synchronized(this@Reconnector) { inFlight = false; detector.reset(); machine.attemptSucceeded(host.nowMs()) }
                 host.log("republished ok after ${String.format(java.util.Locale.US, "%.1f", secs)} s (attempt $n)")
                 host.onUi(ReconnectUi(ConnPhase.OK, 0, "", backOnlineAtMs = host.nowMs()))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 host.log("republish attempt $n failed: ${e.message ?: e.javaClass.simpleName}")
-                val next = synchronized(this@Reconnector) { machine.attemptFailed(host.nowMs()) }
+                val next = synchronized(this@Reconnector) {
+                    inFlight = false
+                    val st = machine.attemptFailed(host.nowMs())
+                    // The network moved while this attempt ran: retry soon instead of waiting out the backoff.
+                    if (changedDuringAttempt && st is Step.Attempt) Step.Attempt(NETWORK_DEBOUNCE_MS, st.number, false) else st
+                }
                 if (next is Step.GiveUp) {
                     host.onUi(ReconnectUi(ConnPhase.GAVE_UP, n, "gave up"))
                     host.log("giving up: no picture for 5 minutes, the server ends the stream")

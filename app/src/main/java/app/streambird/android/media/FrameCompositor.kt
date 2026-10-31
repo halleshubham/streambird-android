@@ -119,13 +119,24 @@ class FrameCompositor(
         return Matrix().apply { setScale(if (unmirror) -sx.first else sx.first, sx.second, 0.5f, 0.5f) }
     }
 
+    private var glFailures = 0
+
+    /** Builds all GL objects into locals and publishes them only when everything worked, so a failure is retried on the next frame (and counted) instead of leaving a half-built state. */
     private fun ensureGl() {
         if (drawer != null) return
-        drawer = GlRectDrawer()
-        frameDrawer = org.webrtc.VideoFrameDrawer()
-        yuv = YuvConverter()
-        slots = List(RING) { newSlot() }
-        logo?.let { logoTexture = uploadLogo(it.bitmap) }
+        val d = GlRectDrawer()
+        val fd = org.webrtc.VideoFrameDrawer()
+        val y = YuvConverter()
+        try {
+            val ring = List(RING) { newSlot() }
+            logo?.let { logoTexture = uploadLogo(it.bitmap) }
+            slots = ring; frameDrawer = fd; yuv = y; drawer = d
+        } catch (t: Throwable) {
+            glFailures++
+            runCatching { d.release(); fd.release(); y.release() }
+            lastError = "GL init failed ($glFailures): $t"
+            throw t
+        }
     }
 
     private fun newSlot(): Slot {
@@ -214,6 +225,10 @@ class FrameCompositor(
 
     /** Must be called before the helper is disposed; runs the GL clean-up on the camera thread. */
     fun release() {
+        released = true // no new frames from now on
+        // The encoder / preview may still hold texture buffers: wait (bounded) until every ring slot was handed back before deleting textures.
+        val deadline = System.currentTimeMillis() + 1500
+        while (slots.any { it.busy.get() } && System.currentTimeMillis() < deadline) Thread.sleep(20)
         val done = CountDownLatch(1)
         helper.handler.post {
             released = true
@@ -229,7 +244,7 @@ class FrameCompositor(
             slots = emptyList(); drawer = null
             done.countDown()
         }
-        done.await(2, TimeUnit.SECONDS)
+        done.await(3, TimeUnit.SECONDS)
     }
 
     companion object {

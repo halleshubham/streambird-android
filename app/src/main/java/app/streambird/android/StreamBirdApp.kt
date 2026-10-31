@@ -6,6 +6,9 @@ import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
 class StreamBirdApp : Application() {
+    /** Injected here so the settings load starts on a background thread at app start, before any screen needs it. */
+    @javax.inject.Inject lateinit var settings: app.streambird.android.data.Settings
+
     override fun onCreate() {
         super.onCreate()
         CrashReporter.install(this)          // Java exception handler + event ring log

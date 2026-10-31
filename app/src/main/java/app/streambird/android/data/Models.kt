@@ -7,9 +7,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class AuthUser(
-    val id: String,
-    val email: String,
-    val role: String,
+    val id: String = "",
+    val email: String = "",
+    val role: String = "user",
     val approvedAt: String? = null,
     val phone: String? = null,
     val needsPhone: Boolean = false,
@@ -19,14 +19,14 @@ data class AuthUser(
 }
 
 @Serializable
-data class AuthResponse(val user: AuthUser, val accountId: String)
+data class AuthResponse(val user: AuthUser, val accountId: String = "")
 
 @Serializable
 data class PlatformConnection(
     val id: String,
-    val platform: String,
+    val platform: String = "",
     val externalAccountId: String = "",
-    val label: String,
+    val label: String = "",
     val isActive: Boolean = true,
     val liveSlug: String? = null,
     val liveLinkUrl: String? = null,
@@ -34,10 +34,10 @@ data class PlatformConnection(
 
 @Serializable
 data class EffectiveLimits(
-    val planKey: String,
+    val planKey: String = "free",
     val planName: String = "",
     val includedHours: Double? = null,
-    val maxDestinations: Int,
+    val maxDestinations: Int = 1,
     val maxGuests: Int = 0,
     /** sd | hd | fhd | qhd */
     val maxResolution: String = "sd",

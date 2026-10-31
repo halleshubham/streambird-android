@@ -43,7 +43,7 @@ fun stageFor(user: AuthUser): Stage = when {
 class AuthRepository @Inject constructor(
     private val api: ApiClient,
     private val jar: PersistentCookieJar,
-    private val settings: Settings,
+    private val settings: StreamPrefs,
     private val scope: CoroutineScope,
 ) {
     private val _ui = MutableStateFlow(AuthUi(email = settings.lastEmail, server = settings.baseUrl))
@@ -80,7 +80,7 @@ class AuthRepository @Inject constructor(
 
     /** Called by data screens when the server answers 401 (session expired/revoked) or 403 "pending approval". */
     fun expire() {
-        jar.clear()
+        jar.clear() // writes are applied in order, so no older save can overtake this
         pollJob?.cancel()
         _ui.update { it.copy(stage = Stage.LOGGED_OUT, user = null, codeSent = false, busy = false, note = "Your session expired. Please sign in again.") }
     }
@@ -95,7 +95,7 @@ class AuthRepository @Inject constructor(
         _ui.update { it.copy(server = n, error = null) }
         true
     } catch (e: Exception) {
-        _ui.update { it.copy(error = "That server address is not valid.") }
+        _ui.update { it.copy(error = (e as? IllegalArgumentException)?.message?.takeIf { m -> m.startsWith("Use an https") } ?: "That server address is not valid.") }
         false
     }
 
@@ -133,6 +133,7 @@ class AuthRepository @Inject constructor(
     suspend fun logout() {
         runCatching { api.logout() }
         jar.clear()
+        jar.flush() // durable before the screen says signed out: an older save must never bring the session back
         pollJob?.cancel()
         _ui.update { it.copy(stage = Stage.LOGGED_OUT, user = null, codeSent = false, note = null, error = null) }
     }

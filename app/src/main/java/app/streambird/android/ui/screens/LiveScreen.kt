@@ -209,6 +209,7 @@ private fun LiveBanners(ui: LiveUi, controller: StreamController) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) SendQualityChip(ui.quality)
         ReconnectBanner(ui.reconnect)
+        ui.cameraNote?.let { Notice(it, Amber) }
         ui.thumbnailNotice?.let { ThumbnailNoticeBar(it, onDismiss = controller::dismissThumbnailNotice) }
     }
 }

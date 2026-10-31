@@ -12,6 +12,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.AudioSource
@@ -67,6 +70,11 @@ interface EngineListener {
     fun onEvent(text: String)
     /** CONNECTED / DISCONNECTED / FAILED / CLOSED etc. */
     fun onConnection(state: String)
+    /** The camera reported an error/disconnect/freeze or stopped delivering frames; the engine is retrying. */
+    fun onCameraProblem(text: String) {}
+    fun onCameraRecovered() {}
+    /** The camera could not be brought back: the stream has no picture and cannot continue. */
+    fun onCameraFatal(text: String) {}
 }
 
 /**
@@ -77,9 +85,15 @@ class StreamEngine(
     private val context: Context,
     private val whip: WhipClient,
     private val listener: EngineListener,
-) {
-    private val scope = CoroutineScope(Dispatchers.Default)
+) : EnginePort {
+    private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
     private var statsJob: Job? = null
+    private var watchdogJob: Job? = null
+    /** Old connections whose cleanup is pending; anything left is disposed in [stop]. */
+    private val retired = java.util.concurrent.ConcurrentLinkedQueue<Link>()
+    private val cleanupJobs = java.util.concurrent.ConcurrentLinkedQueue<Job>()
+    private val lifecycle = EngineLifecycle()
+    private val stopped get() = lifecycle.isStopped
 
     private var eglBase: EglBase? = null
     private var factory: PeerConnectionFactory? = null
@@ -103,25 +117,25 @@ class StreamEngine(
     }
     private var genCounter = 0
     @Volatile private var activeGen = 0
-    private val republishLock = kotlinx.coroutines.sync.Mutex()
 
-    var preview: PreviewHandle? = null; private set
-    val droppedFrames: Long get() = compositor?.droppedFrames ?: 0
-    fun dropSummary(): String = compositor?.let {
+    override var preview: PreviewHandle? = null; private set
+    override val droppedFrames: Long get() = compositor?.droppedFrames ?: 0
+    override fun dropSummary(): String = compositor?.let {
         "compositor: composed=${it.composedFrames} droppedNoSlot=${it.droppedNoSlot} droppedError=${it.droppedError} lastDropAtFrame=${it.lastDropAtFrame}" +
             (it.lastError?.let { e -> " lastError=$e" } ?: "")
     } ?: ""
 
     private var enumerator: Camera2Enumerator? = null
-    @Volatile var frontCamera: Boolean = false; private set
+    @Volatile private var captureSize: org.webrtc.Size? = null
+    @Volatile override var frontCamera: Boolean = false; private set
     /** True when the phone has both a front and a back camera, so the flip button makes sense. */
-    var hasBothCameras: Boolean = false; private set
+    override var hasBothCameras: Boolean = false; private set
 
     /**
      * Switches to the other camera without touching the PeerConnection or encoder (the stream keeps going).
      * [done] gets null on success or an error text; on error the old camera stays active.
      */
-    fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit) {
+    override fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit) {
         val cam = capturer
         val en = enumerator
         if (cam == null || en == null || !hasBothCameras) { done("This phone has only one camera.", frontCamera); return }
@@ -138,9 +152,11 @@ class StreamEngine(
         }, target)
     }
 
-    suspend fun start(cfg: EngineConfig) {
+    override suspend fun start(cfg: EngineConfig) {
         config = cfg
-        withContext(Dispatchers.Main) { buildPipeline(cfg) }
+        // Factory, audio module and camera are created off the main thread (they can take a while).
+        withContext(Dispatchers.Default) { buildPipeline(cfg) }
+        if (stopped) throw kotlinx.coroutines.CancellationException("engine stopped")
         publish(cfg)
     }
 
@@ -177,9 +193,9 @@ class StreamEngine(
             ?: enumerator.deviceNames.firstOrNull()
             ?: throw IllegalStateException("No camera found")
         val cam = enumerator.createCapturer(name, object : CameraVideoCapturer.CameraEventsHandler {
-            override fun onCameraError(errorDescription: String) = listener.onEvent("camera error: $errorDescription")
-            override fun onCameraDisconnected() = listener.onEvent("camera disconnected")
-            override fun onCameraFreezed(errorDescription: String) = listener.onEvent("camera froze: $errorDescription")
+            override fun onCameraError(errorDescription: String) { listener.onEvent("camera error: $errorDescription"); listener.onCameraProblem("Camera error: $errorDescription") }
+            override fun onCameraDisconnected() { listener.onEvent("camera disconnected"); listener.onCameraProblem("The camera was disconnected.") }
+            override fun onCameraFreezed(errorDescription: String) { listener.onEvent("camera froze: $errorDescription"); listener.onCameraProblem("The camera froze.") }
             override fun onCameraOpening(cameraName: String) {}
             override fun onFirstFrameAvailable() = listener.onEvent("camera first frame")
             override fun onCameraClosed() {}
@@ -191,7 +207,9 @@ class StreamEngine(
         val size = CameraEnumerationAndroid.getClosestSupportedSize(
             enumerator.getSupportedFormats(name).orEmpty().map { org.webrtc.Size(it.width, it.height) }, cfg.tier.captureWidth, cfg.tier.captureHeight,
         )
+        captureSize = size
         cam.startCapture(size.width, size.height, FPS)
+        startCameraWatchdog()
         listener.onEvent("camera $name capture ${size.width}x${size.height}@$FPS -> output ${cfg.outWidth}x${cfg.outHeight}")
         source.adaptOutputFormat(cfg.outWidth, cfg.outHeight, FPS)
 
@@ -318,38 +336,76 @@ class StreamEngine(
     }
 
     /**
-     * Recovers a dead transport WITHOUT touching camera, compositor, encoder pipeline, tracks or the server-side stream:
-     * new PeerConnection -> WHIP POST to the same URL -> (connected) swap -> DELETE the old WHIP resource, close the old connection.
-     * The old connection is only closed once the new one is CONNECTED, and only disposed after in-flight getStats calls finished.
-     * Throws on failure; the caller retries with backoff.
+     * Recovers a dead transport WITHOUT touching camera, compositor, encoder pipeline, tracks or the server-side stream.
+     * Only runs when something is wrong, so the old connection is treated as dead: it is closed FIRST (frees its hardware encoder: many
+     * phones allow only 1-2 at once and both share one VideoTrack), then a new PeerConnection is negotiated with a fresh WHIP POST to
+     * the same URL, and only when media really flows on it (bytes sent advance) is the old WHIP resource DELETEd.
+     * Shares one lock with [stop]; fails once the engine is stopped. Throws on failure; the caller retries with backoff.
      */
-    suspend fun republish() = republishLock.withLock {
-        withContext(pcDispatcher) {
-            val cfg = config ?: error("not started")
-            val old = cur
-            trace("republish: start (old pc #${old?.gen})")
-            val link = connect(cfg)
-            cur = link; activeGen = link.gen
-            old?.closed = true
-            prevStats = null
-            applySenderParameters(cfg)
-            trace("republish: swapped to pc #${link.gen}")
-            scope.launch(pcDispatcher) {
-                if (old != null) {
-                    runCatching { whip.hangUp(old.resourceUrl) }
+    override suspend fun republish() {
+        lifecycle.exclusive {
+            withContext(pcDispatcher) {
+                val cfg = config ?: error("not started")
+                val old = cur
+                trace("republish: start (old pc #${old?.gen})")
+                if (old != null && !old.closed) {
+                    old.closed = true
                     runCatching { old.conn.close() }
-                    awaitStatsIdle()
-                    delay(1000)
-                    runCatching { old.conn.dispose() }
+                    retired.add(old)
                 }
+                val link = connect(cfg)
+                try {
+                    awaitMediaFlowing(link)
+                } catch (t: Throwable) {
+                    link.closed = true
+                    withContext(kotlinx.coroutines.NonCancellable + pcDispatcher) {
+                        runCatching { whip.hangUp(link.resourceUrl) }; runCatching { link.conn.close() }; runCatching { link.conn.dispose() }
+                    }
+                    throw t
+                }
+                if (stopped) { // stop() won while we were negotiating: do not leak the new link
+                    link.closed = true
+                    runCatching { whip.hangUp(link.resourceUrl) }; runCatching { link.conn.close() }; runCatching { link.conn.dispose() }
+                    throw kotlinx.coroutines.CancellationException("engine stopped")
+                }
+                cur = link; activeGen = link.gen
+                prevStats = null
+                applySenderParameters(cfg)
+                trace("republish: swapped to pc #${link.gen}")
+                if (old != null) cleanupJobs.add(scope.launch(pcDispatcher) { disposeRetired(old) })
             }
         }
+    }
+
+    private suspend fun disposeRetired(old: Link) {
+        if (!retired.remove(old)) return
+        runCatching { whip.hangUp(old.resourceUrl) }
+        runCatching { old.conn.close() }
+        awaitStatsIdle()
+        delay(1000)
+        runCatching { old.conn.dispose() }
+    }
+
+    /** CONNECTED (ICE/DTLS) does not prove media flows: wait until the new sender's bytesSent advance (up to 5 s). */
+    private suspend fun awaitMediaFlowing(link: Link) {
+        val ok = withTimeoutOrNull(5000) {
+            var first: Long? = null
+            while (true) {
+                val raw = readStats(link)
+                val bytes = StatsParser.parse(raw)?.bytesSent
+                if (bytes != null) { if (first == null) first = bytes else if (bytes > first + 1000) return@withTimeoutOrNull true }
+                delay(500)
+            }
+            @Suppress("UNREACHABLE_CODE") false
+        }
+        if (ok != true) throw IllegalStateException("The new connection is up but no video is flowing on it.")
+        trace("pc #${link.gen} media flowing")
     }
 
     private suspend fun awaitStatsIdle() { withTimeoutOrNull(4000) { while (statsInFlight.get() > 0) delay(50) } }
 
     /** Debug aid: kills the transport the way a network switch would (the connection closes under the running stream). */
-    fun simulateDrop() {
+    override fun simulateDrop() {
         scope.launch(pcDispatcher) {
             val l = cur
             trace("simulate drop (pc #${l?.gen})")
@@ -359,7 +415,41 @@ class StreamEngine(
         }
     }
 
-    fun setTicker(spec: TickerSpec?) { compositor?.ticker = spec }
+    override fun setTicker(spec: TickerSpec?) { compositor?.ticker = spec }
+
+    /**
+     * Camera liveness: the compositor counts frames it composed. No new frame for 5 s -> restart the capture (up to 3 times, each reported to the UI);
+     * still nothing -> [EngineListener.onCameraFatal], so the user sees a clear message instead of a "Live" stream without a picture.
+     */
+    private fun startCameraWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            var last = -1L
+            var staleSince = System.currentTimeMillis()
+            var attempts = 0
+            while (isActive) {
+                delay(1000)
+                val f = compositor?.composedFrames ?: continue
+                val now = System.currentTimeMillis()
+                if (f != last) {
+                    last = f; staleSince = now
+                    if (attempts > 0) { attempts = 0; listener.onEvent("camera recovered"); listener.onCameraRecovered() }
+                } else if (now - staleSince > CAMERA_STALL_MS) {
+                    attempts++
+                    staleSince = now
+                    if (attempts > CAMERA_RETRIES) {
+                        listener.onEvent("camera gave up after $CAMERA_RETRIES restarts")
+                        listener.onCameraFatal("The camera stopped delivering pictures and could not be restarted." + (compositor?.lastError?.let { " ($it)" } ?: ""))
+                        return@launch
+                    }
+                    listener.onEvent("camera delivers no frames, restarting capture ($attempts/$CAMERA_RETRIES)")
+                    listener.onCameraProblem("The camera stopped delivering pictures. Retrying ($attempts/$CAMERA_RETRIES)...")
+                    runCatching { capturer?.stopCapture() }
+                    runCatching { captureSize?.let { capturer?.startCapture(it.width, it.height, FPS) } }
+                }
+            }
+        }
+    }
 
     /** maxBitrate per tier (web: sender.setParameters), degradationPreference (web: applyPicturePriority), BWE start/max hints. Run on [pcDispatcher]. */
     private fun applySenderParameters(cfg: EngineConfig) {
@@ -385,7 +475,7 @@ class StreamEngine(
         }
     }
 
-    fun setPicturePriority(p: PicturePriority) {
+    override fun setPicturePriority(p: PicturePriority) {
         val cfg = config ?: return
         config = cfg.copy(priority = p)
         scope.launch(pcDispatcher) { applySenderParameters(config!!) }
@@ -415,8 +505,8 @@ class StreamEngine(
     }
 
     /** getStats on the PC thread, only for the active, not-closed connection; never waits forever (a closing PC may not answer). */
-    private suspend fun readStats(): List<RawStat> {
-        val l = cur ?: return emptyList()
+    private suspend fun readStats(link: Link? = null): List<RawStat> {
+        val l = link ?: cur ?: return emptyList()
         if (l.closed) return emptyList()
         statsInFlight.incrementAndGet()
         try {
@@ -442,30 +532,44 @@ class StreamEngine(
 
     // ---- teardown ----
 
-    suspend fun stop() {
-        statsJob?.cancel()
-        statsJob?.join()
-        withContext(Dispatchers.IO) {
+    /**
+     * Idempotent, concurrency-safe teardown. The first caller does the work, later callers wait for it. The work itself is NonCancellable
+     * (a cancelled caller must not leave the camera/encoder half released); only the waits inside it are bounded. Order: camera frames stop,
+     * connection closed and disposed, then tracks, sources, capturer, factory, audio module, EGL, executors.
+     */
+    override suspend fun stop() {
+        lifecycle.stop { gotLock ->
+            runCatching { watchdogJob?.cancel() }
+            runCatching { statsJob?.cancel(); statsJob?.join() }
+            runCatching { capturer?.stopCapture() }
             val l = cur
             l?.closed = true
-            runCatching { whip.hangUp(l?.resourceUrl) }
-            runCatching { capturer?.stopCapture() }
-            awaitStatsIdle()
+            withContext(Dispatchers.IO) { runCatching { withTimeoutOrNull(3000) { whip.hangUp(l?.resourceUrl) } } }
             withContext(pcDispatcher) { runCatching { l?.conn?.close() } }
-            runCatching { compositor?.release() }
-            runCatching { capturer?.dispose() }
-            runCatching { videoTrack?.dispose() }
-            runCatching { audioTrack?.dispose() }
-            runCatching { videoSource?.dispose() }
-            runCatching { audioSource?.dispose() }
-            withContext(pcDispatcher) { runCatching { l?.conn?.dispose() } }
-            runCatching { helper?.dispose() }
-            runCatching { factory?.dispose() }
-            runCatching { adm?.release() }
-            runCatching { eglBase?.release() }
+            withTimeoutOrNull(4000) { cleanupJobs.forEach { it.cancelAndJoin() } }
+            awaitStatsIdle()
+            withContext(pcDispatcher) {
+                runCatching { l?.conn?.dispose() }
+                // old connections whose deferred cleanup never ran
+                while (true) { val o = retired.poll() ?: break; runCatching { o.conn.close() }; runCatching { o.conn.dispose() } }
+            }
+            withContext(Dispatchers.IO) {
+                runCatching { videoTrack?.dispose() }
+                runCatching { audioTrack?.dispose() }
+                runCatching { videoSource?.dispose() }
+                runCatching { audioSource?.dispose() }
+                runCatching { compositor?.release() }
+                runCatching { capturer?.dispose() }
+                runCatching { helper?.dispose() }
+                runCatching { factory?.dispose() }
+                runCatching { adm?.release() }
+                runCatching { eglBase?.release() }
+            }
+            cur = null; preview = null; factory = null; capturer = null
+            runCatching { pcExecutor.shutdown() }
+            runCatching { scope.cancel() }
+            if (!gotLock) trace("stop: republish lock timed out, tore down anyway")
         }
-        cur = null; preview = null; factory = null; capturer = null
-        pcExecutor.shutdown()
     }
 
     // ---- SDP plumbing ----
@@ -500,6 +604,8 @@ class StreamEngine(
 
     companion object {
         const val FPS = 30
+        const val CAMERA_STALL_MS = 5_000L
+        const val CAMERA_RETRIES = 3
         @Volatile private var initialized = false
 
         @Synchronized

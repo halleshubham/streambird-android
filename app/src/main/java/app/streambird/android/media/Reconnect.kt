@@ -32,6 +32,9 @@ sealed interface Step {
 /** The server keeps the stream for 5 minutes without a publisher (GLITCH_WINDOW_MS); trying much longer is pointless. */
 const val GIVE_UP_AFTER_MS = 5 * 60_000L
 
+/** Network changes are debounced: flapping networks restart this timer instead of churning WHIP sessions. */
+const val NETWORK_DEBOUNCE_MS = 2_000L
+
 /** Wait after attempt [failedAttempt] (1-based) failed: 1, 2, 4, 8, 16, then 30 s. */
 fun backoffMs(failedAttempt: Int): Long = (1000L shl (failedAttempt - 1).coerceIn(0, 5)).coerceAtMost(30_000L)
 
@@ -46,12 +49,12 @@ class ReconnectMachine(private val giveUpAfterMs: Long = GIVE_UP_AFTER_MS) {
     fun trigger(t: Trigger, now: Long): Step = when (phase) {
         ConnPhase.OK, ConnPhase.GAVE_UP -> begin(t, now)
         ConnPhase.WAITING_NETWORK -> when (t) {
-            is Trigger.NetworkChanged -> { phase = ConnPhase.RECONNECTING; attempt = 0; Step.Attempt(1000, 1, false) }
+            is Trigger.NetworkChanged -> { phase = ConnPhase.RECONNECTING; attempt = 0; Step.Attempt(NETWORK_DEBOUNCE_MS, 1, false) }
             else -> Step.None
         }
         ConnPhase.RECONNECTING -> when (t) {
             // The network moved again: drop the pending/running attempt and start over with the fast schedule.
-            is Trigger.NetworkChanged -> { attempt = 0; Step.Attempt(1000, 1, false) }
+            is Trigger.NetworkChanged -> { attempt = 0; Step.Attempt(NETWORK_DEBOUNCE_MS, 1, false) }
             Trigger.NetworkLost -> { phase = ConnPhase.WAITING_NETWORK; Step.None }
             else -> Step.None
         }

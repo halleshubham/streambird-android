@@ -14,8 +14,8 @@ android {
         applicationId = "app.streambird.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.2.3-brand"
+        versionCode = 14
+        versionName = "0.2.4-brand"
         vectorDrawables { useSupportLibrary = true }
         // Server the app talks to. Override at build time: ./gradlew assembleDebug -PstreambirdBaseUrl=https://staging.example.com
         val baseUrl = (project.findProperty("streambirdBaseUrl") as String?) ?: "https://streambird.app"

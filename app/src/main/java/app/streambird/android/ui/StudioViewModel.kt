@@ -111,7 +111,10 @@ class StudioViewModel @Inject constructor(
     fun checkStaleStreams() {
         viewModelScope.launch {
             val items = runCatching { api.recentStreams() }.getOrNull() ?: return@launch
-            val active = controller.ui.value.takeIf { it.active }?.stream?.id
+            // The check runs against what the controller has NOW (also during STARTING, when our own stream may already be listed as live).
+            val cs = controller.ui.value
+            if (cs.phase == app.streambird.android.stream.LivePhase.STARTING) return@launch
+            val active = controller.currentStreamId.takeIf { cs.active }
             _ui.update { it.copy(staleStreams = app.streambird.android.stream.staleLiveStreams(items, active, dismissedStale)) }
         }
     }

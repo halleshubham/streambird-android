@@ -39,16 +39,25 @@ class StreamingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private var collector: kotlinx.coroutines.Job? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_END) { controller.end(); return START_NOT_STICKY }
+        // Always enter the foreground first: a service started with startForegroundService() must call startForeground() promptly,
+        // even when it is about to stop again (fast failure, or End pressed with nothing running).
         ensureChannel()
         val n = notification("Starting the stream...")
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         } else startForeground(NOTIF_ID, n)
-        acquireLocks()
-        scope.launch {
+        if (intent?.action == ACTION_END) {
+            controller.end()
+            if (!controller.ui.value.active) stopSelf()
+            return START_NOT_STICKY
+        }
+        if (wake == null && wifi == null) acquireLocks()
+        if (collector == null) collector = scope.launch {
             controller.ui.collect { ui ->
+                if (!ui.active) { stopSelf(); return@collect }  // the stream is over (also: it failed before this service reached the foreground)
                 val text = when (ui.phase) {
                     LivePhase.LIVE -> if (ui.reconnect.phaseBusy) "Reconnecting..." else "LIVE ${ui.stats?.let { "${it.width}x${it.height} ${formatBitrate((ui.kbps ?: 0.0) * 1000)}" } ?: ""}"
                     LivePhase.STARTING -> "Starting..."
@@ -96,8 +105,8 @@ class StreamingService : Service() {
     }
 
     override fun onDestroy() {
-        runCatching { wake?.takeIf { it.isHeld }?.release() }
-        runCatching { wifi?.takeIf { it.isHeld }?.release() }
+        runCatching { wake?.takeIf { it.isHeld }?.release() }; wake = null
+        runCatching { wifi?.takeIf { it.isHeld }?.release() }; wifi = null
         scope.cancel()
         // Service killed while a stream is running (user swiped it, system limit): end the stream so nothing is left half-open.
         if (controller.ui.value.active) controller.end()

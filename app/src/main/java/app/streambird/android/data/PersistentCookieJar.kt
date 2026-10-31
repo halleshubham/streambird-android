@@ -9,7 +9,10 @@ import okhttp3.HttpUrl
 /** Where cookies survive process death. Production: DataStore; tests: an in-memory fake. */
 interface CookieStorage {
     fun load(): String?
+    /** Queued; writes are applied in call order. */
     fun save(json: String)
+    /** Returns once every save queued so far is on disk. */
+    suspend fun flush() {}
 }
 
 @Serializable
@@ -65,6 +68,8 @@ class PersistentCookieJar(private val storage: CookieStorage) : CookieJar {
     fun hasCookie(name: String): Boolean = synchronized(lock) { dropExpired(); cookies.any { it.name == name } }
 
     fun clear() = synchronized(lock) { cookies.clear(); persistLocked() }
+
+    suspend fun flush() = storage.flush()
 
     private fun dropExpired() {
         val now = System.currentTimeMillis()

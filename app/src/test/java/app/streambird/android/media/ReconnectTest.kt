@@ -48,14 +48,14 @@ class ReconnectTest {
         assertEquals(Step.None, m.trigger(Trigger.NetworkLost, 0)); assertEquals(ConnPhase.WAITING_NETWORK, m.phase)
         assertEquals(Step.None, m.trigger(Trigger.Stall, 100))                       // nothing to do offline
         val s = m.trigger(Trigger.NetworkChanged("none", "wifi"), 5_000) as Step.Attempt
-        assertEquals(1000L, s.afterMs); assertFalse(s.onlyIfStalled); assertEquals(ConnPhase.RECONNECTING, m.phase)
+        assertEquals(NETWORK_DEBOUNCE_MS, s.afterMs); assertFalse(s.onlyIfStalled); assertEquals(ConnPhase.RECONNECTING, m.phase)
     }
 
     @Test fun `a network change during recovery replaces the attempt and restarts the fast schedule`() {
         val m = ReconnectMachine()
         m.trigger(Trigger.Stall, 0); m.attemptStarted(); m.attemptFailed(500); m.attemptStarted()
         val s = m.trigger(Trigger.NetworkChanged("wifi", "cellular"), 2_000) as Step.Attempt
-        assertEquals(1, s.number); assertEquals(1000L, s.afterMs)
+        assertEquals(1, s.number); assertEquals(NETWORK_DEBOUNCE_MS, s.afterMs)
         assertEquals(Step.None, m.trigger(Trigger.Stall, 2_100))                      // already handling it
     }
 
@@ -122,5 +122,26 @@ class ReconnectTest {
         assertNull(cellularHint("wifi", StreamTier.P720))
         assertEquals("Mobile data detected: a steady 3 Mbps upload is needed for 720p. Try 540p, or use Wi-Fi.", cellularHint("cellular", StreamTier.P720))
         assertTrue(cellularHint("cellular", StreamTier.P540)!!.contains("1 Mbps"))
+    }
+
+    @Test fun `GAVE_UP re-arms with a fresh budget on the next detection`() {
+        val m = ReconnectMachine(giveUpAfterMs = 10_000)
+        m.trigger(Trigger.Stall, 0); m.attemptStarted()
+        assertEquals(Step.GiveUp, m.attemptFailed(20_000)); assertEquals(ConnPhase.GAVE_UP, m.phase)
+        val s = m.trigger(Trigger.IceFailed("FAILED"), 30_000) as Step.Attempt
+        assertEquals(ConnPhase.RECONNECTING, m.phase); assertEquals(0L, s.afterMs); assertEquals(1, s.number)
+        m.attemptStarted()
+        assertTrue(m.attemptFailed(35_000) is Step.Attempt)          // budget counts from the new start (30 s), not the old one
+    }
+
+    @Test fun `flapping network sequences`() {
+        val wifi = NetState("n1", "wifi"); val cell = NetState("n2", "cellular"); val none = NetState(null, "none")
+        // wifi -> none -> cellular -> none -> wifi : lost, changed, lost, changed
+        assertEquals(Trigger.NetworkLost, networkTrigger(wifi, none))
+        assertEquals(Trigger.NetworkChanged("none", "cellular"), networkTrigger(none, cell))
+        assertEquals(Trigger.NetworkLost, networkTrigger(cell, none))
+        assertEquals(Trigger.NetworkChanged("none", "wifi"), networkTrigger(none, wifi))
+        // a capabilities-only update (same id, same transport) is not a change
+        assertNull(networkTrigger(wifi, NetState("n1", "wifi")))
     }
 }

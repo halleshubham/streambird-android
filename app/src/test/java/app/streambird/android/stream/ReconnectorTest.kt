@@ -51,8 +51,8 @@ class ReconnectorTest {
         r.onTrigger(Trigger.Stall); scope.runCurrent()
         assertEquals(1, host.calls)
         scope.advanceTimeBy(500)
-        r.onTrigger(Trigger.NetworkChanged("cellular", "wifi"))        // replaces the 1 s retry with a 1 s fresh attempt
-        scope.advanceTimeBy(999); scope.runCurrent(); assertEquals(1, host.calls)
+        r.onTrigger(Trigger.NetworkChanged("cellular", "wifi"))        // replaces the 1 s retry with a debounced (2 s) fresh attempt
+        scope.advanceTimeBy(1_999); scope.runCurrent(); assertEquals(1, host.calls)
         scope.advanceTimeBy(2); scope.runCurrent(); assertEquals(2, host.calls)
         assertEquals(ConnPhase.OK, r.phase)
     }
@@ -105,7 +105,52 @@ class ReconnectorTest {
         assertEquals(0, host.calls); assertEquals(ConnPhase.OK, r.phase)
     }
 
+    @Test fun `a network flap does not cancel an attempt that is talking to the server`() {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val scope = TestScope()
+        val log = mutableListOf<String>()
+        var calls = 0
+        val host = object : ReconnectHost {
+            override suspend fun republish() { calls++; if (calls == 1) { gate.await(); throw java.io.IOException("503") } }
+            override fun log(text: String) { log.add(text) }
+            override fun onUi(ui: ReconnectUi) {}
+            override fun nowMs() = scope.currentTime
+        }
+        val r = Reconnector(scope, host)
+        r.onTrigger(Trigger.Stall); scope.runCurrent()
+        assertEquals(1, calls)
+        r.onTrigger(Trigger.NetworkChanged("wifi", "cellular")); r.onTrigger(Trigger.NetworkChanged("cellular", "wifi"))
+        scope.advanceTimeBy(5_000); scope.runCurrent()
+        assertEquals(1, calls)                                          // the running attempt was NOT restarted by the flaps
+        gate.complete(Unit); scope.runCurrent()                         // it fails; because the network moved, the retry is debounced (2 s), not the 1 s backoff step
+        scope.advanceTimeBy(1_999); scope.runCurrent(); assertEquals(1, calls)
+        scope.advanceTimeBy(2); scope.runCurrent(); assertEquals(2, calls)
+        assertEquals(ConnPhase.OK, r.phase)
+    }
+
+    @Test fun `after giving up, a later detection re-arms the reconnect with a fresh budget`() {
+        val scope = TestScope()
+        var healthy = false
+        val logs = mutableListOf<String>()
+        val host = object : ReconnectHost {
+            override suspend fun republish() { if (!healthy) throw java.io.IOException("503") }
+            override fun log(text: String) { logs.add(text) }
+            override fun onUi(ui: ReconnectUi) {}
+            override fun nowMs() = scope.currentTime
+        }
+        val r = Reconnector(scope, host)
+        r.onTrigger(Trigger.Stall)
+        scope.advanceTimeBy(6 * 60_000L); scope.runCurrent()
+        assertEquals(ConnPhase.GAVE_UP, r.phase)
+        healthy = true
+        r.onPeerState("FAILED")                                         // a later detection starts again
+        scope.advanceTimeBy(1_000); scope.runCurrent()
+        assertEquals(ConnPhase.OK, r.phase)
+        assertTrue(logs.any { it.startsWith("giving up") })
+    }
+
     private fun stats(t: Double, rtt: Double, nack: Long = 1, pli: Long = 1, bytes: Long = 0) = app.streambird.android.media.EncoderStats(
         720, 1280, 30.0, bytes, t, null, "MediaCodec", true, 0, 0, nack, pli, 0, rtt, null, null, null,
     )
+
 }
