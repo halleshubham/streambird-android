@@ -84,97 +84,6 @@ fun ScheduleEditor(schedule: AdSchedule, onChange: (AdSchedule) -> Unit, modifie
     }
 }
 
-/**
- * The kit editor's "Ads" section: three slots (one ad per placement). Editable only when the plan allows custom ads and its limits have loaded;
- * otherwise the saved ads are shown read-only with a way to remove them (sends `ads: []`) and an explanation.
- */
-@Composable
-fun KitAdsSection(
-    access: AdsAccess,
-    savedAds: List<KitAd>,
-    slots: List<AdEditSlot>,
-    onSlots: (List<AdEditSlot>) -> Unit,
-    library: List<AssetItem>,
-    loader: ImageLoader,
-    assetUrl: (String) -> String,
-    storageEnabled: Boolean,
-    onUpload: (AdPlacement) -> Unit,
-    onRemoveAds: () -> Unit,
-    onBilling: () -> Unit,
-    busy: Boolean,
-) {
-    var picking by remember { mutableStateOf<AdPlacement?>(null) }
-    Section("Ads") {
-        when (access) {
-            AdsAccess.LOADING -> Text("Checking your plan...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            AdsAccess.FREE_PLAN, AdsAccess.NO_STORAGE -> {
-                Text(
-                    if (access == AdsAccess.FREE_PLAN) "Your own ads are on the paid plans. The Free plan shows a StreamBird banner instead."
-                    else "Your plan has no brand library, so ads cannot be edited.",
-                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (savedAds.isEmpty()) Text("No ads saved on this kit.", style = MaterialTheme.typography.bodySmall)
-                savedAds.forEach { a ->
-                    val p = AdPlacement.fromWire(a.placement) ?: return@forEach
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        AssetImage(assetUrl(a.assetId), loader, Modifier.size(48.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(p.label, style = MaterialTheme.typography.titleSmall)
-                            Text((if (a.enabled) "" else "Off, ") + describeScheduleOf(a), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-                if (savedAds.isNotEmpty()) OutlinedButton(onClick = onRemoveAds, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Remove ads", color = MaterialTheme.colorScheme.error) }
-                if (access == AdsAccess.FREE_PLAN) Button(onClick = onBilling) { Text("See plans") }
-            }
-            AdsAccess.EDITABLE -> {
-                Text("One ad per placement, a picture or an animated GIF, shown all the time or now and then.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                slots.forEach { s ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(s.placement.label, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                                if (s.assetId != null) Switch(checked = s.enabled, onCheckedChange = { v -> onSlots(slots.map { if (it.placement == s.placement) it.copy(enabled = v) else it }) })
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                AssetImage(s.assetId?.let(assetUrl), loader, Modifier.size(56.dp))
-                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    OutlinedButton(onClick = { picking = s.placement }, modifier = Modifier.fillMaxWidth()) { Text(if (s.assetId == null) "Choose from library" else "Change picture") }
-                                    OutlinedButton(onClick = { onUpload(s.placement) }, enabled = storageEnabled && !busy, modifier = Modifier.fillMaxWidth()) { Text("Upload new") }
-                                    if (s.assetId != null) TextButton(onClick = { onSlots(slots.map { if (it.placement == s.placement) it.copy(assetId = null) else it }) }) { Text("Remove this ad") }
-                                }
-                            }
-                            if (s.assetId != null) {
-                                ScheduleEditor(s.schedule, { sch -> onSlots(slots.map { if (it.placement == s.placement) it.copy(schedule = sch) else it }) })
-                                if (s.schedule is AdSchedule.Interval) Text(describeSchedule(s.schedule), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    picking?.let { p ->
-        AlertDialog(
-            onDismissRequest = { picking = null },
-            title = { Text("Ad for ${p.label}") },
-            text = {
-                if (library.isEmpty()) Text("No ad pictures in your library yet. Use \"Upload new\".")
-                else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(library, key = { it.id }) { a ->
-                        Row(Modifier.fillMaxWidth().clickable { onSlots(slots.map { if (it.placement == p) it.copy(assetId = a.id) else it }); picking = null }.padding(4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            AssetImage(assetUrl(a.id), loader, Modifier.size(48.dp))
-                            Text(a.name.ifBlank { "Untitled" } + if (a.isGif) " (GIF)" else "", maxLines = 1)
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { picking = null }) { Text("Cancel") } },
-        )
-    }
-}
-
 private fun describeScheduleOf(a: KitAd) = describeSchedule(app.streambird.android.ads.scheduleOf(a))
 
 /**
@@ -187,6 +96,9 @@ fun AdsSetupSection(
     kitAds: List<KitAd>,
     overrides: Map<AdPlacement, AdOverride>,
     onChange: (Map<AdPlacement, AdOverride>) -> Unit,
+    shrink: Boolean? = null,
+    kitShrink: Boolean = true,
+    onShrink: (Boolean?) -> Unit = {},
     onBilling: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -220,6 +132,7 @@ fun AdsSetupSection(
             }
         }
         message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        ShrinkSwitch(shrink ?: kitShrink, { v -> onShrink(if (v == kitShrink) null else v) })
         AdPlacement.entries.forEach { p ->
             val kit = kitAds.firstOrNull { it.placement == p.wire }
             val o = overrides[p]
@@ -270,12 +183,25 @@ private fun java.io.InputStream.readNBytesLimited(max: Int): ByteArray {
     return out.toByteArray()
 }
 
+/** "Shrink picture while ads show": the picture makes room for a lower / left third ad instead of being covered. */
+@Composable
+fun ShrinkSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Shrink picture while ads show", style = MaterialTheme.typography.titleSmall)
+            Text("Lower and left third ads get their own space instead of covering the picture. Full screen ads always cover it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
 /** Live screen: Show now / Hide / Follow schedule for each ad running on this stream. */
 @Composable
-fun AdsLiveSheet(ads: List<LiveAd>, onSet: (AdPlacement, AdManual?) -> Unit, onDismiss: () -> Unit) {
+fun AdsLiveSheet(ads: List<LiveAd>, shrink: Boolean, onShrink: (Boolean) -> Unit, onSet: (AdPlacement, AdManual?) -> Unit, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Ads", style = MaterialTheme.typography.titleMedium)
+            ShrinkSwitch(shrink, onShrink)
             ads.forEach { a ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(a.placement.label, style = MaterialTheme.typography.titleSmall)

@@ -118,3 +118,29 @@ jobs:
             Install: download `streambird-ads-debug.apk` on the phone, allow "install unknown apps" for the browser, open it.
             See docs/FEATURES.md.
           files: streambird-ads-debug.apk
+
+      # Orientation build: its own pre-release (orientation-latest); the steps above are untouched.
+      - name: Name the orientation APK
+        if: github.ref == 'refs/heads/claude/android-orientation'
+        run: cp app/build/outputs/apk/debug/app-debug.apk streambird-orientation-debug.apk
+
+      - name: Move the orientation-latest tag to this commit
+        if: github.ref == 'refs/heads/claude/android-orientation'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f orientation-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/orientation-latest
+
+      - name: Publish APK to the orientation-latest pre-release
+        if: github.ref == 'refs/heads/claude/android-orientation'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: orientation-latest
+          name: Orientation build (latest)
+          prerelease: true
+          body: |
+            Debug APK of StreamBird Android 0.4.0-orientation (unified brand-kit editor, 16:9 and 9:16 sets, picture shrinks while an ad shows), built from ${{ github.sha }} (${{ github.ref_name }}).
+            Install: download `streambird-orientation-debug.apk` on the phone, allow "install unknown apps" for the browser, open it.
+            See docs/FEATURES.md.
+          files: streambird-orientation-debug.apk

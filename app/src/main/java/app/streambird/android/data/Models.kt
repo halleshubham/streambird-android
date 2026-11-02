@@ -56,17 +56,25 @@ data class EffectiveLimits(
 data class BrandKit(
     val id: String,
     val name: String,
+    /** Landscape (16:9) logo / wallpaper / ads. Older servers only know these. */
     val logoAssetId: String? = null,
+    /** Portrait (9:16) logo / wallpaper / ads: absent on servers older than the orientation release (then null / empty). */
+    val logoAssetIdPortrait: String? = null,
     val logoPosition: String = "left",
     val logoSize: Int = 90,
     /** Not editable in the app, but sent back unchanged on PATCH (see BrandKitPayload). */
     val wallpaperAssetId: String? = null,
+    val wallpaperAssetIdPortrait: String? = null,
     val wallpaperDim: Int = 0,
     val lowerThirdStyle: String = "accent",
     val isDefault: Boolean = false,
     val connectionIds: List<String> = emptyList(),
     /** Up to three ads (lower_third, side_third, full_screen), one per placement. Absent on older servers. */
     val ads: List<KitAd> = emptyList(),
+    /** Portrait (9:16) ads, same shape. */
+    val adsPortrait: List<KitAd> = emptyList(),
+    /** Shrink the live picture into the space an ad leaves free while it shows (default on; absent on older servers = on). */
+    val adsShrinkPicture: Boolean = true,
 )
 
 /** One ad of a brand kit. `everySec` is the HIDDEN time between showings (not the period); continuous ads have null seconds. */

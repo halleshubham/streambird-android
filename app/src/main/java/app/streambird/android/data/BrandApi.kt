@@ -10,7 +10,11 @@ import okhttp3.MultipartBody
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
-/** What the brand-kit editor can change. Everything else on the kit is carried over from [BrandKitPayload.patch]'s `original`. */
+/**
+ * What the brand-kit editor can change. Everything else on the kit is carried over from [BrandKitPayload.patch]'s `original`.
+ * Two sets of materials: landscape (16:9: [logoAssetId], [wallpaperAssetId], [ads]) and portrait (9:16: the `...Portrait` ones);
+ * position, size, dim, style and [adsShrinkPicture] are shared.
+ */
 data class KitDraft(
     val name: String,
     val logoAssetId: String?,
@@ -20,6 +24,13 @@ data class KitDraft(
     val isDefault: Boolean,
     /** null = the user did not touch the ads: `ads` is OMITTED from the request (replace-all semantics: omitted = unchanged). [] clears them. */
     val ads: List<KitAd>? = null,
+    /** Wallpaper of the landscape set; null = none (sent as an explicit null on PATCH, like the logo). */
+    val wallpaperAssetId: String? = null,
+    val logoAssetIdPortrait: String? = null,
+    val wallpaperAssetIdPortrait: String? = null,
+    /** Same semantics as [ads], for the 9:16 set. */
+    val adsPortrait: List<KitAd>? = null,
+    val adsShrinkPicture: Boolean = true,
 )
 
 object BrandKitPayload {
@@ -29,11 +40,18 @@ object BrandKitPayload {
 
     fun clampSize(v: Int) = v.coerceIn(MIN_LOGO, MAX_LOGO)
 
+    /** Draft of an existing kit with nothing changed (what the editor starts from). */
+    fun draftOf(k: BrandKit) = KitDraft(
+        k.name, k.logoAssetId, k.logoPosition, k.logoSize, k.lowerThirdStyle, k.isDefault,
+        wallpaperAssetId = k.wallpaperAssetId, logoAssetIdPortrait = k.logoAssetIdPortrait,
+        wallpaperAssetIdPortrait = k.wallpaperAssetIdPortrait, adsShrinkPicture = k.adsShrinkPicture,
+    )
+
     /**
-     * PATCH /brand-kits/:id body. The app does not expose wallpaper, so the kit's own wallpaperAssetId / wallpaperDim are sent
-     * back unchanged (a missing field would also be left alone by the backend, but sending them is explicit and survives a
-     * future "replace" semantic). A cleared logo is an explicit JSON null; `isDefault` is only sent when turning it on
-     * (the backend ignores false: another kit has to be made the default instead).
+     * PATCH /brand-kits/:id body. Landscape logo / wallpaper are always sent (a cleared one is an explicit JSON null), `wallpaperDim` is sent back
+     * unchanged. The fields that only exist on servers with the orientation release (`logoAssetIdPortrait`, `wallpaperAssetIdPortrait`,
+     * `adsShrinkPicture`, `adsPortrait`) are sent ONLY when they changed, so editing a kit never trips an older server that does not know them.
+     * Ads: replace-all per set, omitted = unchanged, [] = none. `isDefault` is only sent when turning it on.
      */
     fun patch(original: BrandKit, d: KitDraft): JsonObject = buildJsonObject {
         put("name", d.name.trim())
@@ -41,21 +59,30 @@ object BrandKitPayload {
         put("logoPosition", d.logoPosition)
         put("logoSize", clampSize(d.logoSize))
         put("lowerThirdStyle", d.lowerThirdStyle)
-        put("wallpaperAssetId", original.wallpaperAssetId?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("wallpaperAssetId", d.wallpaperAssetId?.let { JsonPrimitive(it) } ?: JsonNull)
         put("wallpaperDim", original.wallpaperDim)
+        if (d.logoAssetIdPortrait != original.logoAssetIdPortrait) put("logoAssetIdPortrait", d.logoAssetIdPortrait?.let { JsonPrimitive(it) } ?: JsonNull)
+        if (d.wallpaperAssetIdPortrait != original.wallpaperAssetIdPortrait) put("wallpaperAssetIdPortrait", d.wallpaperAssetIdPortrait?.let { JsonPrimitive(it) } ?: JsonNull)
+        if (d.adsShrinkPicture != original.adsShrinkPicture) put("adsShrinkPicture", d.adsShrinkPicture)
         if (d.isDefault && !original.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
+        d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
     }
 
-    /** POST /brand-kits body (no wallpaper: the backend defaults it). */
+    /** POST /brand-kits body. New-release fields are only sent when set / non-default. */
     fun create(d: KitDraft): JsonObject = buildJsonObject {
         put("name", d.name.trim())
         d.logoAssetId?.let { put("logoAssetId", it) }
+        d.wallpaperAssetId?.let { put("wallpaperAssetId", it) }
+        d.logoAssetIdPortrait?.let { put("logoAssetIdPortrait", it) }
+        d.wallpaperAssetIdPortrait?.let { put("wallpaperAssetIdPortrait", it) }
+        if (!d.adsShrinkPicture) put("adsShrinkPicture", false)
         put("logoPosition", d.logoPosition)
         put("logoSize", clampSize(d.logoSize))
         put("lowerThirdStyle", d.lowerThirdStyle)
         if (d.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
+        d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
     }
 
     /** The exact shape the backend expects: placement, assetId, enabled, mode, showSec, everySec (null for continuous). */

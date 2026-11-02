@@ -26,7 +26,7 @@ import coil.compose.AsyncImage
 fun AssetImage(url: String?, loader: ImageLoader, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Fit) {
     if (url == null) {
         Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
-            Text("No logo", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("No picture", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     } else {
         AsyncImage(model = url, imageLoader = loader, contentDescription = "Logo", modifier = modifier, contentScale = contentScale)

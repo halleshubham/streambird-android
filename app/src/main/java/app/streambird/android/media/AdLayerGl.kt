@@ -13,6 +13,9 @@ import app.streambird.android.R
 import app.streambird.android.ads.AD_DRAW_ORDER
 import app.streambird.android.ads.AdManual
 import app.streambird.android.ads.AdPlacement
+import app.streambird.android.ads.AdRect
+import app.streambird.android.ads.AdShrinkInput
+import app.streambird.android.ads.sceneRectFor
 import app.streambird.android.ads.AdSchedule
 import app.streambird.android.ads.AdSlot
 import app.streambird.android.ads.FREE_PLAN_AD_SCHEDULE
@@ -96,6 +99,12 @@ class AdLayerGl(
 
     val hasAnything: Boolean get() = free || rts.any { it.enabled || it.alpha > 0 }
 
+    /** "Shrink picture while ads show" (kit switch + per-stream override). Changeable live. */
+    @Volatile var shrinkPicture = true
+    private val fullFrame = AdRect(0.0, 0.0, outW.toDouble(), outH.toDouble())
+    private val shrinkIn = HashMap<AdPlacement, AdShrinkInput>()
+    private var steppedTickerBar = 0
+
     fun setManual(p: AdPlacement, m: AdManual?) { rts[p.ordinal].manual = m }
 
     // ---- preparation (any thread, before frames flow) ----
@@ -150,13 +159,78 @@ class AdLayerGl(
 
     // ---- drawing (GL thread, inside the frame's FBO) ----
 
-    /** Draws the ads (or the Free banner). [tickerBar] = ticker bar height in px while the ticker shows, else 0. Returns whether anything may have changed GL state. */
-    fun draw(tickerBar: Int) {
+    /**
+     * Advances the ads one frame (clock, schedule, fades, Free banner) WITHOUT touching GL. The compositor calls it before drawing the scene
+     * so [sceneRect] is current, then [draw]. [tickerBar] = ticker bar height in px while the ticker shows, else 0.
+     */
+    fun update(tickerBar: Int) {
         if (released || !hasAnything) return
         val now = SystemClock.elapsedRealtime()
         val dt = if (lastNowMs < 0) 0.0 else ((now - lastNowMs) / 1000.0).coerceIn(0.0, 0.25)
         lastNowMs = now
         val elapsed = if (clockStartMs == 0L) 0.0 else (now - clockStartMs) / 1000.0
+        steppedTickerBar = tickerBar
+        if (free) {
+            val target = if (freeBanner != null || freeTex != 0) adTargetAlpha(elapsed, freeSlot) else 0.0
+            freeRt.alpha = if (freeRt.snap) target else stepAlpha(freeRt.alpha, target, dt)
+            if (freeBanner != null || freeTex != 0) freeRt.snap = false
+            val vis = freeRt.alpha > 0.002
+            if (vis != freeRt.wasVisible) { freeRt.wasVisible = vis; onEvent("ad lower_third (StreamBird) ${if (vis) "shown" else "hidden"}") }
+            freeRt.rect = fitAd(AdPlacement.LOWER_THIRD, freeW.takeIf { it > 0 } ?: freeBanner?.width ?: 0, freeH.takeIf { it > 0 } ?: freeBanner?.height ?: 0, adRect(AdPlacement.LOWER_THIRD, outW, outH, tickerBar))
+            return
+        }
+        for (i in rts.indices) {
+            val r = rts[i]; val s = slots[i]
+            s.enabled = r.enabled && (r.bitmap != null || r.tex != 0); s.schedule = r.schedule; s.manual = r.manual
+            if (s.enabled && r.gifBytes != null && !r.gifRequested && secondsUntilVisible(elapsed, r.schedule) < 3.0) requestAnim(r)
+        }
+        resolveAdAlphas(elapsed, slots, targets)
+        for (p in AD_DRAW_ORDER) {
+            val r = rts[p.ordinal]
+            if (r.bitmap != null || r.tex != 0) {
+                r.alpha = if (r.snap) targets[p.ordinal] else stepAlpha(r.alpha, targets[p.ordinal], dt)
+                r.snap = false
+            } else r.alpha = 0.0
+            val vis = r.alpha > 0.002
+            if (vis != r.wasVisible) { r.wasVisible = vis; onEvent("ad ${p.wire} ${if (vis) "shown" else "hidden"}") }
+        }
+    }
+
+    /** Picture size of the ad in [r]: the texture once uploaded, else the prepared bitmap. (0, 0) when there is none. */
+    private fun picW(r: Rt) = if (r.tex != 0) r.texW else r.bitmap?.width ?: 0
+    private fun picH(r: Rt) = if (r.tex != 0) r.texH else r.bitmap?.height ?: 0
+
+    /**
+     * Where the scene (camera, logo) is drawn right now, as of the last [update]: the whole frame, or the rectangle the visible lower/left
+     * third ad leaves free (rule and formulas: ads/AdShrink.kt = web ads.ts). Top-left origin, pixels.
+     */
+    fun sceneRect(): AdRect {
+        if (!shrinkPicture || released) return fullFrame
+        if (free) {
+            val a = if (freeRt.alpha > 0.002) freeRt.alpha else 0.0
+            if (a == 0.0) return fullFrame
+            shrinkIn.clear(); shrinkIn[AdPlacement.LOWER_THIRD] = AdShrinkInput(a, freeRt.rect)
+        } else {
+            var any = false
+            shrinkIn.clear()
+            for (p in listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD)) {
+                val r = rts[p.ordinal]
+                val a = if (r.alpha > 0.002) r.alpha else 0.0
+                if (a > 0.0) {
+                    any = true
+                    val w = picW(r); val h = picH(r)
+                    shrinkIn[p] = AdShrinkInput(a, fitAd(p, w, h, adRect(p, outW, outH, steppedTickerBar)))
+                }
+            }
+            if (!any) return fullFrame
+        }
+        return sceneRectFor(outW, outH, shrinkIn, steppedTickerBar)
+    }
+
+    /** Draws the ads (or the Free banner) as stepped by [update]. */
+    fun draw(tickerBar: Int) {
+        if (released || !hasAnything) return
+        val now = SystemClock.elapsedRealtime()
         ensureProgram()
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -164,23 +238,11 @@ class AdLayerGl(
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glUniform1i(uTex, 0)
         if (free) {
-            drawFree(elapsed, dt, tickerBar)
+            drawFree(tickerBar)
         } else {
-            for (i in rts.indices) {
-                val r = rts[i]; val s = slots[i]
-                s.enabled = r.enabled && (r.bitmap != null || r.tex != 0); s.schedule = r.schedule; s.manual = r.manual
-                if (s.enabled && r.gifBytes != null && !r.gifRequested && secondsUntilVisible(elapsed, r.schedule) < 3.0) requestAnim(r)
-            }
-            resolveAdAlphas(elapsed, slots, targets)
             for (p in AD_DRAW_ORDER) {
                 val r = rts[p.ordinal]
-                if (r.bitmap != null || r.tex != 0) {
-                    r.alpha = if (r.snap) targets[p.ordinal] else stepAlpha(r.alpha, targets[p.ordinal], dt)
-                    r.snap = false
-                } else r.alpha = 0.0
-                val vis = r.alpha > 0.002
-                if (vis != r.wasVisible) { r.wasVisible = vis; onEvent("ad ${p.wire} ${if (vis) "shown" else "hidden"}") }
-                if (vis) { uploadIfNeeded(r); updateAnim(r, now); drawTex(r.tex, r.texW, r.texH, r, p, tickerBar, r.alpha) }
+                if (r.alpha > 0.002) { uploadIfNeeded(r); updateAnim(r, now); drawTex(r.tex, r.texW, r.texH, r, p, tickerBar, r.alpha) }
             }
         }
         // The Free "Powered by StreamBird" mark is ALWAYS on top.
@@ -191,16 +253,11 @@ class AdLayerGl(
         GLES20.glViewport(0, 0, outW, outH)
     }
 
-    private fun drawFree(elapsed: Double, dt: Double, tickerBar: Int) {
+    private fun drawFree(tickerBar: Int) {
         val b = freeBanner
         if (b != null && freeTex == 0) { freeTex = upload(b); freeW = b.width; freeH = b.height; b.recycle(); freeBanner = null }
         if (freeTex == 0) return
-        val target = adTargetAlpha(elapsed, freeSlot)
-        freeRt.alpha = if (freeRt.snap) target else stepAlpha(freeRt.alpha, target, dt)
-        freeRt.snap = false
-        val vis = freeRt.alpha > 0.002
-        if (vis != freeRt.wasVisible) { freeRt.wasVisible = vis; onEvent("ad lower_third (StreamBird) ${if (vis) "shown" else "hidden"}") }
-        if (vis) drawTex(freeTex, freeW, freeH, freeRt, AdPlacement.LOWER_THIRD, tickerBar, freeRt.alpha)
+        if (freeRt.alpha > 0.002) drawTex(freeTex, freeW, freeH, freeRt, AdPlacement.LOWER_THIRD, tickerBar, freeRt.alpha)
     }
 
     private fun drawPowered(tickerBar: Int) {

@@ -68,7 +68,7 @@ class BrandApiTest {
 
     @Test fun `kit edit payload preserves wallpaper fields and clears the logo with an explicit null`() {
         val original = ApiJson.decodeFromString<BrandKit>(kitJson)
-        val p = BrandKitPayload.patch(original, KitDraft(" Renamed ", null, "left", 9999, "bar", isDefault = true))
+        val p = BrandKitPayload.patch(original, KitDraft(" Renamed ", null, "left", 9999, "bar", isDefault = true, wallpaperAssetId = "as9"))
         assertEquals("Renamed", p["name"]!!.jsonPrimitive.content)
         assertEquals(JsonNull, p["logoAssetId"])
         assertEquals("left", p["logoPosition"]!!.jsonPrimitive.content)
@@ -84,7 +84,7 @@ class BrandApiTest {
     @Test fun `PATCH goes to the kit and returns the parsed kit`() = runBlocking {
         val original = ApiJson.decodeFromString<BrandKit>(kitJson)
         server.enqueue(json(kitJson))
-        val saved = api.updateBrandKit(original, KitDraft("Main", "as1", "right", 120, "glass", true))
+        val saved = api.updateBrandKit(original, KitDraft("Main", "as1", "right", 120, "glass", true, wallpaperAssetId = "as9"))
         val r = server.takeRequest()
         assertEquals("PATCH", r.method); assertEquals("/api/brand-kits/k1", r.path)
         assertTrue(r.getHeader("Origin")!!.startsWith("http://"))

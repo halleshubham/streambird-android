@@ -29,6 +29,8 @@ import app.streambird.android.media.WARMUP_SECONDS
 import app.streambird.android.media.classifySendQuality
 import app.streambird.android.media.pickBrandKit
 import app.streambird.android.ads.AdLoadFailure
+import app.streambird.android.brand.BrandOrientation
+import app.streambird.android.brand.kitSetFor
 import app.streambird.android.ads.AdManual
 import app.streambird.android.ads.AdOverride
 import app.streambird.android.ads.AdPlacement
@@ -86,9 +88,14 @@ data class GoLiveRequest(
     val useKitAds: Boolean = false,
     /** Free plan: no custom ads; the StreamBird banner and the "Powered by" mark are drawn. */
     val freePlan: Boolean = false,
+    /** Per-stream "shrink picture while ads show": null = as the kit says (default on). */
+    val adsShrinkOverride: Boolean? = null,
 )
 
 data class LiveAd(val placement: AdPlacement, val manual: AdManual? = null)
+
+/** Result of [StreamController]'s ad loading: the pictures that loaded, the ones that did not, and the kit's shrink switch. */
+data class LoadedAds(val inputs: List<AdInput>, val failures: List<AdLoadFailure>, val kitShrink: Boolean)
 
 enum class LivePhase { IDLE, STARTING, LIVE, ENDING, ENDED, FAILED }
 
@@ -122,6 +129,8 @@ data class LiveUi(
     /** Ads that could not be loaded / a GIF shown as a still: shown to the host. */
     val adsNote: String? = null,
     val freePlan: Boolean = false,
+    /** Whether the picture shrinks while a lower / left third ad shows (kit setting, per-stream override applied). */
+    val adsShrink: Boolean = true,
 ) {
     val active get() = phase == LivePhase.STARTING || phase == LivePhase.LIVE || phase == LivePhase.ENDING
 }
@@ -211,9 +220,10 @@ class StreamController @Inject constructor(
             currentCoroutineContext().ensureActive()
             startUpdate(g) { it.copy(logoNote = logoNote) }
             // Each ad loads on its own: one failing fetch drops only that ad, and the host is told which.
-            val (adInputs, adFailures) = loadAds(req)
+            val (adInputs, adFailures, kitShrink) = loadAds(req)
+            val shrink = req.adsShrinkOverride ?: kitShrink
             currentCoroutineContext().ensureActive()
-            startUpdate(g) { it.copy(adSlots = adInputs.map { a -> LiveAd(a.placement) }, adsNote = describeAdFailures(adFailures), freePlan = req.freePlan) }
+            startUpdate(g) { it.copy(adSlots = adInputs.map { a -> LiveAd(a.placement) }, adsNote = describeAdFailures(adFailures), freePlan = req.freePlan, adsShrink = shrink) }
             adFailures.forEach { event("ad ${it.placement.wire} failed to load: ${it.reason}", withRow = true) }
 
             log = SampleLog(
@@ -236,7 +246,7 @@ class StreamController @Inject constructor(
             tickerSpec = TickerSpec.next(null, req.tickerText, req.tickerSize, android.os.SystemClock.elapsedRealtime())
             startUpdate(g) { it.copy(tickerText = tickerSpec?.text.orEmpty(), tickerSize = req.tickerSize) }
             event("ticker ${if (tickerSpec != null) "on size=${req.tickerSize.label} len=${tickerSpec!!.text.length}" else "off"}", withRow = false)
-            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec, AdsConfig(adInputs, req.freePlan)))
+            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec, AdsConfig(adInputs, req.freePlan, shrink)))
             currentCoroutineContext().ensureActive()
 
             startedAtMs = System.currentTimeMillis()
@@ -445,6 +455,13 @@ class StreamController @Inject constructor(
         event("ad ${p.wire} " + when (m) { AdManual.SHOWN -> "shown by hand"; AdManual.HIDDEN -> "hidden by hand"; null -> "follows the schedule" }, withRow = true)
     }
 
+    /** Live switch "Shrink picture while ads show" for this stream (never saved to the kit). */
+    fun setAdsShrink(on: Boolean) {
+        engine?.setAdsShrink(on)
+        _ui.update { it.copy(adsShrink = on) }
+        event("ads shrink picture " + if (on) "on" else "off", withRow = true)
+    }
+
     fun dismissAdsNote() = _ui.update { it.copy(adsNote = null) }
 
     /** Live ticker edit: text and size apply to the running picture without restarting anything. */
@@ -517,15 +534,19 @@ class StreamController @Inject constructor(
     // ---- ads ----
 
     /** Loads every custom ad independently (library file via the API, or the phone picture from memory). Never on Free. */
-    private suspend fun loadAds(req: GoLiveRequest): Pair<List<AdInput>, List<AdLoadFailure>> {
-        if (req.freePlan) return emptyList<AdInput>() to emptyList()
+    private suspend fun loadAds(req: GoLiveRequest): LoadedAds {
+        if (req.freePlan) return LoadedAds(emptyList(), emptyList(), true)
         val inputs = ArrayList<AdInput>(); val failures = ArrayList<AdLoadFailure>()
+        var kitShrink = true
         // The kit (fresh from the server, same choice as the logo) supplies the ads unless the stream runs without a kit.
         var kitAds: List<app.streambird.android.data.KitAd>? = null
         if (req.useKitAds) {
             try {
                 val kits = api.brandKits()
-                kitAds = (kits.firstOrNull { it.id == req.brandKitId } ?: pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds }))?.ads
+                val kit = kits.firstOrNull { it.id == req.brandKitId } ?: pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds })
+                // The set matching the stream's orientation; portrait ads do not fall back to the landscape ones.
+                kitAds = kit?.let { kitSetFor(it, BrandOrientation.fromWire(req.orientation.wire)).ads }
+                kitShrink = kit?.adsShrinkPicture ?: true
             } catch (e: CancellationException) { throw e } catch (t: Throwable) {
                 failures.add(AdLoadFailure(AdPlacement.LOWER_THIRD, "brand kit ads unavailable: ${(t as? ApiException)?.message ?: t.message}"))
             }
@@ -540,7 +561,7 @@ class StreamController @Inject constructor(
                 failures.add(AdLoadFailure(a.placement, (t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName))
             }
         }
-        return inputs to failures
+        return LoadedAds(inputs, failures, kitShrink)
     }
 
     // ---- logo ----
@@ -553,7 +574,7 @@ class StreamController @Inject constructor(
         LogoChoice.BRAND -> try {
             val kits = api.brandKits()
             val kit: BrandKit? = kits.firstOrNull { it.id == req.brandKitId } ?: pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds })
-            val assetId = kit?.logoAssetId
+            val assetId = kit?.let { kitSetFor(it, BrandOrientation.fromWire(req.orientation.wire)).logoAssetId }
             if (kit == null || assetId == null) null to "brand kit has no logo"
             else {
                 val bytes = api.assetFile(assetId)
