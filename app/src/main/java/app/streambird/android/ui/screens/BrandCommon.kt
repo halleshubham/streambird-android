@@ -33,16 +33,16 @@ fun AssetImage(url: String?, loader: ImageLoader, modifier: Modifier = Modifier,
     }
 }
 
-/** What the broadcast looks like: a 9:16 frame with the logo at the kit's position and size (logoSize is in 1280-px-high canvas pixels, 16 px margin). */
+/** What the broadcast looks like: a 9:16 (or, with portrait=false, 16:9) frame with the logo at the kit's position and size (logoSize is in 1280-px-high canvas pixels, 16 px margin). */
 @Composable
-fun KitPreview(logoUrl: String?, loader: ImageLoader, position: String, logoSize: Int, height: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
+fun KitPreview(logoUrl: String?, loader: ImageLoader, position: String, logoSize: Int, height: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier, portrait: Boolean = true) {
     BoxWithConstraints(
-        modifier.height(height).aspectRatio(9f / 16f).clip(RoundedCornerShape(8.dp))
+        modifier.height(height).aspectRatio(if (portrait) 9f / 16f else 16f / 9f).clip(RoundedCornerShape(8.dp))
             .background(Brush.verticalGradient(listOf(Color(0xFF374151), Color(0xFF111827)))),
     ) {
         val h = maxHeight
-        val logoH = h * (logoSize.coerceIn(16, 600) / 1280f)
-        val margin = h * (16f / 1280f)
+        val logoH = h * (logoSize.coerceIn(16, 600) / (if (portrait) 1280f else 720f))
+        val margin = h * (16f / (if (portrait) 1280f else 720f))
         if (logoUrl != null) {
             AssetImage(
                 logoUrl, loader,

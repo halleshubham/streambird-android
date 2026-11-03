@@ -135,19 +135,30 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
 
         val curLogo = if (portrait) logoIdP else logoId
         Section("Logo (" + orientation.label + ")") {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                KitPreview((curLogo ?: if (portrait) logoId else null)?.let { vm.repo.assetUrl(it) }, vm.repo.imageLoader, position, size.toInt(), 200.dp)
+            val logoPreview: @Composable () -> Unit = {
+                KitPreview(
+                    (curLogo ?: if (portrait) logoId else null)?.let { vm.repo.assetUrl(it) }, vm.repo.imageLoader, position, size.toInt(),
+                    if (portrait) 200.dp else 112.dp, portrait = portrait,
+                )
+            }
+            val logoCard: @Composable (Modifier) -> Unit = { mod ->
                 SlotCard(
                     orientation, BrandSlot.LOGO, curLogo, st.library?.logos.orEmpty(), vm.repo.imageLoader, vm.repo::assetUrl, st.storageEnabled, busy,
                     onChoose = { if (portrait) logoIdP = it else logoId = it },
                     onUpload = { pick(UploadTarget.Logo(orientation)) },
                     onRemove = { if (portrait) logoIdP = null else logoId = null },
-                    modifier = Modifier.weight(1f),
+                    modifier = mod,
                     extra = {
                         if (portrait && logoIdP == null && logoId != null) Text("Using the 16:9 logo.", style = MaterialTheme.typography.bodySmall)
                         if (st.library?.items?.firstOrNull { it.id == curLogo }?.isGif == true) Text("Animated GIF: shown animated here; the broadcast uses its first frame.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     },
                 )
+            }
+            // A wide 16:9 frame would squeeze the card beside it, so in 16:9 the preview sits above the card.
+            if (portrait) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { logoPreview(); logoCard(Modifier.weight(1f)) }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { logoPreview(); logoCard(Modifier.fillMaxWidth()) }
             }
         }
 

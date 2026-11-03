@@ -140,7 +140,7 @@ jobs:
           name: Orientation build (latest)
           prerelease: true
           body: |
-            Debug APK of StreamBird Android 0.4.0-orientation (unified brand-kit editor, 16:9 and 9:16 sets, picture shrinks while an ad shows), built from ${{ github.sha }} (${{ github.ref_name }}).
+            Debug APK of StreamBird Android 0.4.1-orientation (unified brand-kit editor, 16:9 and 9:16 sets, picture shrinks while an ad shows), built from ${{ github.sha }} (${{ github.ref_name }}).
             Install: download `streambird-orientation-debug.apk` on the phone, allow "install unknown apps" for the browser, open it.
             See docs/FEATURES.md.
           files: streambird-orientation-debug.apk
