@@ -23,8 +23,8 @@ val hasReleaseSigning = releaseKeystoreFile?.exists() == true &&
     signingValue("STREAMBIRD_KEY_PASSWORD") != null
 
 // Single source of truth for the version: gradle.properties (override with -PstreambirdVersionCode=... -PstreambirdVersionName=...).
-val appVersionCode = (project.findProperty("streambirdVersionCode") as String?)?.toInt() ?: 104
-val appVersionName = (project.findProperty("streambirdVersionName") as String?) ?: "1.0.4"
+val appVersionCode = (project.findProperty("streambirdVersionCode") as String?)?.toInt() ?: 105
+val appVersionName = (project.findProperty("streambirdVersionName") as String?) ?: "1.0.5"
 
 android {
     namespace = "app.streambird.android"
@@ -141,6 +141,9 @@ dependencies {
     implementation("androidx.credentials:credentials:1.3.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+
+    // Chrome Custom Tab for "Sign in with Google in your browser" (falls back to ACTION_VIEW without a Custom Tabs provider).
+    implementation("androidx.browser:browser:1.8.0")
 
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 

@@ -33,13 +33,20 @@
             android:name=".MainActivity"
             android:theme="@style/Theme.StreamBird.Starting"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Browser sign-in return: streambird://auth?code=... (or ?error=google_failed). Not a trust boundary: the code is useless without the app's verifier. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="streambird" android:host="auth" />
             </intent-filter>
         </activity>
 

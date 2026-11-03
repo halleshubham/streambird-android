@@ -128,6 +128,13 @@ class ApiClient(
 
     fun googleMobileBody(idToken: String): RequestBody = buildJsonObject { put("idToken", idToken) }.toString().toRequestBody(jsonType)
 
+    /** POST /auth/google/app/redeem {code, verifier}: browser sign-in handoff; same answer and sb_session cookie as [verifyCode]. Nothing else is sent. */
+    suspend fun googleAppRedeem(code: String, verifier: String): AuthResponse =
+        call(post("/auth/google/app/redeem", googleAppRedeemBody(code, verifier))) { ApiJson.decodeFromString<AuthResponse>(it) }
+
+    fun googleAppRedeemBody(code: String, verifier: String): RequestBody =
+        buildJsonObject { put("code", code); put("verifier", verifier) }.toString().toRequestBody(jsonType)
+
     /** PATCH /auth/me/phone {phone}: only the contract field is sent. Answers like /auth/me (`{user, accountId}`); 400 carries the server's own validation text. */
     suspend fun setPhone(phone: String): AuthResponse =
         call(Request.Builder().url(url("/auth/me/phone")).patch(setPhoneBody(phone)).build()) { ApiJson.decodeFromString<AuthResponse>(it) }

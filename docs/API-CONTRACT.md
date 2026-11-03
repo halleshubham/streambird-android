@@ -156,3 +156,15 @@ A `404` on any of them (older server) shows "Account deletion is not available o
 | 404 | server without the endpoint | "Google sign-in is not available on this server yet. Use the email code." |
 | 429 | rate limited | "Too many sign-in attempts. Wait a minute and try again." |
 Other statuses show the server's message; network failures show "Cannot reach the server: ...". The Credential Manager nonce is not verified by the server.
+
+## Sign in with Google in your browser (1.0.5; backend built separately, may not exist on a server yet)
+PKCE-style handoff that needs no Google client on the phone.
+1. The app opens `GET <server>/api/auth/google/app?challenge=<challenge>` in a Chrome Custom Tab. `challenge` = base64url(SHA-256(verifier)), 43 chars, no padding; `verifier` = 43-char base64url of 32 secure random bytes, kept in the app (persisted 10 minutes) and never put in a URL.
+2. The server redirects to Google and, after the login, serves a page that navigates to `streambird://auth?code=<code>` (or `streambird://auth?error=google_failed`).
+3. The app (intent filter on `MainActivity`: scheme `streambird`, host `auth`, VIEW + DEFAULT + BROWSABLE) parses `code` / `error`, then `POST /api/auth/google/app/redeem` body `{"code":"<code>","verifier":"<verifier>"}` (nothing else). Success answers like `POST /api/auth/verify-code`: `200`, `Set-Cookie: sb_session=...`, `{"user":{"id","email","role","approvedAt","phone","needsPhone"},"accountId":".."}`, applied like every login.
+| Status | Meaning | App text |
+| --- | --- | --- |
+| 400 / 401 | bad body, unknown / used / expired code, verifier does not match | "Google sign-in could not be completed. Try again or use the email code." |
+| 404 | server without the endpoints | "Google sign-in is not available on this server yet. Use the email code." |
+| 429 | rate limited | "Too many sign-in attempts. Wait a minute and try again." |
+Network failures show "Cannot reach the server: ...". The app ignores a link with no pending verifier or one older than 10 minutes (friendly message, no request), never logs the code or verifier, and clears the verifier after every redeem attempt.

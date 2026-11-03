@@ -24,6 +24,13 @@ fun openUrl(context: Context, url: String) {
     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }
 
+/** Opens [url] in a Chrome Custom Tab; without a Custom Tabs provider falls back to a plain VIEW intent. False when nothing can open it. */
+fun openInBrowser(context: Context, url: String): Boolean {
+    val uri = Uri.parse(url)
+    if (runCatching { androidx.browser.customtabs.CustomTabsIntent.Builder().build().launchUrl(context, uri) }.isSuccess) return true
+    return runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
+}
+
 /** Writes the CSV to cache/logs and opens the Android share sheet. */
 fun shareLog(context: Context, csv: String) {
     val dir = File(context.cacheDir, "logs").apply { mkdirs() }

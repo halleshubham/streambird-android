@@ -36,7 +36,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.streambird.android.BuildConfig
+import app.streambird.android.auth.BrowserSignIn
 import app.streambird.android.auth.CredentialManagerGoogleProvider
+import app.streambird.android.auth.GoogleSignInText
 import app.streambird.android.data.AuthUi
 import app.streambird.android.data.GoogleStage
 import app.streambird.android.ui.AuthViewModel
@@ -87,11 +89,21 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
                 label = when (a.google) {
                     GoogleStage.LAUNCHING -> "Opening Google..."
                     GoogleStage.EXCHANGING -> "Signing in..."
+                    GoogleStage.REDEEMING -> BrowserSignIn.Text.SIGNING_IN
                     else -> "Continue with Google"
                 },
                 enabled = !a.busy,
                 onClick = { vm.signInWithGoogle(CredentialManagerGoogleProvider(ctx, BuildConfig.GOOGLE_WEB_CLIENT_ID)) },
             )
+            if (a.google == GoogleStage.REDEEMING) Text(BrowserSignIn.Text.SIGNING_IN, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            a.googleNote?.let { note ->
+                Text(note, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = { app.streambird.android.diag.CrashReporter.shareDiagnostics(ctx, "Google sign-in diagnostics") }) { Text("Share sign-in diagnostics") }
+            }
+            OutlinedButton(
+                onClick = { vm.beginBrowserSignIn()?.let { if (!openInBrowser(ctx, it)) vm.browserUnavailable() } },
+                enabled = !a.busy, modifier = Modifier.fillMaxWidth(),
+            ) { Text(GoogleSignInText.BROWSER_LABEL) }
         }
 
         if (!a.codeSent) {

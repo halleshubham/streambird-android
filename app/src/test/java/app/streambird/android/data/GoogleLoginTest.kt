@@ -87,22 +87,27 @@ class GoogleLoginTest {
         assertEquals(listOf(GoogleStage.LAUNCHING), seen)
     }
 
-    @Test fun `cancelled is silent`() = runBlocking {
+    @Test fun `cancelled shows the calm did-not-finish note, no error banner, no server call`() = runBlocking {
         repo.signInWithGoogle({ GoogleTokenResult.Cancelled })
         val ui = repo.ui.value
         assertEquals(GoogleStage.IDLE, ui.google); assertNull(ui.error); assertFalse(ui.busy); assertEquals(0, server.requestCount)
+        assertEquals(GoogleSignInText.DID_NOT_FINISH, ui.googleNote)
+        assertTrue(ui.googleNote!!.contains("Sign in with Google in your browser"))
     }
 
-    @Test fun `no account, unavailable and failed show their messages and never call the server`() = runBlocking {
+    @Test fun `no account, unavailable and failed show their notes and never call the server`() = runBlocking {
         repo.signInWithGoogle({ GoogleTokenResult.NoAccount })
-        assertEquals(GoogleSignInText.NO_ACCOUNT, repo.ui.value.error); assertEquals(GoogleStage.ERROR, repo.ui.value.google)
+        assertEquals(GoogleSignInText.NO_ACCOUNT, repo.ui.value.googleNote); assertEquals(GoogleStage.ERROR, repo.ui.value.google)
         repo.signInWithGoogle({ GoogleTokenResult.Unavailable })
-        assertEquals(GoogleSignInText.UNAVAILABLE, repo.ui.value.error)
+        assertEquals(GoogleSignInText.UNAVAILABLE, repo.ui.value.googleNote)
         repo.signInWithGoogle({ GoogleTokenResult.Failed("x") })
-        assertEquals(GoogleSignInText.FAILED, repo.ui.value.error)
+        assertEquals(GoogleSignInText.FAILED, repo.ui.value.googleNote)
         repo.signInWithGoogle(GoogleTokenProvider { error("boom") })
-        assertEquals(GoogleSignInText.FAILED, repo.ui.value.error); assertFalse(repo.ui.value.busy)
+        assertEquals(GoogleSignInText.FAILED, repo.ui.value.googleNote); assertFalse(repo.ui.value.busy)
+        assertNull(repo.ui.value.error)
         assertEquals(0, server.requestCount)
+        assertTrue(GoogleSignInText.UNAVAILABLE.contains("in your browser")); assertTrue(GoogleSignInText.FAILED.contains("in your browser"))
+        assertFalse(GoogleSignInText.NO_ACCOUNT.contains("browser"))
     }
 
     @Test fun `server 404 401 429 400 map to their messages`() = runBlocking {

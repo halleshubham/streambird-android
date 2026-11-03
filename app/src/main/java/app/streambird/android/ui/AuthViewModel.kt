@@ -16,6 +16,9 @@ class AuthViewModel @Inject constructor(private val repo: AuthRepository) : View
     fun sendCode() { viewModelScope.launch { repo.requestCode() } }
     fun verify(code: String) { viewModelScope.launch { repo.verify(code) } }
     fun signInWithGoogle(provider: GoogleTokenProvider) { viewModelScope.launch { repo.signInWithGoogle(provider) } }
+    /** The URL to open in the browser (null while busy). */
+    fun beginBrowserSignIn(): String? = repo.beginBrowserSignIn()
+    fun browserUnavailable() = repo.browserUnavailable()
     fun savePhone(phone: String) { viewModelScope.launch { repo.savePhone(phone) } }
     fun back() = repo.backToEmail()
     fun checkAgain() { viewModelScope.launch { repo.checkAgain() } }
