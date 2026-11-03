@@ -37,9 +37,26 @@ data class AuthUi(
 
 /** Decides which stage a freshly fetched user is in. Pure, unit-tested. */
 fun stageFor(user: AuthUser): Stage = when {
-    !user.isApproved -> Stage.PENDING
+    // The number comes first, before approval, like the web's ProtectedRoute: it is how the team can reach someone who is waiting.
     user.needsPhone -> Stage.NEEDS_PHONE
+    !user.isApproved -> Stage.PENDING
     else -> Stage.READY
+}
+
+object PhoneText {
+    const val EMPTY = "Enter your mobile number."
+    const val RATE_LIMITED = "Too many tries. Wait a minute and try again."
+    const val FAILED = "Could not save your number. Try again."
+}
+
+/** Message for a failed PATCH /auth/me/phone. 400 is the server's validation text verbatim ("Enter a valid mobile number, ..."). */
+fun phoneServerError(e: Throwable): String = when {
+    e is ApiException -> when (e.status) {
+        429 -> PhoneText.RATE_LIMITED
+        else -> e.message.ifBlank { PhoneText.FAILED }
+    }
+    e is IOException -> "Cannot reach the server: ${e.message}"
+    else -> PhoneText.FAILED
 }
 
 /**
@@ -193,6 +210,27 @@ class AuthRepository @Inject constructor(
         settings.tickerSize = "S"
         jar.flush()
         _ui.update { it.copy(stage = Stage.LOGGED_OUT, user = null, email = "", codeSent = false, busy = false, error = null, note = "Your account was deleted.") }
+    }
+
+    /**
+     * The phone step for new accounts: PATCH /auth/me/phone {phone}. The answer is the updated user, applied like a login ([applyUser]), so the stage
+     * moves to PENDING (waiting for approval) or READY. 400 shows the server's own text inline; 401 ends the session; 429 and network have fixed texts.
+     */
+    suspend fun savePhone(raw: String) {
+        val phone = raw.trim()
+        if (phone.isEmpty()) { _ui.update { it.copy(error = PhoneText.EMPTY) }; return }
+        if (_ui.value.busy) return
+        _ui.update { it.copy(busy = true, error = null, note = null) }
+        try {
+            applyUser(api.setPhone(phone).user)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            _ui.update { it.copy(busy = false) }
+            throw e
+        } catch (e: ApiException) {
+            if (e.isUnauthorized) expire() else _ui.update { it.copy(busy = false, error = phoneServerError(e)) }
+        } catch (e: IOException) {
+            _ui.update { it.copy(busy = false, error = phoneServerError(e)) }
+        }
     }
 
     /** "Check again" on the pending screen. */

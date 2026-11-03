@@ -1,6 +1,7 @@
 package app.streambird.android.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +42,8 @@ import app.streambird.android.data.GoogleStage
 import app.streambird.android.ui.AuthViewModel
 import app.streambird.android.ui.theme.Amber
 
+const val COMPANY_SIGNUP_URL = "https://streambird.app/signup-company"
+
 @Composable
 fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
     var code by remember { mutableStateOf("") }
@@ -54,7 +57,7 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
         BirdLogo(96.dp, Modifier.align(Alignment.CenterHorizontally))
         Text("StreamBird", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.align(Alignment.CenterHorizontally))
         Text(
-            if (a.codeSent) "Enter the 6-digit code we emailed you." else "Sign in with your StreamBird account. Enter your email and we'll send you a one-time login code.",
+            if (a.codeSent) "Enter the 6-digit code we emailed you." else "Sign in or create your account. Enter your email and we'll send a one-time code. New here? The same code creates your account.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterHorizontally),
         )
         Spacer(Modifier.height(8.dp))
@@ -84,10 +87,19 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
                 label = when (a.google) {
                     GoogleStage.LAUNCHING -> "Opening Google..."
                     GoogleStage.EXCHANGING -> "Signing in..."
-                    else -> "Sign in with Google"
+                    else -> "Continue with Google"
                 },
                 enabled = !a.busy,
                 onClick = { vm.signInWithGoogle(CredentialManagerGoogleProvider(ctx, BuildConfig.GOOGLE_WEB_CLIENT_ID)) },
+            )
+        }
+
+        if (!a.codeSent) {
+            val ctx = LocalContext.current
+            Text(
+                "Setting up a company account for your team? Create it at streambird.app/signup-company",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().clickable { openUrl(ctx, COMPANY_SIGNUP_URL) },
             )
         }
 
@@ -146,8 +158,8 @@ fun PendingScreen(a: AuthUi, vm: AuthViewModel) {
         BirdLogo(120.dp, Modifier.align(Alignment.CenterHorizontally))
         Text("Your studio is being set up!", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
         Text(
-            "Thanks for signing up${a.user?.email?.let { " as $it" } ?: ""}. New accounts are approved by hand. " +
-                "We will let you in as soon as it is ready; this screen checks every 30 seconds.",
+            "Thanks for signing up${a.user?.email?.let { " as $it" } ?: ""}. We approve new accounts by hand, so there is nothing more for you to do. " +
+                "We will let you in as soon as it is ready; this screen checks every 30 seconds, so you can leave the app open or come back later.",
             style = MaterialTheme.typography.bodyLarge,
         )
         Button(onClick = { vm.checkAgain() }, enabled = !a.busy, modifier = Modifier.fillMaxWidth()) { Text("Check again") }
@@ -161,14 +173,29 @@ fun PendingScreen(a: AuthUi, vm: AuthViewModel) {
 
 @Composable
 fun NeedsPhoneScreen(a: AuthUi, vm: AuthViewModel) {
-    val ctx = LocalContext.current
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    var phone by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Spacer(Modifier.height(32.dp))
         BirdLogo(80.dp, Modifier.align(Alignment.CenterHorizontally))
-        Text("One more step", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
-        Text("Your account needs a mobile number before you can use the studio. Add it on the website, then come back.", style = MaterialTheme.typography.bodyLarge)
-        Button(onClick = { openUrl(ctx, a.server) }) { Text("Open streambird on the web") }
-        OutlinedButton(onClick = { vm.checkAgain() }) { Text("I added it, check again") }
+        Text("One last thing", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground)
+        Text(
+            "What is the best mobile number to reach you on${a.user?.email?.let { " ($it)" } ?: ""}?",
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        OutlinedTextField(
+            value = phone, onValueChange = { phone = it.take(32) }, label = { Text("Mobile number") }, singleLine = true,
+            placeholder = { Text("+91 98765 43210") },
+            supportingText = { Text("Indian numbers need no country code. For any other country, start with + and the code.") },
+            isError = a.error != null, enabled = !a.busy, modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+        )
+        a.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+        Button(onClick = { vm.savePhone(phone) }, enabled = phone.isNotBlank() && !a.busy, modifier = Modifier.fillMaxWidth()) { Text("Save and continue") }
+        if (a.busy) CircularProgressIndicator()
+        Text(
+            "Why we ask: so our team can reach you about your account. We only use it to help with your account and setup, never for marketing.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         TextButton(onClick = { vm.logout() }) { Text("Sign out") }
     }
 }

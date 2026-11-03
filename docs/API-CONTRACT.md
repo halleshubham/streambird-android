@@ -31,7 +31,16 @@ The cookie is kept in a persistent `CookieJar` (DataStore), so the session survi
 
 **Pending approval**: `user.approvedAt == null && role != "superadmin"` (the guard's rule). Every `AccountGuard` route then answers
 `403 "Your account is pending Superadmin approval."`; only `/auth/me` keeps working. The app shows "Your studio is being set up!" with *Check again*.
-`needsPhone: true` (phone required, none yet) -> the app asks the user to add the number on the website (`PATCH /auth/me/phone` exists but is not implemented in the spike).
+`needsPhone: true` (phone required, none yet) -> the app shows the phone step *before* the pending screen (same order as the web's `ProtectedRoute`), see below.
+
+**Sign-up**: there is no separate sign-up call. `verify-code` and `google/mobile` create the account (unapproved, `needsPhone: true` for new users) when the email is new, so the app's login screen is also its sign-up screen.
+
+### Phone step (1.0.4)
+
+`PATCH /api/auth/me/phone` (behind `SessionGuard`, so it works before approval) body `{"phone":"+91 98765 43210"}` (string, max 32 chars; nothing else is sent). The server normalises to E.164 (`normalizePhone`): a bare 10-digit number starting 6-9 (or 0/91 prefixed) is Indian, anything else needs `+` or `00` and the country code, 8-15 digits.
+* `200` -> same body as `/auth/me`: `{"user":{...,"phone":"+919876543210","needsPhone":false},"accountId":".."}`. The app applies it like a login (`AuthRepository.applyUser`): stage PENDING if `approvedAt == null`, else READY.
+* `400 {"message":"Enter a valid mobile number, with the country code if it is not an Indian number."}` (also class-validator text for a missing or too long field) -> shown inline verbatim (still passed through `neutralizePlanSteering`).
+* `401` -> session ended, back to the sign-in screen. `429` -> "Too many tries. Wait a minute and try again." Network -> "Cannot reach the server: ...".
 
 ### Channels and limits
 
