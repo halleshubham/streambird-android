@@ -94,10 +94,19 @@ class FrameCompositor(
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
-            frameDrawer!!.drawFrame(frame, drawer!!, cropMatrix(frame), 0, 0, outWidth, outHeight)
-            drawLogo()
+            // Ads first advance their clock/fades (no GL) so the scene can make room for a visible lower/left third ad (picture shrink).
+            val layer = ads
+            layer?.update(if (ticker != null) tickerBarPx else 0)
+            val sc = layer?.sceneRect()
+            val full = sc == null || (sc.w >= outWidth && sc.h >= outHeight)
+            val sx = if (full) 0 else Math.round(sc!!.x).toInt()
+            val sy = if (full) 0 else outHeight - Math.round(sc!!.y + sc.h).toInt() // GL origin is bottom-left
+            val sw = if (full) outWidth else Math.round(sc!!.w).toInt().coerceAtLeast(1)
+            val sh = if (full) outHeight else Math.round(sc!!.h).toInt().coerceAtLeast(1)
+            frameDrawer!!.drawFrame(frame, drawer!!, cropMatrix(frame), sx, sy, sw, sh)
+            drawLogo(sx, sy, sw.toFloat() / outWidth)
             drawTicker()
-            ads?.draw(if (ticker != null) tickerBarPx else 0)   // after camera, logo and ticker; the Free "Powered by" mark is drawn last inside
+            layer?.draw(if (ticker != null) tickerBarPx else 0)   // after camera, logo and ticker; the Free "Powered by" mark is drawn last inside
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             // The texture is consumed from other GL contexts (encoder, preview): make sure the writes are visible.
             GLES20.glFinish()
@@ -213,7 +222,8 @@ class FrameCompositor(
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
     }
 
-    private fun drawLogo() {
+    /** The logo is part of the scene: when the picture shrinks for an ad it moves and scales with it ([offX]/[offY] = scene origin in px, GL bottom-left; [scale] 1 = full frame). */
+    private fun drawLogo(offX: Int = 0, offY: Int = 0, scale: Float = 1f) {
         val l = logo ?: return
         if (logoTexture == 0) return
         val h = l.heightPx.coerceIn(8, outHeight)
@@ -222,7 +232,8 @@ class FrameCompositor(
         val y = outHeight - MARGIN - h // GL origin is bottom-left; the web draws the logo 16 px from the TOP.
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA) // Android bitmaps are premultiplied
-        drawer!!.drawRgb(logoTexture, FLIP_Y, l.bitmap.width, l.bitmap.height, x, y, w, h)
+        if (scale == 1f && offX == 0 && offY == 0) drawer!!.drawRgb(logoTexture, FLIP_Y, l.bitmap.width, l.bitmap.height, x, y, w, h)
+        else drawer!!.drawRgb(logoTexture, FLIP_Y, l.bitmap.width, l.bitmap.height, offX + (x * scale).toInt(), offY + (y * scale).toInt(), (w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1))
         GLES20.glDisable(GLES20.GL_BLEND)
     }
 

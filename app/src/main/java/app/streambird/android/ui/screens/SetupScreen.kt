@@ -98,6 +98,7 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
         AdsSetupBlock(
             freePlan = s.limits?.watermark == true, useKit = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, destinationIds = s.selected,
             overrides = s.adOverrides, onChange = { o -> vm.update { it.copy(adOverrides = o) } }, serverUrl = vm.baseUrl,
+            orientation = s.orientation, shrink = s.adsShrink, onShrink = { v -> vm.update { it.copy(adsShrink = v) } },
         )
         TickerSetupSection(s.tickerText, s.tickerSize) { t, z -> vm.update { it.copy(tickerText = t, tickerSize = z) } }
         ThumbnailPickerSection(s.thumbnailUri) { u -> vm.update { it.copy(thumbnailUri = u) } }

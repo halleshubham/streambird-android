@@ -16,6 +16,8 @@ interface EnginePort {
     fun startAdClock()
     /** Show now / Hide (null = follow the schedule). Never saved. */
     fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?)
+    /** "Shrink picture while ads show" on/off for the running stream. */
+    fun setAdsShrink(on: Boolean)
     fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit)
     val preview: PreviewHandle?
     val droppedFrames: Long

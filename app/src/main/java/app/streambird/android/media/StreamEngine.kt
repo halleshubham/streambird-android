@@ -60,7 +60,7 @@ data class EngineConfig(
 )
 
 /** Custom ads of this stream (empty on Free) and the Free-plan flag (StreamBird banner + "Powered by" mark instead). */
-class AdsConfig(val inputs: List<AdInput>, val freePlan: Boolean)
+class AdsConfig(val inputs: List<AdInput>, val freePlan: Boolean, val shrinkPicture: Boolean = true)
 
 val EngineConfig.outWidth get() = tier.width(orientation)
 val EngineConfig.outHeight get() = tier.height(orientation)
@@ -194,6 +194,7 @@ class StreamEngine(
         comp.ticker = cfg.ticker
         cfg.ads?.takeIf { it.freePlan || it.inputs.isNotEmpty() }?.let { ac ->
             val layer = AdLayerGl(cfg.outWidth, cfg.outHeight, { t -> listener.onEvent(t) }, { t -> listener.onEvent(t); listener.onAdNote(t) })
+            layer.shrinkPicture = ac.shrinkPicture
             layer.prepare(context, ac.inputs, ac.freePlan)
             comp.ads = layer
         }
@@ -488,6 +489,7 @@ class StreamEngine(
     }
 
     override fun startAdClock() { compositor?.ads?.clockStartMs = android.os.SystemClock.elapsedRealtime() }
+    override fun setAdsShrink(on: Boolean) { compositor?.ads?.shrinkPicture = on }
     override fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?) { compositor?.ads?.setManual(p, m) }
 
     override fun setPicturePriority(p: PicturePriority) {

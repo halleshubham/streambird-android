@@ -51,6 +51,8 @@ class StreamControllerTest {
         var lastConfig: EngineConfig? = null
         override fun startAdClock() { clockStarts.incrementAndGet() }
         override fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?) { manuals.add(p to m) }
+        val shrinks = CopyOnWriteArrayList<Boolean>()
+        override fun setAdsShrink(on: Boolean) { shrinks.add(on) }
         override fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit) { done(null, false) }
         override val preview: PreviewHandle? = null
         override val droppedFrames = 0L
@@ -93,7 +95,7 @@ class StreamControllerTest {
                 key == "POST /api/streams" -> 201 to """{"id":"s${streamCounter.incrementAndGet()}","title":"t","status":"live","ingestUrl":null,"streamKey":null,"whipUrl":"https://mtx.test/p/whip","visibility":"public","orientation":"portrait","description":null,"scheduledAt":null,"isScheduledEvent":false,"timezone":null,"expectedDurationMinutes":null,"cancelledAt":null,"destinations":[]}"""
                 key.endsWith("/end") -> 201 to """{"id":"s1","title":"t","status":"ended","whipUrl":null,"orientation":"portrait","destinations":[]}"""
                 key.endsWith("/status") -> statusJson()
-                key == "GET /api/brand-kits" -> 200 to """[{"id":"k1","name":"Kit","logoAssetId":null,"logoPosition":"left","logoSize":90,"wallpaperAssetId":null,"wallpaperDim":0,"lowerThirdStyle":"accent","isDefault":true,"connectionIds":[],"ads":[{"placement":"lower_third","assetId":"good","enabled":true,"mode":"continuous","showSec":null,"everySec":null},{"placement":"side_third","assetId":"bad","enabled":true,"mode":"interval","showSec":15,"everySec":180}]}]"""
+                key == "GET /api/brand-kits" -> 200 to """[{"id":"k1","name":"Kit","logoAssetId":null,"logoPosition":"left","logoSize":90,"wallpaperAssetId":null,"wallpaperDim":0,"lowerThirdStyle":"accent","isDefault":true,"connectionIds":[],"ads":[{"placement":"full_screen","assetId":"good","enabled":true,"mode":"continuous","showSec":null,"everySec":null}],"adsPortrait":[{"placement":"lower_third","assetId":"good","enabled":true,"mode":"continuous","showSec":null,"everySec":null},{"placement":"side_third","assetId":"bad","enabled":true,"mode":"interval","showSec":15,"everySec":180}]}]"""
                 key == "GET /api/assets/good/file" -> 200 to "PNGBYTES"
                 key == "GET /api/assets/bad/file" -> 404 to """{"statusCode":404,"message":"File not found."}"""
                 key.endsWith("/turn-credentials") -> 200 to """{"iceServers":[]}"""
@@ -251,5 +253,27 @@ class StreamControllerTest {
         val cfg = engineQueue[0].lastConfig!!.ads!!
         assertTrue(cfg.freePlan); assertTrue(cfg.inputs.isEmpty())
         assertEquals(0, server.count("GET /api/brand-kits"))           // nothing is even fetched
+    }
+
+    @Test fun `a landscape stream uses the landscape ad set, a portrait stream the portrait set`() {
+        controller.start(req.copy(orientation = StreamOrientation.LANDSCAPE, useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertEquals(listOf("full_screen"), engineQueue[0].lastConfig!!.ads!!.inputs.map { it.placement.wire })
+    }
+
+    @Test fun `shrink the picture is on by default, the per-stream override wins, and it can be switched live`() {
+        controller.start(req.copy(useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertTrue(engineQueue[0].lastConfig!!.ads!!.shrinkPicture); assertTrue(controller.ui.value.adsShrink)
+        controller.setAdsShrink(false)
+        assertFalse(controller.ui.value.adsShrink); assertEquals(listOf(false), engineQueue[0].shrinks.toList())
+        controller.setAdsShrink(true)
+        assertTrue(controller.ui.value.adsShrink); assertEquals(listOf(false, true), engineQueue[0].shrinks.toList())
+    }
+
+    @Test fun `override off is handed to the engine and shown on the live screen`() {
+        controller.start(req.copy(useKitAds = true, adsShrinkOverride = false))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertFalse(engineQueue[0].lastConfig!!.ads!!.shrinkPicture); assertFalse(controller.ui.value.adsShrink)
     }
 }

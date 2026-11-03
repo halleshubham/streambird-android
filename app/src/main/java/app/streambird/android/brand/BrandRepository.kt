@@ -134,11 +134,11 @@ class BrandRepository @Inject constructor(
         refresh()
     }
 
-    /** Reads the picked image (<= 4 MB), checks it like the backend would, uploads it (kind logo or ad). */
+    /** Reads the picked image (<= 4 MB), checks it like the backend would, uploads it (kind logo, wallpaper or ad; GIF only for logo and ad). */
     suspend fun uploadPicked(uri: Uri, kind: String = "logo"): UploadedAsset = withContext(Dispatchers.IO) {
         val cr = context.contentResolver
         val bytes = (cr.openInputStream(uri) ?: throw UploadRefused("Cannot open the chosen image.")).use { readLimited(it, MAX_ASSET_BYTES + 1) }
-        val info = when (val c = checkAssetUpload(bytes, allowGif = true)) {
+        val info = when (val c = checkAssetUpload(bytes, allowGif = kind != "wallpaper")) {
             is UploadCheck.Refused -> throw UploadRefused(c.message)
             is UploadCheck.Ok -> c.info
         }

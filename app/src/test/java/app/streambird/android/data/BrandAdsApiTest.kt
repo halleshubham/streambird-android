@@ -36,7 +36,7 @@ class BrandAdsApiTest {
     private val kitWithAds = """{"id":"k1","accountId":"a1","name":"Main","logoAssetId":"as1","logoPosition":"right","logoSize":120,"wallpaperAssetId":"as9","wallpaperDim":35,"lowerThirdStyle":"glass","isDefault":true,"connectionIds":["c1"],"ads":[{"placement":"lower_third","assetId":"ad1","enabled":true,"mode":"continuous","showSec":null,"everySec":null},{"placement":"full_screen","assetId":"ad3","enabled":false,"mode":"interval","showSec":15,"everySec":180}]}"""
     private val kitNoAds = """{"id":"k2","name":"Old","logoPosition":"left","logoSize":90,"lowerThirdStyle":"accent","isDefault":false,"connectionIds":[]}"""
     private val original get() = ApiJson.decodeFromString<BrandKit>(kitWithAds)
-    private fun draft(ads: List<KitAd>? = null) = KitDraft("Main", "as1", "right", 120, "glass", true, ads)
+    private fun draft(ads: List<KitAd>? = null) = KitDraft("Main", "as1", "right", 120, "glass", true, ads, wallpaperAssetId = "as9")
 
     @Test fun `kits parse with and without ads`() = runBlocking {
         server.enqueue(json("[$kitWithAds,$kitNoAds]"))
