@@ -77,19 +77,25 @@ object CrashReporter {
 
     fun dismiss(context: Context) { runCatching { File(context.filesDir, REPORT).delete() } }
 
+    /** The Google sign-in lines (and everything else) of the current event log as a shareable report, without needing a crash. */
+    fun shareDiagnostics(context: Context, title: String = "Diagnostics") {
+        val report = CrashReport.build(CrashReport.Input(version(), device(), null, "DIAGNOSTICS", title, null, Diag.lines()))
+        share(context, report, "diagnostics")
+    }
+
     /** Shares the report as a text file through the Android share sheet. */
-    fun share(context: Context, report: String) {
+    fun share(context: Context, report: String, kind: String = "crash report") {
         val dir = File(context.cacheDir, "logs").apply { mkdirs() }
-        val f = File(dir, "streambird-crash-${System.currentTimeMillis() / 1000}.txt").apply { writeText(report) }
+        val f = File(dir, "streambird-${kind.replace(' ', '-')}-${System.currentTimeMillis() / 1000}.txt").apply { writeText(report) }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", f)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "StreamBird crash report ${version()}")
+            putExtra(Intent.EXTRA_SUBJECT, "StreamBird $kind ${version()}")
             putExtra(Intent.EXTRA_TEXT, report.take(4000))
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(send, "Share crash report").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(Intent.createChooser(send, "Share $kind").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
     private fun version() = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"

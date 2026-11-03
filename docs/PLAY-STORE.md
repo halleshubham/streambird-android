@@ -1,6 +1,6 @@
 # Publishing StreamBird Android on Google Play
 
-Everything needed for the first Play release (1.0.0, versionCode 100; current defaults 1.0.4 / 104 add Google sign-in (section 10) and in-app account creation). Prepared 2026-11-03. Nothing here has been run on a device.
+Everything needed for the first Play release (1.0.0, versionCode 100; current defaults 1.0.5 / 105 add Google sign-in (section 10), in-app account creation and the browser Google fallback). Prepared 2026-11-03. Nothing here has been run on a device.
 Listing texts to copy-paste are in `docs/play-store/listing/`, graphics in `docs/play-store/`.
 
 ## 0. Release build facts
@@ -185,3 +185,10 @@ The ID token is requested for the server's WEB client (`1083454847771-geciauv60k
 3. **Debug keystore** of the CI debug APKs: `build-apk.yml` runs on a fresh `ubuntu-latest` runner and does not provide a keystore, so Gradle creates a new `~/.android/debug.keystore` on every run and the SHA-1 differs per build. Debug APKs from CI therefore cannot use Google sign-in (use the email code there, or build locally and register that machine's debug SHA-1: `keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android`).
 
 **OAuth consent screen**: while the Google app is in *Testing* only the listed test users (for example `oauthtestks@gmail.com`) can sign in. For everyone else publish it to *Production*; the app asks only for the basic scopes (`email profile openid`, no sensitive scopes), which should not need the full verification review, but Google may still ask for a brand verification (app name, logo, privacy policy link, authorised domain). The same web client / consent screen is used by the server for the website's Google login if it has one.
+
+### Browser fallback and the checklist (1.0.5)
+"Sign in with Google in your browser" (docs/FEATURES.md section 17) uses the server's web OAuth flow in Chrome and a `streambird://auth` link back, so it needs **no extra Google Cloud client** and works with any signing key (sideloaded, CI debug, Play). Android "Continue with Google" (Credential Manager) still needs the Android OAuth client with the right SHA-1. Checklist when "nothing happens" after choosing an account (the app now shows a note and records `google-signin: ...` lines in the diagnostics, share them from the note):
+1. Android OAuth client exists in the same project as the web client, package `com.shackyapps.streambird`.
+2. It carries the SHA-1 of the key that signed the installed build: the upload key for sideloaded builds, the **Play app signing certificate** for builds installed from Play (Play Console > Setup > App signing). A quick cancellation (under 1.5 s) in the diagnostics usually means this is missing.
+3. The OAuth consent screen is in Production (or the account is a listed test user).
+Data safety is unchanged: the browser flow shares the same Google account email/name with the StreamBird server that the Credential Manager flow already did; no new data type, no new SDK (`androidx.browser` is a UI library). The temporary verifier lives in app-private storage for at most 10 minutes.

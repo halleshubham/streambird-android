@@ -1,6 +1,10 @@
 package app.streambird.android.data
 
-import app.streambird.android.auth.GoogleSignInText
+import app.streambird.android.auth.BrowserSignIn
+import app.streambird.android.auth.InMemoryVerifierStore
+import app.streambird.android.auth.PendingVerifierStore
+import app.streambird.android.auth.googleNoteFor
+import app.streambird.android.diag.Diag
 import app.streambird.android.auth.GoogleTokenProvider
 import app.streambird.android.auth.GoogleTokenResult
 import app.streambird.android.auth.googleServerError
@@ -20,8 +24,11 @@ import javax.inject.Singleton
 
 enum class Stage { LOADING, LOGGED_OUT, PENDING, NEEDS_PHONE, READY }
 
-/** "Sign in with Google" progress: IDLE -> LAUNCHING (Google sheet open) -> EXCHANGING (token sent to the server) -> signed in, or ERROR / back to IDLE. */
-enum class GoogleStage { IDLE, LAUNCHING, EXCHANGING, ERROR }
+/**
+ * "Sign in with Google" progress: IDLE -> LAUNCHING (Google sheet open) -> EXCHANGING (token sent to the server) -> signed in, or ERROR / back to IDLE.
+ * The browser handoff adds REDEEMING (the code from the deep link is being exchanged: "Signing you in...").
+ */
+enum class GoogleStage { IDLE, LAUNCHING, EXCHANGING, REDEEMING, ERROR }
 
 data class AuthUi(
     val stage: Stage = Stage.LOADING,
@@ -33,6 +40,8 @@ data class AuthUi(
     val note: String? = null,
     val server: String = "",
     val google: GoogleStage = GoogleStage.IDLE,
+    /** Calm note shown under the Google button (Credential Manager ended without a token, or the browser handoff failed). Not an error banner. */
+    val googleNote: String? = null,
 )
 
 /** Decides which stage a freshly fetched user is in. Pure, unit-tested. */
@@ -71,7 +80,10 @@ class AuthRepository @Inject constructor(
     private val jar: PersistentCookieJar,
     private val settings: StreamPrefs,
     private val scope: CoroutineScope,
+    private val verifiers: PendingVerifierStore = InMemoryVerifierStore(),
 ) {
+    /** Injectable clock for the 10 minute verifier rule (tests). */
+    internal var clock: () -> Long = { System.currentTimeMillis() }
     private val _ui = MutableStateFlow(AuthUi(email = settings.lastEmail, server = settings.baseUrl))
     val ui: StateFlow<AuthUi> = _ui.asStateFlow()
     private var pollJob: Job? = null
@@ -97,7 +109,7 @@ class AuthRepository @Inject constructor(
 
     private fun applyUser(user: AuthUser) {
         val stage = stageFor(user)
-        _ui.update { it.copy(stage = stage, user = user, busy = false, error = null, codeSent = false) }
+        _ui.update { it.copy(stage = stage, user = user, busy = false, error = null, codeSent = false, googleNote = null, google = GoogleStage.IDLE) }
         pollJob?.cancel()
         if (stage == Stage.PENDING) {
             pollJob = scope.launch { while (isActive) { delay(PENDING_POLL_MS); refresh() } }
@@ -130,7 +142,7 @@ class AuthRepository @Inject constructor(
     suspend fun requestCode() {
         val email = _ui.value.email.trim()
         if (email.isEmpty()) { _ui.update { it.copy(error = "Enter your email.") }; return }
-        _ui.update { it.copy(busy = true, error = null, note = null) }
+        _ui.update { it.copy(busy = true, error = null, note = null, googleNote = null) }
         try {
             api.requestCode(email)
             settings.lastEmail = email
@@ -156,37 +168,112 @@ class AuthRepository @Inject constructor(
 
     /**
      * "Sign in with Google": asks [provider] for an ID token (fresh nonce), then POST /auth/google/mobile {idToken}. The answer is the same as
-     * the email-code verify, so it goes through [applyUser] (pending approval, phone and cookie session behave identically). Cancelling the Google
-     * sheet is silent. Ignored while another sign-in step is running.
+     * the email-code verify, so it goes through [applyUser] (pending approval, phone and cookie session behave identically). Anything short of a
+     * token (also a cancellation, which Credential Manager uses for "Google rejected the app") leaves a calm note under the button that points to
+     * the browser option. Ignored while another sign-in step is running.
      */
     suspend fun signInWithGoogle(provider: GoogleTokenProvider, nonce: () -> String = { newGoogleNonce() }) {
         if (_ui.value.busy || _ui.value.google == GoogleStage.LAUNCHING || _ui.value.google == GoogleStage.EXCHANGING) return
-        _ui.update { it.copy(google = GoogleStage.LAUNCHING, busy = true, error = null, note = null) }
-        val result = try { provider.requestIdToken(nonce()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { GoogleTokenResult.Failed(e.message) }
-        when (result) {
-            is GoogleTokenResult.Token -> exchangeGoogleToken(result.idToken)
-            GoogleTokenResult.Cancelled -> _ui.update { it.copy(google = GoogleStage.IDLE, busy = false) }
-            GoogleTokenResult.NoAccount -> googleError(GoogleSignInText.NO_ACCOUNT)
-            GoogleTokenResult.Unavailable -> googleError(GoogleSignInText.UNAVAILABLE)
-            is GoogleTokenResult.Failed -> googleError(GoogleSignInText.FAILED)
+        _ui.update { it.copy(google = GoogleStage.LAUNCHING, busy = true, error = null, note = null, googleNote = null) }
+        val result = try { provider.requestIdToken(nonce()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            Diag.log("google-signin: provider threw ${e.javaClass.simpleName}")
+            GoogleTokenResult.Failed(e.javaClass.simpleName)
         }
+        if (result is GoogleTokenResult.Token) { exchangeGoogleToken(result.idToken); return }
+        val stage = if (result == GoogleTokenResult.Cancelled) GoogleStage.IDLE else GoogleStage.ERROR
+        _ui.update { it.copy(google = stage, busy = false, googleNote = googleNoteFor(result)) }
     }
 
     private suspend fun exchangeGoogleToken(idToken: String) {
         _ui.update { it.copy(google = GoogleStage.EXCHANGING) }
         try {
             val r = api.googleMobile(idToken)
+            Diag.log("google-signin: server exchange ok")
             _ui.update { it.copy(google = GoogleStage.IDLE) }
             applyUser(r.user)
         } catch (e: kotlinx.coroutines.CancellationException) {
             _ui.update { it.copy(google = GoogleStage.IDLE, busy = false) }
             throw e
         } catch (e: IOException) {
+            Diag.log("google-signin: server exchange failed ${(e as? ApiException)?.status ?: e.javaClass.simpleName}")
             googleError(googleServerError(e))
         }
     }
 
     private fun googleError(message: String) = _ui.update { it.copy(google = GoogleStage.ERROR, busy = false, error = message) }
+
+    // ---- "Sign in with Google in your browser" (PKCE-style handoff, see BrowserSignIn) ----
+
+    /**
+     * Step 1: makes the verifier/challenge pair, persists the verifier with a timestamp (the process may be killed while the browser is in front)
+     * and returns the URL to open. Null while another sign-in step is running.
+     */
+    fun beginBrowserSignIn(): String? {
+        val u = _ui.value
+        if (u.busy || u.google == GoogleStage.REDEEMING) return null
+        val verifier = BrowserSignIn.newVerifier()
+        verifiers.save(verifier, clock())
+        _ui.update { it.copy(googleNote = null, error = null, note = null, google = GoogleStage.IDLE) }
+        Diag.log("google-browser: started")
+        return BrowserSignIn.startUrl(settings.baseUrl, BrowserSignIn.challengeFor(verifier))
+    }
+
+    /** The browser could not be opened at all. */
+    fun browserUnavailable() {
+        verifiers.clear()
+        _ui.update { it.copy(googleNote = BrowserSignIn.Text.NO_BROWSER) }
+    }
+
+    /**
+     * Step 2: the app was opened with `streambird://auth?...` ([raw] is the URI string). Code -> POST /auth/google/app/redeem {code, verifier}, applied
+     * like every other login ([applyUser]). Other links are ignored; with no pending verifier (or a stale one) a friendly message is shown. The
+     * verifier is cleared after any redeem attempt. Neither the code nor the verifier is ever logged.
+     */
+    suspend fun handleAuthLink(raw: String?) {
+        val link = BrowserSignIn.parseLink(raw)
+        if (link == BrowserSignIn.Link.NotOurs) return
+        val u = _ui.value
+        if (u.stage != Stage.LOGGED_OUT && u.stage != Stage.LOADING) { verifiers.clear(); return } // already signed in: nothing to do
+        if (u.google == GoogleStage.REDEEMING) return
+        when (link) {
+            BrowserSignIn.Link.NotOurs -> return
+            is BrowserSignIn.Link.Error -> {
+                verifiers.clear()
+                Diag.log("google-browser: link error=${link.reason.filter { it.isLetterOrDigit() || it == '_' }.take(32)}")
+                _ui.update { it.copy(google = GoogleStage.ERROR, busy = false, googleNote = BrowserSignIn.Text.FAILED_LINK) }
+            }
+            BrowserSignIn.Link.Malformed -> {
+                Diag.log("google-browser: link without a usable code")
+                _ui.update { it.copy(googleNote = BrowserSignIn.Text.FAILED_LINK) }
+            }
+            is BrowserSignIn.Link.Code -> redeem(link.code)
+        }
+    }
+
+    /** Fire-and-forget entry for the activity: runs on the app scope so a finishing activity does not cancel a redeem in flight. */
+    fun onAuthLink(raw: String?) { scope.launch { handleAuthLink(raw) } }
+
+    private suspend fun redeem(code: String) {
+        val verifier = when (val p = BrowserSignIn.checkPending(verifiers, clock())) {
+            is BrowserSignIn.Pending.Valid -> p.verifier
+            BrowserSignIn.Pending.None -> { Diag.log("google-browser: link with no pending sign-in"); _ui.update { it.copy(error = BrowserSignIn.Text.NO_PENDING) }; return }
+            BrowserSignIn.Pending.Stale -> { Diag.log("google-browser: link after more than 10 minutes"); _ui.update { it.copy(error = BrowserSignIn.Text.STALE) }; return }
+        }
+        _ui.update { it.copy(google = GoogleStage.REDEEMING, busy = true, error = null, note = null, googleNote = null) }
+        try {
+            val r = api.googleAppRedeem(code, verifier)
+            Diag.log("google-browser: redeem ok")
+            applyUser(r.user)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            _ui.update { it.copy(google = GoogleStage.IDLE, busy = false) }
+            throw e
+        } catch (e: IOException) {
+            Diag.log("google-browser: redeem failed ${(e as? ApiException)?.status ?: e.javaClass.simpleName}")
+            googleError(BrowserSignIn.redeemError(e))
+        } finally {
+            verifiers.clear()
+        }
+    }
 
     fun backToEmail() = _ui.update { it.copy(codeSent = false, error = null, note = null) }
 

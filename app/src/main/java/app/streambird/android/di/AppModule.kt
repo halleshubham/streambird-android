@@ -43,6 +43,9 @@ object AppModule {
         .build()
 
     @Provides @Singleton
+    fun verifierStore(@ApplicationContext ctx: Context): app.streambird.android.auth.PendingVerifierStore = app.streambird.android.auth.SharedPrefsVerifierStore(ctx)
+
+    @Provides @Singleton
     fun streamEnv(@ApplicationContext ctx: Context): app.streambird.android.stream.StreamEnv = app.streambird.android.stream.AndroidStreamEnv(ctx)
 
     @Provides @Singleton
