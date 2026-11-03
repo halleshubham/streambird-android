@@ -122,6 +122,12 @@ class ApiClient(
         return call(post("/auth/verify-code", body)) { ApiJson.decodeFromString<AuthResponse>(it) }
     }
 
+    /** POST /auth/google/mobile {idToken}: same answer and sb_session cookie as [verifyCode]. Only the token is sent. */
+    suspend fun googleMobile(idToken: String): AuthResponse =
+        call(post("/auth/google/mobile", googleMobileBody(idToken))) { ApiJson.decodeFromString<AuthResponse>(it) }
+
+    fun googleMobileBody(idToken: String): RequestBody = buildJsonObject { put("idToken", idToken) }.toString().toRequestBody(jsonType)
+
     suspend fun me(): AuthResponse = call(get("/auth/me")) { ApiJson.decodeFromString(it) }
     suspend fun logout() = call(post("/auth/logout")) { }
 
@@ -174,7 +180,13 @@ class ApiClient(
                 is JsonObject -> (m["message"] as? JsonPrimitive)?.content
                 else -> null
             }
-            return text?.takeIf { it.isNotBlank() } ?: "Request failed ($status)"
+            return text?.takeIf { it.isNotBlank() }?.let { neutralizePlanSteering(it) } ?: "Request failed ($status)"
         }
+
+        /** What the app says instead of any server text that points at upgrading, plans, prices or billing (Google Play payments policy: no purchase steering in the app). */
+        const val NOT_IN_PLAN = "This is not included in this account's plan."
+        private val STEERING = Regex("""\b(upgrade|paid plans?|free plan|see plans|pricing|prices?|billing|subscribe|subscription)\b""", RegexOption.IGNORE_CASE)
+
+        fun neutralizePlanSteering(message: String): String = if (STEERING.containsMatchIn(message)) NOT_IN_PLAN else message
     }
 }

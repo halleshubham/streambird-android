@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -6,26 +8,64 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Release signing: environment variables win, then an untracked keystore.properties at the repo root.
+// With neither, the release build is produced UNSIGNED-by-us (debug-signed APK / unsigned AAB) so forks and CI still build.
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signingValue(name: String): String? =
+    (System.getenv(name) ?: keystoreProps.getProperty(name))?.takeIf { it.isNotBlank() }
+val releaseKeystoreFile = signingValue("STREAMBIRD_KEYSTORE_FILE")?.let { rootProject.file(it).takeIf { f -> f.exists() } ?: file(it) }
+val hasReleaseSigning = releaseKeystoreFile?.exists() == true &&
+    signingValue("STREAMBIRD_KEYSTORE_PASSWORD") != null &&
+    signingValue("STREAMBIRD_KEY_ALIAS") != null &&
+    signingValue("STREAMBIRD_KEY_PASSWORD") != null
+
+// Single source of truth for the version: gradle.properties (override with -PstreambirdVersionCode=... -PstreambirdVersionName=...).
+val appVersionCode = (project.findProperty("streambirdVersionCode") as String?)?.toInt() ?: 102
+val appVersionName = (project.findProperty("streambirdVersionName") as String?) ?: "1.0.2"
+
 android {
     namespace = "app.streambird.android"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "app.streambird.android"
+        applicationId = "com.shackyapps.streambird"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 18
-        versionName = "0.5.0-presets"
+        targetSdk = 36
+        versionCode = appVersionCode
+        versionName = appVersionName
         vectorDrawables { useSupportLibrary = true }
         // Server the app talks to. Override at build time: ./gradlew assembleDebug -PstreambirdBaseUrl=https://staging.example.com
         val baseUrl = (project.findProperty("streambirdBaseUrl") as String?) ?: "https://streambird.app"
         buildConfigField("String", "DEFAULT_BASE_URL", "\"$baseUrl\"")
+        // "Sign in with Google": the ID token is requested for the SERVER's web OAuth client (its audience). The app's own Android OAuth client is
+        // matched by Google from package + signing SHA-1 and is never passed in code (docs/PLAY-STORE.md). Override for staging: -PstreambirdGoogleWebClientId=...
+        val googleWebClientId = (project.findProperty("streambirdGoogleWebClientId") as String?)
+            ?: "1083454847771-geciauv60kk4sp9asstib38gh23jeii2.apps.googleusercontent.com"
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = signingValue("STREAMBIRD_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("STREAMBIRD_KEY_ALIAS")
+                keyPassword = signingValue("STREAMBIRD_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
+            // 1.0.0 ships UNSHRUNK on purpose (no device to test R2/JNI keep rules); see docs/PLAY-STORE.md "Minify decision".
             isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Without keystore credentials the release APK falls back to the debug key (never usable for Play); the AAB stays unsigned.
+            signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
         debug {
             isMinifyEnabled = false
@@ -53,6 +93,13 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    bundle {
+        // Play delivers only the matching ABI / screen density / language to each device.
+        abi { enableSplit = true }
+        density { enableSplit = true }
+        language { enableSplit = true }
     }
 
     testOptions {
@@ -89,6 +136,11 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Sign in with Google via Credential Manager (credentials-play-services-auth is the backport for Android < 14).
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 

@@ -1,0 +1,70 @@
+name: Release AAB (Google Play)
+
+# Manual only. Builds the signed Android App Bundle for the Play Console and keeps it as a private workflow artifact
+# (NOT a GitHub release). Needs four repository secrets (Settings -> Secrets and variables -> Actions):
+#   STREAMBIRD_KEYSTORE_BASE64   base64 of the upload keystore (base64 -w0 streambird-upload.jks)
+#   STREAMBIRD_KEYSTORE_PASSWORD
+#   STREAMBIRD_KEY_ALIAS
+#   STREAMBIRD_KEY_PASSWORD
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.STREAMBIRD_KEYSTORE_BASE64 != '' && secrets.STREAMBIRD_KEYSTORE_PASSWORD != '' && secrets.STREAMBIRD_KEY_ALIAS != '' && secrets.STREAMBIRD_KEY_PASSWORD != '' }}
+    steps:
+      - name: Check signing secrets
+        run: |
+          if [ "$HAS_KEYSTORE" != "true" ]; then
+            echo "::error::Missing signing secrets. Add STREAMBIRD_KEYSTORE_BASE64, STREAMBIRD_KEYSTORE_PASSWORD, STREAMBIRD_KEY_ALIAS and STREAMBIRD_KEY_PASSWORD as repository secrets (see docs/PLAY-STORE.md, section 'CI release build'), then run this workflow again."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest
+
+      - name: Decode the upload keystore (kept in the runner temp dir only)
+        env:
+          KEYSTORE_B64: ${{ secrets.STREAMBIRD_KEYSTORE_BASE64 }}
+        run: |
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          echo "STREAMBIRD_KEYSTORE_FILE=$RUNNER_TEMP/upload.jks" >> "$GITHUB_ENV"
+
+      - name: Build the signed release bundle
+        env:
+          STREAMBIRD_KEYSTORE_PASSWORD: ${{ secrets.STREAMBIRD_KEYSTORE_PASSWORD }}
+          STREAMBIRD_KEY_ALIAS: ${{ secrets.STREAMBIRD_KEY_ALIAS }}
+          STREAMBIRD_KEY_PASSWORD: ${{ secrets.STREAMBIRD_KEY_PASSWORD }}
+        run: ./gradlew bundleRelease
+
+      - name: Name the bundle
+        run: cp app/build/outputs/bundle/release/app-release.aab streambird-release.aab
+
+      - name: Upload the bundle (workflow artifact, private to people with repo access)
+        uses: actions/upload-artifact@v4
+        with:
+          name: streambird-release-aab
+          path: streambird-release.aab
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove the decoded keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks"

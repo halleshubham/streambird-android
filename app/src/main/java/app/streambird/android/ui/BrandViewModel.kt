@@ -26,7 +26,6 @@ class BrandViewModel @Inject constructor(
 ) : ViewModel() {
     val state = repo.state
     val selectedKitId = repo.selectedKitId
-    val serverUrl: String get() = repo.serverUrl
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()

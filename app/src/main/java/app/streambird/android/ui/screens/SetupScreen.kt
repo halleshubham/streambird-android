@@ -111,14 +111,14 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
         val ok = c != LogoChoice.BRAND || s.brandAllowed
         Row(Modifier.fillMaxWidth().clickable(enabled = ok) { vm.update { it.copy(logoChoice = c) } }, verticalAlignment = Alignment.CenterVertically) {
             RadioButton(selected = s.logoChoice == c, onClick = { vm.update { it.copy(logoChoice = c) } }, enabled = ok)
-            Text(c.label + if (ok) "" else "  (brand kits are on paid plans)")
+            Text(c.label + if (ok) "" else "  (not included in this account's plan)")
         }
     }
 
     if (s.logoChoice == LogoChoice.BRAND && s.brandAllowed) BrandSetupSection(s.selected, onBrand)
     AdsSetupBlock(
         freePlan = s.limits?.watermark == true, useKit = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, destinationIds = s.selected,
-        overrides = s.adOverrides, onChange = { o -> vm.update { it.copy(adOverrides = o) } }, serverUrl = vm.baseUrl,
+        overrides = s.adOverrides, onChange = { o -> vm.update { it.copy(adOverrides = o) } },
         orientation = s.orientation, shrink = s.adsShrink, onShrink = { v -> vm.update { it.copy(adsShrink = v) } },
     )
     TickerSetupSection(s.tickerText, s.tickerSize) { t, z -> vm.update { it.copy(tickerText = t, tickerSize = z) } }
@@ -137,5 +137,5 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
 
     Text(codecs, style = MaterialTheme.typography.bodySmall)
     if (!hasHwH264) Notice("No hardware H.264 encoder was found. Streaming will likely fail or be very heavy on this phone.", Amber)
-    if (s.limits?.watermark == true) Text("Free plan: streams carry a 'Powered by StreamBird' mark (added on the server side, not in this spike).", style = MaterialTheme.typography.bodySmall)
+    if (s.limits?.watermark == true) Text("On this account's plan streams carry a 'Powered by StreamBird' mark.", style = MaterialTheme.typography.bodySmall)
 }

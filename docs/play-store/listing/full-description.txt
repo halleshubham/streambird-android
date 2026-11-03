@@ -1,0 +1,37 @@
+StreamBird lets you go live from your phone to YouTube, Facebook and Twitch at the same time, with your own branding on the picture.
+
+Open the app, point the camera, tick the channels you want and tap Go live. StreamBird sends one stream to our servers and relays it to every destination you chose.
+
+REQUIRES A STREAMBIRD ACCOUNT
+Sign in with your StreamBird account using your email and a one-time code. Channels (YouTube, Facebook Pages, Twitch) are connected on the website, then they appear in the app. Features and limits depend on your StreamBird plan.
+
+GO LIVE IN ONE TAP
+- Camera-first screen: the camera fills the screen, you add a title, pick your channels and press Go live.
+- Saved presets: keep your usual setup (channels, brand kit, quality, ticker) as a card on the home screen and start it again with one tap.
+- Portrait (9:16) and landscape (16:9) streams, with 540p, 720p or 1080p quality depending on your plan.
+- Front or back camera, flip while you stream.
+
+YOUR BRAND ON EVERY STREAM
+- Brand kits: a logo with position and size, separate sets for portrait and landscape.
+- Scrolling news ticker with your own text, changed live while you stream.
+- Your own ads on the stream (picture or animated GIF): lower third, left third or full screen, always shown or on a schedule. Which of these are available depends on your account's plan.
+- Depending on your account's plan, a small StreamBird mark and a StreamBird banner can appear on the picture.
+
+STAY ON AIR
+- The stream keeps running with the screen off, with a notification while you are live.
+- If your connection drops or you switch between Wi-Fi and mobile data, the app reconnects to the same stream automatically.
+- A send-quality indicator tells you when your connection or phone is limiting the picture.
+- Set a thumbnail for your stream before you go live.
+- Share your permanent live link with one tap.
+- If the app ever closes unexpectedly, you can share a crash report with us if you choose to.
+
+THINGS TO KNOW
+- You need a steady upload connection. About 3 Mbps is recommended for 720p.
+- Streaming uses your camera and microphone. The app asks for permission and shows a notification while you are live.
+- StreamBird does not record or store your stream.
+- Your channels' own rules still apply: for example, YouTube needs live streaming enabled on your channel.
+- The app does not sell anything inside the app and shows no third-party ads. The only ads are the ones you choose to put on your own stream (or the StreamBird banner, depending on your account's plan).
+
+You can delete your account in the app (Account > Delete account) or at https://streambird.app/delete-account
+
+Privacy policy: https://streambird.app/privacy

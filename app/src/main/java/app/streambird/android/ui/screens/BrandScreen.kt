@@ -38,15 +38,14 @@ import app.streambird.android.ui.BrandViewModel
 import app.streambird.android.ui.theme.Amber
 import app.streambird.android.ui.theme.Ok
 
-/** "Brand kits": the kits (select for the next stream, edit), and the asset library behind them. Paid plans only. */
+/** "Brand kits": the kits (select for the next stream, edit), and the asset library behind them. Not included in every plan. */
 @Composable
-fun BrandScreen(connections: List<PlatformConnection>, serverUrl: String, onBack: () -> Unit, onEdit: (String?) -> Unit) {
+fun BrandScreen(connections: List<PlatformConnection>, onBack: () -> Unit, onEdit: (String?) -> Unit) {
     val vm: BrandViewModel = hiltViewModel()
     val st by vm.state.collectAsStateWithLifecycle()
     val selected by vm.selectedKitId.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val msg by vm.msg.collectAsStateWithLifecycle()
-    val ctx = LocalContext.current
     var deleteAsset by remember { mutableStateOf<AssetItem?>(null) }
     LaunchedEffect(Unit) { vm.refresh() }
     var uploadKind by remember { mutableStateOf("logo") }
@@ -62,12 +61,11 @@ fun BrandScreen(connections: List<PlatformConnection>, serverUrl: String, onBack
         when {
             st.blocked -> Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Brand kits are on the paid plans", style = MaterialTheme.typography.titleMedium)
+                    Text("Brand kits are not included in this account's plan", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "The Free plan has no brand library, so logos cannot be saved or used in the app. Upgrade to keep brand kits and put your logo on every stream.",
+                        "This account's plan has no brand library, so logos cannot be saved or used in the app.",
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Button(onClick = { openUrl(ctx, "$serverUrl/billing") }) { Text("See plans") }
                 }
             }
             st.error != null -> {

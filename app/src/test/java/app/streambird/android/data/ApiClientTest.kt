@@ -126,7 +126,7 @@ class ApiClientTest {
         val k = api.brandKits().single()
         assertEquals("right", k.logoPosition); assertEquals(120, k.logoSize); assertTrue(k.isDefault); assertEquals(listOf("c1"), k.connectionIds)
         server.enqueue(json("""{"statusCode":403,"message":"Brand kits are on the paid plans. Your logo and wallpaper stay saved in this browser on the Free plan.","error":"Forbidden"}""", 403))
-        try { api.brandKits(); fail() } catch (e: ApiException) { assertEquals(403, e.status); assertTrue(e.message.startsWith("Brand kits are on the paid plans")) }
+        try { api.brandKits(); fail() } catch (e: ApiException) { assertEquals(403, e.status); assertEquals("This is not included in this account's plan.", e.message) }
     }
 
     @Test fun `asset file returns raw bytes`() = runBlocking {

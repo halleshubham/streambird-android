@@ -1,5 +1,10 @@
 package app.streambird.android.data
 
+import app.streambird.android.auth.GoogleSignInText
+import app.streambird.android.auth.GoogleTokenProvider
+import app.streambird.android.auth.GoogleTokenResult
+import app.streambird.android.auth.googleServerError
+import app.streambird.android.auth.newGoogleNonce
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -15,6 +20,9 @@ import javax.inject.Singleton
 
 enum class Stage { LOADING, LOGGED_OUT, PENDING, NEEDS_PHONE, READY }
 
+/** "Sign in with Google" progress: IDLE -> LAUNCHING (Google sheet open) -> EXCHANGING (token sent to the server) -> signed in, or ERROR / back to IDLE. */
+enum class GoogleStage { IDLE, LAUNCHING, EXCHANGING, ERROR }
+
 data class AuthUi(
     val stage: Stage = Stage.LOADING,
     val user: AuthUser? = null,
@@ -24,6 +32,7 @@ data class AuthUi(
     val error: String? = null,
     val note: String? = null,
     val server: String = "",
+    val google: GoogleStage = GoogleStage.IDLE,
 )
 
 /** Decides which stage a freshly fetched user is in. Pure, unit-tested. */
@@ -128,6 +137,40 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    /**
+     * "Sign in with Google": asks [provider] for an ID token (fresh nonce), then POST /auth/google/mobile {idToken}. The answer is the same as
+     * the email-code verify, so it goes through [applyUser] (pending approval, phone and cookie session behave identically). Cancelling the Google
+     * sheet is silent. Ignored while another sign-in step is running.
+     */
+    suspend fun signInWithGoogle(provider: GoogleTokenProvider, nonce: () -> String = { newGoogleNonce() }) {
+        if (_ui.value.busy || _ui.value.google == GoogleStage.LAUNCHING || _ui.value.google == GoogleStage.EXCHANGING) return
+        _ui.update { it.copy(google = GoogleStage.LAUNCHING, busy = true, error = null, note = null) }
+        val result = try { provider.requestIdToken(nonce()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { GoogleTokenResult.Failed(e.message) }
+        when (result) {
+            is GoogleTokenResult.Token -> exchangeGoogleToken(result.idToken)
+            GoogleTokenResult.Cancelled -> _ui.update { it.copy(google = GoogleStage.IDLE, busy = false) }
+            GoogleTokenResult.NoAccount -> googleError(GoogleSignInText.NO_ACCOUNT)
+            GoogleTokenResult.Unavailable -> googleError(GoogleSignInText.UNAVAILABLE)
+            is GoogleTokenResult.Failed -> googleError(GoogleSignInText.FAILED)
+        }
+    }
+
+    private suspend fun exchangeGoogleToken(idToken: String) {
+        _ui.update { it.copy(google = GoogleStage.EXCHANGING) }
+        try {
+            val r = api.googleMobile(idToken)
+            _ui.update { it.copy(google = GoogleStage.IDLE) }
+            applyUser(r.user)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            _ui.update { it.copy(google = GoogleStage.IDLE, busy = false) }
+            throw e
+        } catch (e: IOException) {
+            googleError(googleServerError(e))
+        }
+    }
+
+    private fun googleError(message: String) = _ui.update { it.copy(google = GoogleStage.ERROR, busy = false, error = message) }
+
     fun backToEmail() = _ui.update { it.copy(codeSent = false, error = null, note = null) }
 
     suspend fun logout() {
@@ -136,6 +179,20 @@ class AuthRepository @Inject constructor(
         jar.flush() // durable before the screen says signed out: an older save must never bring the session back
         pollJob?.cancel()
         _ui.update { it.copy(stage = Stage.LOGGED_OUT, user = null, codeSent = false, note = null, error = null) }
+    }
+
+    /**
+     * The server deleted the account (DELETE /account answered 204): same teardown as [logout] minus the server call (the session is already gone),
+     * plus the preferences that belong to the person (last email, ticker). The server address is kept (it is app configuration, not account data).
+     */
+    suspend fun accountDeleted() {
+        pollJob?.cancel()
+        jar.clear()
+        settings.lastEmail = ""
+        settings.tickerText = ""
+        settings.tickerSize = "S"
+        jar.flush()
+        _ui.update { it.copy(stage = Stage.LOGGED_OUT, user = null, email = "", codeSent = false, busy = false, error = null, note = "Your account was deleted.") }
     }
 
     /** "Check again" on the pending screen. */

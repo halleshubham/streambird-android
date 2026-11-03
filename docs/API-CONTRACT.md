@@ -128,3 +128,22 @@ Saved go-live setups. The app tolerates the endpoints being absent (404): the pr
 
 `quality`: the app has no server-side quality value of its own (streams are created without one), so it uses the web's plan resolution names: `sd` = 540p, `hd` = 720p, `fhd` = 1080p. Reading also accepts `540p|720p|1080p`, `p540|p720|p1080` and `qhd` (as 1080p), any case; an unknown value leaves the current quality alone. **To be confirmed against the backend.**
 
+
+## Account deletion (Play requirement; coded against this contract, backend built separately)
+Session cookie auth + `Origin`, like every other route.
+| Call | Answer | Notes |
+| --- | --- | --- |
+| `GET /api/account/delete/preview` | `{isOnlyAdmin:boolean, memberCount:number, activeSubscription:{plan:string,nextRenewal:string\|null}\|null, liveStream:boolean, connectionsCount:number, assetsCount:number}` | the app tolerates missing / null / wrong-typed fields (defaults: false, 1, null, false, 0, 0) |
+| `POST /api/account/delete/request` | `204` | emails a 6-digit code to the signed-in user |
+| `DELETE /api/account` body `{code:string, confirmCompanyDeletion?:boolean}` | `204` | `confirmCompanyDeletion` is sent only as `true` when the user ticked the box. `409` = confirmation required but missing; `400`/`401` = wrong or expired code; `403` = superadmin (not deletable) |
+A `404` on any of them (older server) shows "Account deletion is not available on this server yet. Contact support@shackyapps.in". Web path: `https://streambird.app/delete-account`.
+
+## Sign in with Google (1.0.2; backend built separately, may not exist on a server yet)
+`POST /api/auth/google/mobile` body `{"idToken":"<Google ID token>"}` (nothing else is sent; the token's audience is the server's web client id). Success answers like `POST /api/auth/verify-code`: `200`, `Set-Cookie: sb_session=...`, `{"user":{...},"accountId":".."}`, parsed by the same code (`AuthResponse`). A pending (unapproved) account arrives as an ordinary user with `approvedAt: null`.
+| Status | Meaning | App text |
+| --- | --- | --- |
+| 400 | bad body | "Google sign-in could not be completed. Try again or use the email code." |
+| 401 | invalid / expired / unverified token or wrong audience | "Google could not verify this account. Try again or use the email code." |
+| 404 | server without the endpoint | "Google sign-in is not available on this server yet. Use the email code." |
+| 429 | rate limited | "Too many sign-in attempts. Wait a minute and try again." |
+Other statuses show the server's message; network failures show "Cannot reach the server: ...". The Credential Manager nonce is not verified by the server.

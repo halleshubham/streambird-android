@@ -108,7 +108,8 @@ class BrandAdsApiTest {
 
     @Test fun `backend refusals are shown with the backend's own message`() = runBlocking {
         val ads = listOf(KitAd("lower_third", "ad1", true, "continuous", null, null))
-        expect(403, "Your own ads are on the paid plans. Upgrade to run them.") { api.updateBrandKit(original, draft(ads)) }
+        server.enqueue(json("""{"statusCode":403,"message":"Your own ads are on the paid plans. Upgrade to run them.","error":"Forbidden"}""", 403))
+        try { api.updateBrandKit(original, draft(ads)); fail() } catch (e: ApiException) { assertEquals(403, e.status); assertEquals("This is not included in this account's plan.", e.message) }
         expect(400, "showSec must be an integer number not greater than 3600") { api.updateBrandKit(original, draft(listOf(KitAd("lower_third", "ad1", true, "interval", 5000, 10)))) }
         expect(409, "This file is used by the brand kit \"Main\". Change or delete it first.") { api.deleteAsset("ad1") }
         expect(400, "A logo or wallpaper cannot use an ad picture.") { api.updateBrandKit(original, draft()) }

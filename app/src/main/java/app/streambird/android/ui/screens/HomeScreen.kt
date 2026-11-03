@@ -59,6 +59,7 @@ fun HomeScreen(
     onOpen: (Preset?, customize: Boolean) -> Unit,
     onChannels: () -> Unit,
     onBrand: () -> Unit,
+    onAccount: () -> Unit = {},
 ) {
     val s by vm.ui.collectAsStateWithLifecycle()
     val ps by vm.presets.state.collectAsStateWithLifecycle()
@@ -71,7 +72,10 @@ fun HomeScreen(
     val ready = !s.loading && s.error == null && s.connections.isNotEmpty()
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        BirdTopBar { TextButton(onClick = { vm.logout() }) { Text("Sign out") } }
+        BirdTopBar {
+            TextButton(onClick = onAccount) { Text("Account") }
+            TextButton(onClick = { vm.logout() }) { Text("Sign out") }
+        }
         StaleStreamsCard(s.staleStreams, s.staleNote, vm::endStale, vm::dismissStale)
         CrashReportCard()
         PageHeading("Ready when you are", s.limits?.let { "${it.planName.ifBlank { it.planKey }} plan - up to ${it.maxDestinations} destination${if (it.maxDestinations == 1) "" else "s"}, up to ${it.maxResolution.uppercase()}" })

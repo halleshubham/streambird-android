@@ -119,7 +119,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
         if (kitId != null && st.loaded && original == null) Notice("This brand kit no longer exists.", MaterialTheme.colorScheme.error)
         msg?.let { Notice(it.text, if (it.error) MaterialTheme.colorScheme.error else Ok) }
         if (!st.loaded) CircularProgressIndicator()
-        if (st.blocked) Notice("Brand kits are on the paid plans.", MaterialTheme.colorScheme.error)
+        if (st.blocked) Notice("Brand kits are not included in this account's plan.", MaterialTheme.colorScheme.error)
         if (!st.storageEnabled) Text("Brand storage is not enabled on this server yet, so uploads are off.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         OutlinedTextField(value = name, onValueChange = { name = it.take(80) }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -234,7 +234,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                 val d = BrandKitPayload.draftOf(o)
                 vm.save(o, if (portrait) d.copy(adsPortrait = emptyList()) else d.copy(ads = emptyList()), o.connectionIds.toSet()) { }
             } },
-            onBilling = { openUrl(ctx, vm.serverUrl + "/billing") }, busy = busy,
+            busy = busy,
         )
         (adsError ?: adsErrorOther)?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 

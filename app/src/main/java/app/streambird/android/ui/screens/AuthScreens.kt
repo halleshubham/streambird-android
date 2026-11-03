@@ -1,6 +1,13 @@
 package app.streambird.android.ui.screens
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,7 +18,9 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -22,17 +31,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.streambird.android.BuildConfig
+import app.streambird.android.auth.CredentialManagerGoogleProvider
 import app.streambird.android.data.AuthUi
+import app.streambird.android.data.GoogleStage
 import app.streambird.android.ui.AuthViewModel
 import app.streambird.android.ui.theme.Amber
 
 @Composable
 fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
-    val ctx = LocalContext.current
     var code by remember { mutableStateOf("") }
     var showServer by remember { mutableStateOf(false) }
     var serverText by remember(a.server) { mutableStateOf(a.server) }
@@ -44,7 +58,7 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
         BirdLogo(96.dp, Modifier.align(Alignment.CenterHorizontally))
         Text("StreamBird", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.align(Alignment.CenterHorizontally))
         Text(
-            if (a.codeSent) "Enter the 6-digit code we emailed you." else "Enter your email and we'll send you a one-time login code.",
+            if (a.codeSent) "Enter the 6-digit code we emailed you." else "Sign in with your StreamBird account. Enter your email and we'll send you a one-time login code.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterHorizontally),
         )
         Spacer(Modifier.height(8.dp))
@@ -67,8 +81,21 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
         a.note?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
         a.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
 
+        if (!a.codeSent) {
+            OrDivider()
+            val ctx = LocalContext.current
+            GoogleSignInButton(
+                label = when (a.google) {
+                    GoogleStage.LAUNCHING -> "Opening Google..."
+                    GoogleStage.EXCHANGING -> "Signing in..."
+                    else -> "Sign in with Google"
+                },
+                enabled = !a.busy,
+                onClick = { vm.signInWithGoogle(CredentialManagerGoogleProvider(ctx, BuildConfig.GOOGLE_WEB_CLIENT_ID)) },
+            )
+        }
+
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = { openUrl(ctx, a.server) }, modifier = Modifier.fillMaxWidth()) { Text("New here? Register on the website") }
         TextButton(onClick = { showServer = !showServer }) { Text("Server: ${a.server.removePrefix("https://")}") }
         if (showServer) {
             OutlinedTextField(
@@ -77,6 +104,49 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
             )
             OutlinedButton(onClick = { vm.setServer(serverText) }) { Text("Use this server") }
         }
+    }
+}
+
+@Composable
+private fun OrDivider() {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        HorizontalDivider(Modifier.weight(1f))
+        Text("or", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        HorizontalDivider(Modifier.weight(1f))
+    }
+}
+
+/**
+ * Google's "Sign in with Google" button look (light theme: white, thin grey outline, dark text, the "G" mark on the left), drawn in Compose.
+ * The G is the four-colour logo built from the official colours as arcs plus the bar; see docs/FEATURES.md for the branding caveat.
+ */
+@Composable
+private fun GoogleSignInButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    androidx.compose.material3.OutlinedButton(
+        onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp), shape = RoundedCornerShape(6.dp),
+        border = BorderStroke(1.dp, Color(0xFF747775)),
+        colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White, contentColor = Color(0xFF1F1F1F), disabledContainerColor = Color.White.copy(alpha = 0.6f), disabledContentColor = Color(0xFF1F1F1F).copy(alpha = 0.5f)),
+    ) {
+        GoogleGMark(Modifier.size(18.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label)
+    }
+}
+
+@Composable
+private fun GoogleGMark(modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val stroke = size.minDimension * 0.2f
+        val inset = stroke / 2
+        val arcSize = Size(size.width - stroke, size.height - stroke)
+        val topLeft = Offset(inset, inset)
+        fun arc(color: Color, start: Float, sweep: Float) = drawArc(color, start, sweep, false, topLeft, arcSize, style = Stroke(stroke))
+        arc(Color(0xFFEA4335), 200f, 90f) // red, top
+        arc(Color(0xFFFBBC05), 140f, 60f) // yellow, left
+        arc(Color(0xFF34A853), 50f, 90f) // green, bottom
+        arc(Color(0xFF4285F4), -40f, 90f) // blue, right
+        val midY = size.height / 2
+        drawRect(Color(0xFF4285F4), Offset(size.width / 2, midY - stroke / 2), Size(size.width / 2 - inset * 0.2f, stroke)) // the bar
     }
 }
 
