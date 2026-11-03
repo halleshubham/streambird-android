@@ -1,0 +1,6 @@
+First release on Google Play.
+- One-tap Go live with the camera on screen
+- Saved presets on the home screen
+- Brand kits: logo, ticker and your own ads (paid plans)
+- Portrait and landscape streams up to 1080p
+- Automatic reconnect when your network changes

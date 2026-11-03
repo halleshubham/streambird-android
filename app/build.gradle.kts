@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -6,26 +8,59 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Release signing: environment variables win, then an untracked keystore.properties at the repo root.
+// With neither, the release build is produced UNSIGNED-by-us (debug-signed APK / unsigned AAB) so forks and CI still build.
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signingValue(name: String): String? =
+    (System.getenv(name) ?: keystoreProps.getProperty(name))?.takeIf { it.isNotBlank() }
+val releaseKeystoreFile = signingValue("STREAMBIRD_KEYSTORE_FILE")?.let { rootProject.file(it).takeIf { f -> f.exists() } ?: file(it) }
+val hasReleaseSigning = releaseKeystoreFile?.exists() == true &&
+    signingValue("STREAMBIRD_KEYSTORE_PASSWORD") != null &&
+    signingValue("STREAMBIRD_KEY_ALIAS") != null &&
+    signingValue("STREAMBIRD_KEY_PASSWORD") != null
+
+// Single source of truth for the version: gradle.properties (override with -PstreambirdVersionCode=... -PstreambirdVersionName=...).
+val appVersionCode = (project.findProperty("streambirdVersionCode") as String?)?.toInt() ?: 100
+val appVersionName = (project.findProperty("streambirdVersionName") as String?) ?: "1.0.0"
+
 android {
     namespace = "app.streambird.android"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "app.streambird.android"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 18
-        versionName = "0.5.0-presets"
+        targetSdk = 36
+        versionCode = appVersionCode
+        versionName = appVersionName
         vectorDrawables { useSupportLibrary = true }
         // Server the app talks to. Override at build time: ./gradlew assembleDebug -PstreambirdBaseUrl=https://staging.example.com
         val baseUrl = (project.findProperty("streambirdBaseUrl") as String?) ?: "https://streambird.app"
         buildConfigField("String", "DEFAULT_BASE_URL", "\"$baseUrl\"")
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = signingValue("STREAMBIRD_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("STREAMBIRD_KEY_ALIAS")
+                keyPassword = signingValue("STREAMBIRD_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            // 1.0.0 ships UNSHRUNK on purpose (no device to test R2/JNI keep rules); see docs/PLAY-STORE.md "Minify decision".
             isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Without keystore credentials the release APK falls back to the debug key (never usable for Play); the AAB stays unsigned.
+            signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
         debug {
             isMinifyEnabled = false
@@ -53,6 +88,13 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    bundle {
+        // Play delivers only the matching ABI / screen density / language to each device.
+        abi { enableSplit = true }
+        density { enableSplit = true }
+        language { enableSplit = true }
     }
 
     testOptions {

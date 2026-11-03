@@ -1,4 +1,4 @@
-# 0.2.0 - 0.5.0-presets: what was added
+# 0.2.0 - 1.0.0: what was added
 
 Scope of the app (decided): log in, see the integrated channels, brand setup, start a stream. No guests, wallpaper drawing, background removal, screen share or recording.
 
@@ -94,10 +94,13 @@ Design direction "A (one-tap, camera first) + C (saved presets)": the app used t
 * **Tests** (JVM): `PresetsApiTest` (MockWebServer: list parsing with unknown/missing/null fields, broken rows skipped, `items` wrapper, 404, HTML answer, request bodies carry only the six known config keys, ticker cap 200, name cap 80, PATCH only what is given, DELETE, `/use`), `PresetLogicTest` (summary text incl. duplicates of one platform, setup line, quality wire mapping, preset -> setup incl. plan/connection/kit limits, setup -> preset round trip, implicit default card, home ordering), `PresetControllerTest` (404/offline/garbage fallback, keep cards on transient errors, save create/update, blank name, errors, delete, mark used). Existing tests unchanged.
 * **Not verifiable without a device**: the layouts and colours of the home cards and the camera screen (gradients, chips wrapping, the sheet at 1/3 of a small screen), the pre-live camera preview itself (start/stop/flip timing, hand-over of the camera to the engine at Go live, front-camera mirroring: the preview un-mirrors the front camera like the engine does, unchecked), permission prompts from the camera screen, and the real server (the endpoints were built in parallel; the `quality` wire values `sd|hd|fhd` are an assumption, see API-CONTRACT.md).
 
+## 14. Google Play release (1.0.0)
+No feature changes: this release prepares publishing. versionName `1.0.0`, versionCode `100` (single source at the top of `app/build.gradle.kts`), targetSdk/compileSdk 36 (Play's requirement since 31 Aug 2026; AGP 8.9.1 + Gradle 8.11.1), a `release` build type signed from env vars / untracked `keystore.properties` (unsigned-by-us fallback so forks build), AAB with ABI/density/language splits, minify OFF (see below), manual workflow `release-aab.yml`, Play Console pack in `docs/PLAY-STORE.md`. Not verified on a device (Android 16 behaviour changes, release build behaviour).
+
 ## 10. Known remaining risks (not done)
 * **R8/ProGuard**: release builds have `isMinifyEnabled = false`. Before enabling minification add keep rules for `org.webrtc.**` (JNI looks classes/methods up by name) and the Hilt/serialization entry points, and test a release build on a device.
-* **Target SDK**: 35 now; Google Play requires the current target (36 from August 2026): re-test the foreground-service types, edge-to-edge and photo picker behaviour after the bump.
-* **Release signing**: only debug-signed APKs exist; a release keystore, Play App Signing and an update channel are needed. Debug and release builds cannot update each other.
+* **Target SDK**: 36 since 1.0.0 (Play's requirement): compiled and unit-tested only; re-test foreground-service types, large-screen orientation, predictive back and the photo picker on a real Android 16 device.
+* **Release signing**: done in 1.0.0 (upload key + Play App Signing, see PLAY-STORE.md). Debug and release builds still cannot update each other.
 * **Foreground service declaration** (Play Console): `camera` and `microphone` types need a justification video and the in-app disclosure; Android 14+ needs the permissions granted before the service starts (the app asks first).
 * **Data-safety items to declare**: email address (account), camera and microphone (live video/audio, sent to StreamBird servers and the destinations), optional photos (logo/thumbnail from the picker), crash/diagnostic reports the user chooses to share (device model, Android version, last 200 app events), and that the app falls back to Google's public STUN server (`stun.l.google.com:19302`) when the StreamBird TURN credentials cannot be fetched (the phone's IP is visible to it).
 * **Not unit-testable here**: everything touching real camera, MediaCodec, WebRTC native code, GL, ConnectivityManager and the Compose layout; the controller and engine rules are tested with fakes, not on a device.
