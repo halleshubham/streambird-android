@@ -12,6 +12,12 @@ import app.streambird.android.media.PicturePriority
 import app.streambird.android.media.StreamOrientation
 import app.streambird.android.media.StreamTier
 import app.streambird.android.media.canSelectMore
+import app.streambird.android.preset.PresetController
+import app.streambird.android.preset.SetupChoices
+import app.streambird.android.preset.SetupLimits
+import app.streambird.android.preset.applyPresetConfig
+import app.streambird.android.preset.choicesToConfig
+import app.streambird.android.preset.implicitDefaultPreset
 import app.streambird.android.stream.GoLiveRequest
 import app.streambird.android.stream.LogoChoice
 import app.streambird.android.stream.StreamController
@@ -53,6 +59,10 @@ data class StudioUi(
     val adsShrink: Boolean? = null,
     val staleStreams: List<app.streambird.android.data.StreamListItem> = emptyList(),
     val staleNote: String? = null,
+    /** The saved preset the camera-first screen was opened with (null = the implicit default card or a new, unsaved preset). */
+    val activePreset: app.streambird.android.data.Preset? = null,
+    /** Things the preset could not apply (a channel was disconnected, quality above the plan...). */
+    val presetNote: String? = null,
 ) {
     val brandAllowed get() = (limits?.assetStorageMb ?: 0) > 0
     val allowedTiers get() = StreamTier.allowed(limits?.maxResolution ?: "sd")
@@ -66,6 +76,7 @@ class StudioViewModel @Inject constructor(
     private val settings: app.streambird.android.data.Settings,
     val controller: StreamController,
     private val brand: app.streambird.android.brand.BrandRepository,
+    val presets: PresetController,
 ) : ViewModel() {
     private val _ui = MutableStateFlow(
         StudioUi(
@@ -97,6 +108,9 @@ class StudioViewModel @Inject constructor(
                         )
                     }
                 }
+                // Presets and brand kits only decorate the home cards: they never fail the screen (an older server has no /presets).
+                launch { runCatching { presets.refresh() } }
+                launch { runCatching { brand.refresh() } }
             } catch (e: ApiException) {
                 when {
                     e.isUnauthorized -> auth.expire()
@@ -147,6 +161,67 @@ class StudioViewModel @Inject constructor(
 
     fun update(f: (StudioUi) -> StudioUi) = _ui.update(f)
 
+    val brandState get() = brand.state
+    val brandSelectedKitId get() = brand.selectedKitId
+
+    /** Name of the brand kit that would apply to [destinations] (the explicit choice or the automatic one); null when there is none. */
+    fun kitName(destinations: Collection<String>, state: app.streambird.android.brand.BrandState, @Suppress("UNUSED_PARAMETER") selectedKitId: String?): String? =
+        brand.effectiveKit(destinations, state)?.name
+
+    private fun choices(s: StudioUi) = SetupChoices(s.selected, s.tier, s.orientation, brand.selectedKitId.value, s.tickerText)
+
+    private fun limits(s: StudioUi): SetupLimits {
+        val b = brand.state.value
+        return SetupLimits(
+            connectionIds = s.connections.map { it.id }.toSet(),
+            maxDestinations = s.limits?.maxDestinations ?: 1,
+            allowedTiers = s.allowedTiers,
+            brandAllowed = s.brandAllowed,
+            knownKitIds = if (b.loaded && !b.blocked) b.kits.map { it.id }.toSet() else null,
+        )
+    }
+
+    /** The card shown when the server has no presets (or none yet): today's setup as one preset. */
+    fun implicitPreset(): app.streambird.android.data.Preset {
+        val s = _ui.value
+        return implicitDefaultPreset(choices(s), s.connections, s.limits?.maxDestinations ?: 1, s.brandAllowed)
+    }
+
+    /** Makes [p] the current setup (destinations, quality, shape, brand kit, ticker). [p] = null starts a new, empty-named preset from the implicit default. */
+    fun openPreset(p: app.streambird.android.data.Preset?) {
+        val preset = p ?: implicitPreset()
+        val s = _ui.value
+        val applied = applyPresetConfig(preset.config, choices(s), limits(s))
+        brand.select(applied.choices.brandKitId)
+        _ui.update {
+            it.copy(
+                selected = applied.choices.selected, tier = applied.choices.tier, orientation = applied.choices.orientation,
+                tickerText = applied.choices.tickerText, limitNote = null,
+                logoChoice = if (it.brandAllowed) LogoChoice.BRAND else it.logoChoice,
+                activePreset = preset.takeUnless { x -> x.isImplicit || p == null },
+                presetNote = applied.notes.joinToString(" ").ifEmpty { null },
+            )
+        }
+    }
+
+    /** Saves the current setup as a new preset (or over the open one when [overwrite]). Returns true on success. */
+    fun savePreset(name: String, overwrite: Boolean, onDone: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val s = _ui.value
+            val saved = presets.save(if (overwrite) s.activePreset?.id else null, name, choicesToConfig(choices(s)))
+            if (saved != null) _ui.update { it.copy(activePreset = saved) }
+            onDone(saved != null)
+        }
+    }
+
+    fun deletePreset(id: String, onDone: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val ok = presets.delete(id)
+            if (ok) _ui.update { if (it.activePreset?.id == id) it.copy(activePreset = null) else it }
+            onDone(ok)
+        }
+    }
+
     fun goLive() {
         val s = _ui.value
         settings.tickerText = app.streambird.android.media.Ticker.sanitize(s.tickerText); settings.tickerSize = s.tickerSize.name
@@ -161,6 +236,8 @@ class StudioViewModel @Inject constructor(
                 liveLinks = s.connections.filter { it.id in s.selected }.associate { it.id to it.liveLinkUrl },
             ),
         )
+        // One tap on a preset's Go live also records the use (most recent first on the home screen). Never blocks or fails the stream.
+        s.activePreset?.takeUnless { it.isImplicit }?.let { p -> viewModelScope.launch { presets.markUsed(p.id) } }
     }
 
     val baseUrl: String get() = settings.baseUrl

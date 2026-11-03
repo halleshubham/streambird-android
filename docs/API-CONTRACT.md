@@ -111,3 +111,20 @@ Source: the web studio's ads.ts / backend `brand-kits.service.ts` + DTOs. Asset 
 Source: web PR "brand-orientation" (`brand-kits.service.ts`, `brand-kit.dto.ts`). Deployed with that PR; the app tolerates their absence.
 
 Kit response/body fields: landscape `logoAssetId`, `wallpaperAssetId`, `ads`; portrait `logoAssetIdPortrait`, `wallpaperAssetIdPortrait`, `adsPortrait`; shared `logoPosition`, `logoSize`, `wallpaperDim`, `lowerThirdStyle`, `adsShrinkPicture` (boolean, default true). `ads` / `adsPortrait` are replace-all per set (omitted or null = unchanged, `[]` = none). The logo/wallpaper ids use `!== undefined` on PATCH, so an explicit `null` clears. A stream uses the set of its `orientation`; portrait falls back to the landscape logo only. Asset upload `kind` for wallpapers is `wallpaper` (no GIF). The app sends a new field to PATCH only when it changed, so an older server never sees it.
+
+## Presets (0.5.0-presets)
+
+Saved go-live setups. The app tolerates the endpoints being absent (404): the presets section is hidden and one implicit "Quick start" card is shown.
+
+| Call | Body / response | Notes |
+| --- | --- | --- |
+| `GET /api/presets` | `[{id, name, config, lastUsedAt}]` | Most recent first (the app re-sorts by `lastUsedAt` descending, never-used last). Rows without an `id` are skipped; unknown fields ignored; a wrapper `{items:[...]}` is also accepted. |
+| `POST /api/presets` | `{name, config}` -> `201` preset | Name trimmed, at most 80 characters (app-side cap). |
+| `PATCH /api/presets/:id` | `{name?, config?}` -> preset | Only the given parts are sent. `config` is sent whole. |
+| `DELETE /api/presets/:id` | `204` | |
+| `POST /api/presets/:id/use` | `200` preset | Sets `lastUsedAt`; sent in the background when a saved preset is gone live with. Failures are ignored. |
+
+`config` = `{orientation?: "landscape"|"portrait", destinationIds?: string[] (platform connection ids), brandKitId?: string|null, quality?, tickerEnabled?: boolean, tickerText?: string (<= 200)}`. The server rejects unknown keys, so the app writes exactly these six and leaves null fields out (a preset without `brandKitId` means "automatic"). Every field is optional when reading.
+
+`quality`: the app has no server-side quality value of its own (streams are created without one), so it uses the web's plan resolution names: `sd` = 540p, `hd` = 720p, `fhd` = 1080p. Reading also accepts `540p|720p|1080p`, `p540|p720|p1080` and `qhd` (as 1080p), any case; an unknown value leaves the current quality alone. **To be confirmed against the backend.**
+

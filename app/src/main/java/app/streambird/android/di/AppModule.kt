@@ -50,4 +50,7 @@ object AppModule {
 
     @Provides @Singleton
     fun api(http: OkHttpClient, settings: Settings) = ApiClient(http) { settings.baseUrl }
+
+    @Provides @Singleton
+    fun presets(api: ApiClient) = app.streambird.android.preset.PresetController(app.streambird.android.preset.ApiPresets(api))
 }

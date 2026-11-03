@@ -10,7 +10,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
+import androidx.navigation.navArgument
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import app.streambird.android.data.Stage
@@ -18,6 +20,8 @@ import app.streambird.android.stream.LivePhase
 import app.streambird.android.ui.screens.BrandKitEditorScreen
 import app.streambird.android.ui.screens.BrandScreen
 import app.streambird.android.ui.screens.ChannelsScreen
+import app.streambird.android.ui.screens.GoLiveScreen
+import app.streambird.android.ui.screens.HomeScreen
 import app.streambird.android.ui.screens.LiveScreen
 import app.streambird.android.ui.screens.LoginScreen
 import app.streambird.android.ui.screens.NeedsPhoneScreen
@@ -50,11 +54,22 @@ private fun MainNav() {
                 if (nav.currentDestination?.route != "live") nav.navigate("live") { launchSingleTop = true }
             LivePhase.IDLE -> if (nav.currentDestination?.route == "live") {
                 // "setup" may not be in the back stack (app reopened from the notification): fall back to a fresh start screen.
-                if (!nav.popBackStack("setup", inclusive = false)) nav.navigate("channels") { popUpTo(nav.graph.id) { inclusive = true }; launchSingleTop = true }
+                if (!nav.popBackStack("setup", inclusive = false)) nav.navigate("home") { popUpTo(nav.graph.id) { inclusive = true }; launchSingleTop = true }
             }
         }
     }
-    NavHost(nav, startDestination = if (live.active) "live" else "channels") {
+    NavHost(nav, startDestination = if (live.active) "live" else "home") {
+        composable("home") {
+            HomeScreen(
+                studio,
+                onOpen = { preset, customize -> studio.openPreset(preset); nav.navigate("go?customize=$customize") },
+                onChannels = { nav.navigate("channels") },
+                onBrand = { nav.navigate("brand") },
+            )
+        }
+        composable("go?customize={customize}", arguments = listOf(navArgument("customize") { type = NavType.BoolType; defaultValue = false })) { entry ->
+            GoLiveScreen(studio, openCustomize = entry.arguments?.getBoolean("customize") == true, onClose = { nav.popBackStack() }, onBrand = { nav.navigate("brand") })
+        }
         composable("channels") { ChannelsScreen(studio, onNext = { nav.navigate("setup") }, onBrand = { nav.navigate("brand") }) }
         composable("setup") { SetupScreen(studio, onBack = { nav.popBackStack() }, onBrand = { nav.navigate("brand") }) }
         composable("brand") {
