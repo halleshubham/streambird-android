@@ -625,8 +625,9 @@ class StreamEngine(
         const val CAMERA_RETRIES = 3
         @Volatile private var initialized = false
 
+        /** Loads WebRTC's native library and initialises it, once per process. Anything that touches org.webrtc BEFORE the engine exists (the camera-first preview) must call this first, or the JNI calls fail with UnsatisfiedLinkError. */
         @Synchronized
-        private fun initFactoryOnce(ctx: Context) {
+        fun initFactoryOnce(ctx: Context) {
             if (initialized) return
             PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(ctx.applicationContext).createInitializationOptions())
             initialized = true
