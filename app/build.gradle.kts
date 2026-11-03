@@ -31,7 +31,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "app.streambird.android"
+        applicationId = "com.shackyapps.streambird"
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode

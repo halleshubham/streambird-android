@@ -7,7 +7,7 @@ Listing texts to copy-paste are in `docs/play-store/listing/`, graphics in `docs
 
 | Item | Value |
 | --- | --- |
-| applicationId | `app.streambird.android` (unchanged) |
+| applicationId | `com.shackyapps.streambird` (changed from the debug-build id `app.streambird.android`; the Kotlin package stays `app.streambird.android`) |
 | Version | name `1.0.0`, code `100` (single source: top of `app/build.gradle.kts`, override with `-PstreambirdVersionCode=` / `-PstreambirdVersionName=`; debug builds were 1..18 so they stay below) |
 | compileSdk / targetSdk / minSdk | 36 / 36 / 26 (see "Target API level") |
 | Toolchain | AGP 8.9.1, Gradle 8.11.1, Kotlin 1.9.24, JDK 17 (AGP 8.5.2 cannot compile against API 36) |
