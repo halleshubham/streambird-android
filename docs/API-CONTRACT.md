@@ -137,3 +137,13 @@ Session cookie auth + `Origin`, like every other route.
 | `POST /api/account/delete/request` | `204` | emails a 6-digit code to the signed-in user |
 | `DELETE /api/account` body `{code:string, confirmCompanyDeletion?:boolean}` | `204` | `confirmCompanyDeletion` is sent only as `true` when the user ticked the box. `409` = confirmation required but missing; `400`/`401` = wrong or expired code; `403` = superadmin (not deletable) |
 A `404` on any of them (older server) shows "Account deletion is not available on this server yet. Contact support@shackyapps.in". Web path: `https://streambird.app/delete-account`.
+
+## Sign in with Google (1.0.2; backend built separately, may not exist on a server yet)
+`POST /api/auth/google/mobile` body `{"idToken":"<Google ID token>"}` (nothing else is sent; the token's audience is the server's web client id). Success answers like `POST /api/auth/verify-code`: `200`, `Set-Cookie: sb_session=...`, `{"user":{...},"accountId":".."}`, parsed by the same code (`AuthResponse`). A pending (unapproved) account arrives as an ordinary user with `approvedAt: null`.
+| Status | Meaning | App text |
+| --- | --- | --- |
+| 400 | bad body | "Google sign-in could not be completed. Try again or use the email code." |
+| 401 | invalid / expired / unverified token or wrong audience | "Google could not verify this account. Try again or use the email code." |
+| 404 | server without the endpoint | "Google sign-in is not available on this server yet. Use the email code." |
+| 429 | rate limited | "Too many sign-in attempts. Wait a minute and try again." |
+Other statuses show the server's message; network failures show "Cannot reach the server: ...". The Credential Manager nonce is not verified by the server.

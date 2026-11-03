@@ -1,6 +1,6 @@
 # Publishing StreamBird Android on Google Play
 
-Everything needed for the first Play release (1.0.0, versionCode 100). Prepared 2026-11-03. Nothing here has been run on a device.
+Everything needed for the first Play release (1.0.0, versionCode 100; current defaults 1.0.2 / 102 add Google sign-in, section 10). Prepared 2026-11-03. Nothing here has been run on a device.
 Listing texts to copy-paste are in `docs/play-store/listing/`, graphics in `docs/play-store/`.
 
 ## 0. Release build facts
@@ -109,7 +109,9 @@ Based on reading the app (`data/`, `diag/`, `media/`, `brand/`, `stream/`) and t
 
 **Security practices**: data encrypted in transit: Yes (HTTPS for the API; WebRTC media is encrypted with DTLS-SRTP; cleartext `http://` server addresses are refused except local/dev). Users can request data deletion: **Yes** (in the app: Account > Delete account; on the web: `https://streambird.app/delete-account`; answer Yes only once the backend and the web page are live, see R3). Data is not collected through an Independent Security Review. Committed to Play Families policy: No.
 
-**Third-party SDKs**: none that collect data. Bundled libraries: stream-webrtc-android (WebRTC), OkHttp, Coil, Jetpack. No ads SDK, no analytics, no Firebase.
+**Google sign-in (1.0.2)**: when the user taps "Sign in with Google" the Google account's email address and name are shared with the StreamBird server (inside the Google ID token the app forwards to `/api/auth/google/mobile`). This is the same "Email address" data type already declared (account management); name is covered by "Name" under Personal info: declare it as collected too if the server stores it. Not shared with third parties.
+
+**Third-party SDKs**: Google Play services (Credential Manager / Sign in with Google, `androidx.credentials` + `googleid`) is used only for the optional Google sign-in; otherwise none that collect data. Bundled libraries: stream-webrtc-android (WebRTC), OkHttp, Coil, Jetpack. No ads SDK, no analytics, no Firebase.
 
 ## 5. Permissions and foreground service declarations
 
@@ -175,3 +177,11 @@ unzip test.apks universal.apk     # install with adb install universal.apk
 ```
 
 A universal APK signed with the upload key cannot update a Play-installed copy (Play re-signs with its own key): uninstall first. Debug and release builds cannot update each other either.
+
+## 10. Google sign-in: SHA-1 registration (1.0.2)
+The ID token is requested for the server's WEB client (`1083454847771-geciauv60kk4sp9asstib38gh23jeii2.apps.googleusercontent.com`, in `BuildConfig.GOOGLE_WEB_CLIENT_ID`). The app additionally needs an **Android OAuth client** in the same Google Cloud project (`1083454847771-jtsh6gcjsk4k2lcaokjef9c6t5q3fjai.apps.googleusercontent.com`, package `com.shackyapps.streambird`). It is never passed in code: Google matches it from the package name and the SHA-1 of the key that signed the installed APK. A build signed with an unregistered SHA-1 gets a Credential Manager error ("Failed" message in the app) instead of the account sheet. A Google Android OAuth client holds one SHA-1, so each fingerprint below needs its own Android client (or its own entry) in the Cloud Console > APIs & Services > Credentials:
+1. **Upload key**: `D5:28:AC:30:A6:58:D5:A2:08:2D:D7:B2:03:78:0C:FD:39:CA:B1:42`. Covers the universal test APK and any build the founder signs with the upload keystore (sideloading).
+2. **Play app signing certificate** (required for builds installed from Play, including internal testing): copy the SHA-1 from Play Console > Setup > App signing > "App signing key certificate", and register it. This is a different key from the upload key. **Not done yet.**
+3. **Debug keystore** of the CI debug APKs: `build-apk.yml` runs on a fresh `ubuntu-latest` runner and does not provide a keystore, so Gradle creates a new `~/.android/debug.keystore` on every run and the SHA-1 differs per build. Debug APKs from CI therefore cannot use Google sign-in (use the email code there, or build locally and register that machine's debug SHA-1: `keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android`).
+
+**OAuth consent screen**: while the Google app is in *Testing* only the listed test users (for example `oauthtestks@gmail.com`) can sign in. For everyone else publish it to *Production*; the app asks only for the basic scopes (`email profile openid`, no sensitive scopes), which should not need the full verification review, but Google may still ask for a brand verification (app name, logo, privacy policy link, authorised domain). The same web client / consent screen is used by the server for the website's Google login if it has one.
