@@ -147,18 +147,11 @@ Session cookie auth + `Origin`, like every other route.
 | `DELETE /api/account` body `{code:string, confirmCompanyDeletion?:boolean}` | `204` | `confirmCompanyDeletion` is sent only as `true` when the user ticked the box. `409` = confirmation required but missing; `400`/`401` = wrong or expired code; `403` = superadmin (not deletable) |
 A `404` on any of them (older server) shows "Account deletion is not available on this server yet. Contact support@shackyapps.in". Web path: `https://streambird.app/delete-account`.
 
-## Sign in with Google (1.0.2; backend built separately, may not exist on a server yet)
-`POST /api/auth/google/mobile` body `{"idToken":"<Google ID token>"}` (nothing else is sent; the token's audience is the server's web client id). Success answers like `POST /api/auth/verify-code`: `200`, `Set-Cookie: sb_session=...`, `{"user":{...},"accountId":".."}`, parsed by the same code (`AuthResponse`). A pending (unapproved) account arrives as an ordinary user with `approvedAt: null`.
-| Status | Meaning | App text |
-| --- | --- | --- |
-| 400 | bad body | "Google sign-in could not be completed. Try again or use the email code." |
-| 401 | invalid / expired / unverified token or wrong audience | "Google could not verify this account. Try again or use the email code." |
-| 404 | server without the endpoint | "Google sign-in is not available on this server yet. Use the email code." |
-| 429 | rate limited | "Too many sign-in attempts. Wait a minute and try again." |
-Other statuses show the server's message; network failures show "Cannot reach the server: ...". The Credential Manager nonce is not verified by the server.
+## Sign in with Google (native, removed from the app in 1.0.6)
+`POST /api/auth/google/mobile {"idToken"}` still exists on the server but **the app no longer calls it** (the Credential Manager sign-in was removed). The app signs in with Google only through the browser flow below.
 
-## Sign in with Google in your browser (1.0.5; backend built separately, may not exist on a server yet)
-PKCE-style handoff that needs no Google client on the phone.
+## Continue with Google: browser flow (1.0.5; the only Google sign-in of the app since 1.0.6)
+PKCE-style handoff that needs no Google client, Play services or SHA-1 registration on the phone. Server: `GET /api/auth/google/app`, `POST /api/auth/google/app/redeem`.
 1. The app opens `GET <server>/api/auth/google/app?challenge=<challenge>` in a Chrome Custom Tab. `challenge` = base64url(SHA-256(verifier)), 43 chars, no padding; `verifier` = 43-char base64url of 32 secure random bytes, kept in the app (persisted 10 minutes) and never put in a URL.
 2. The server redirects to Google and, after the login, serves a page that navigates to `streambird://auth?code=<code>` (or `streambird://auth?error=google_failed`).
 3. The app (intent filter on `MainActivity`: scheme `streambird`, host `auth`, VIEW + DEFAULT + BROWSABLE) parses `code` / `error`, then `POST /api/auth/google/app/redeem` body `{"code":"<code>","verifier":"<verifier>"}` (nothing else). Success answers like `POST /api/auth/verify-code`: `200`, `Set-Cookie: sb_session=...`, `{"user":{"id","email","role","approvedAt","phone","needsPhone"},"accountId":".."}`, applied like every login.

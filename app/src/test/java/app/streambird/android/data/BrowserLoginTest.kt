@@ -21,7 +21,7 @@ import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 
-/** The "Sign in with Google in your browser" handoff: POST /auth/google/app/redeem and the AuthRepository state machine behind the deep link. */
+/** The "Continue with Google" (browser) handoff: POST /auth/google/app/redeem and the AuthRepository state machine behind the deep link. */
 class BrowserLoginTest {
     private lateinit var server: MockWebServer
     private lateinit var api: ApiClient
@@ -64,6 +64,57 @@ class BrowserLoginTest {
         assertEquals(now, saved.savedAtMs); assertEquals(43, saved.verifier.length)
         assertEquals("https://streambird.app/api/auth/google/app?challenge=" + BrowserSignIn.challengeFor(saved.verifier), url)
         assertFalse(url.contains(saved.verifier)) // the verifier itself never goes into the URL
+    }
+
+    @Test fun `button flow end to end - begin, url with challenge, deep link code, redeem, ready`() = runBlocking {
+        val url = repo.beginBrowserSignIn()!!
+        val verifier = store.load()!!.verifier
+        val challenge = url.substringAfter("challenge=")
+        assertEquals(BrowserSignIn.challengeFor(verifier), challenge)
+        server.enqueue(json(user()))
+        repo.handleAuthLink("streambird://auth?code=abc-123")
+        assertEquals(Stage.READY, repo.ui.value.stage)
+        assertNull(repo.ui.value.googleNote); assertNull(repo.ui.value.error)
+    }
+
+    @Test fun `back from the browser without a link shows the calm note once, no error, verifier kept`() {
+        repo.beginBrowserSignIn()
+        repo.onReturnedToApp()
+        val ui = repo.ui.value
+        assertEquals(GoogleSignInText.DID_NOT_FINISH, ui.googleNote); assertNull(ui.error); assertFalse(ui.busy); assertEquals(GoogleStage.IDLE, ui.google)
+        assertNotNull(store.load()); assertEquals(0, server.requestCount)
+        // a second resume does not repeat anything: the note was already shown and a new attempt clears it
+        repo.beginBrowserSignIn(); assertNull(repo.ui.value.googleNote)
+    }
+
+    @Test fun `resume without having launched the browser shows nothing`() {
+        repo.onReturnedToApp()
+        assertNull(repo.ui.value.googleNote)
+    }
+
+    @Test fun `resume after a deep link arrived shows no note`() = runBlocking {
+        repo.beginBrowserSignIn()
+        server.enqueue(json(user()))
+        repo.onAuthLink("streambird://auth?code=c") // synchronous flag reset; the redeem runs on the unconfined test scope
+        repo.onReturnedToApp()
+        assertNull(repo.ui.value.googleNote)
+    }
+
+    @Test fun `no browser installed shows its note and a later resume adds nothing`() {
+        repo.beginBrowserSignIn()
+        repo.browserUnavailable()
+        assertEquals(BrowserSignIn.Text.NO_BROWSER, repo.ui.value.googleNote); assertNull(store.load())
+        repo.onReturnedToApp()
+        assertEquals(BrowserSignIn.Text.NO_BROWSER, repo.ui.value.googleNote)
+    }
+
+    @Test fun `texts match the browser flow`() {
+        assertEquals("Google sign-in did not finish. Try again, or use the email code.", GoogleSignInText.DID_NOT_FINISH)
+        assertEquals(true, BrowserSignIn.Text.NO_PENDING.contains("Continue with Google")); assertEquals(true, BrowserSignIn.Text.STALE.contains("Continue with Google"))
+    }
+
+    @Test fun `unexpected failure maps to the did-not-finish text`() {
+        assertEquals(GoogleSignInText.DID_NOT_FINISH, BrowserSignIn.redeemError(IllegalStateException("x")))
     }
 
     @Test fun `redeem body has only code and verifier and the answer parses like verify-code`() = runBlocking {

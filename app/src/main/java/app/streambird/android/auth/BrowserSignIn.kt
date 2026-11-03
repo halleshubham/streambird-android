@@ -7,8 +7,17 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 
+/** User-facing texts of the Google sign-in (browser flow). */
+object GoogleSignInText {
+    const val NOT_ON_SERVER = "Google sign-in is not available on this server yet. Use the email code."
+    const val BAD_REQUEST = "Google sign-in could not be completed. Try again or use the email code."
+    const val RATE_LIMITED = "Too many sign-in attempts. Wait a minute and try again."
+    /** Returned from the browser without a code (Back, error link, unusable link) or an unexpected failure: calm, not an error banner. */
+    const val DID_NOT_FINISH = "Google sign-in did not finish. Try again, or use the email code."
+}
+
 /**
- * "Sign in with Google in your browser": a PKCE-style handoff that needs no Google client on the phone.
+ * "Continue with Google": a PKCE-style handoff in a Custom Tab that needs no Google client, Play services or SHA-1 registration on the phone.
  * app: verifier = random, challenge = base64url(SHA-256(verifier)) -> browser opens /api/auth/google/app?challenge=... -> server sends the
  * browser to `streambird://auth?code=<code>` -> app POSTs /api/auth/google/app/redeem {code, verifier}. The verifier never leaves the app
  * before the redeem, so the custom scheme is NOT a trust boundary: whoever catches the link has a code that is useless without the verifier.
@@ -22,8 +31,8 @@ object BrowserSignIn {
 
     object Text {
         const val SIGNING_IN = "Signing you in..."
-        const val NO_PENDING = "That sign-in link is not valid any more. Start again with \"Sign in with Google in your browser\"."
-        const val STALE = "That sign-in took too long (over 10 minutes). Start again with \"Sign in with Google in your browser\"."
+        const val NO_PENDING = "That sign-in link is not valid any more. Start again with \"Continue with Google\"."
+        const val STALE = "That sign-in took too long (over 10 minutes). Start again with \"Continue with Google\"."
         const val FAILED_LINK = GoogleSignInText.DID_NOT_FINISH
         const val NO_BROWSER = "No browser found on this phone. Use the email code."
     }
@@ -98,7 +107,7 @@ object BrowserSignIn {
             else -> e.message
         }
         e is IOException -> "Cannot reach the server: ${e.message}"
-        else -> GoogleSignInText.FAILED
+        else -> GoogleSignInText.DID_NOT_FINISH
     }
 }
 

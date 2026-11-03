@@ -23,8 +23,8 @@ val hasReleaseSigning = releaseKeystoreFile?.exists() == true &&
     signingValue("STREAMBIRD_KEY_PASSWORD") != null
 
 // Single source of truth for the version: gradle.properties (override with -PstreambirdVersionCode=... -PstreambirdVersionName=...).
-val appVersionCode = (project.findProperty("streambirdVersionCode") as String?)?.toInt() ?: 105
-val appVersionName = (project.findProperty("streambirdVersionName") as String?) ?: "1.0.5"
+val appVersionCode = (project.findProperty("streambirdVersionCode") as String?)?.toInt() ?: 106
+val appVersionName = (project.findProperty("streambirdVersionName") as String?) ?: "1.0.6"
 
 android {
     namespace = "app.streambird.android"
@@ -40,11 +40,6 @@ android {
         // Server the app talks to. Override at build time: ./gradlew assembleDebug -PstreambirdBaseUrl=https://staging.example.com
         val baseUrl = (project.findProperty("streambirdBaseUrl") as String?) ?: "https://streambird.app"
         buildConfigField("String", "DEFAULT_BASE_URL", "\"$baseUrl\"")
-        // "Sign in with Google": the ID token is requested for the SERVER's web OAuth client (its audience). The app's own Android OAuth client is
-        // matched by Google from package + signing SHA-1 and is never passed in code (docs/PLAY-STORE.md). Override for staging: -PstreambirdGoogleWebClientId=...
-        val googleWebClientId = (project.findProperty("streambirdGoogleWebClientId") as String?)
-            ?: "1083454847771-geciauv60kk4sp9asstib38gh23jeii2.apps.googleusercontent.com"
-        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
     }
 
     signingConfigs {
@@ -137,12 +132,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // Sign in with Google via Credential Manager (credentials-play-services-auth is the backport for Android < 14).
-    implementation("androidx.credentials:credentials:1.3.0")
-    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
-    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
-    // Chrome Custom Tab for "Sign in with Google in your browser" (falls back to ACTION_VIEW without a Custom Tabs provider).
+    // Chrome Custom Tab for "Continue with Google" (falls back to ACTION_VIEW without a Custom Tabs provider).
     implementation("androidx.browser:browser:1.8.0")
 
     implementation("androidx.datastore:datastore-preferences:1.1.1")

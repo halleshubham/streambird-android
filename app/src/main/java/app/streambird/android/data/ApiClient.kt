@@ -122,12 +122,6 @@ class ApiClient(
         return call(post("/auth/verify-code", body)) { ApiJson.decodeFromString<AuthResponse>(it) }
     }
 
-    /** POST /auth/google/mobile {idToken}: same answer and sb_session cookie as [verifyCode]. Only the token is sent. */
-    suspend fun googleMobile(idToken: String): AuthResponse =
-        call(post("/auth/google/mobile", googleMobileBody(idToken))) { ApiJson.decodeFromString<AuthResponse>(it) }
-
-    fun googleMobileBody(idToken: String): RequestBody = buildJsonObject { put("idToken", idToken) }.toString().toRequestBody(jsonType)
-
     /** POST /auth/google/app/redeem {code, verifier}: browser sign-in handoff; same answer and sb_session cookie as [verifyCode]. Nothing else is sent. */
     suspend fun googleAppRedeem(code: String, verifier: String): AuthResponse =
         call(post("/auth/google/app/redeem", googleAppRedeemBody(code, verifier))) { ApiJson.decodeFromString<AuthResponse>(it) }
