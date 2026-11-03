@@ -2,8 +2,8 @@ StreamBird lets you go live from your phone to YouTube, Facebook and Twitch at t
 
 Open the app, point the camera, tick the channels you want and tap Go live. StreamBird sends one stream to our servers and relays it to every destination you chose.
 
-REQUIRES A STREAMBIRD ACCOUNT
-Sign in with your StreamBird account using your email and a one-time code. Channels (YouTube, Facebook Pages, Twitch) are connected on the website, then they appear in the app. Features and limits depend on your StreamBird plan.
+YOUR STREAMBIRD ACCOUNT
+Sign in or create your account right in the app, with your email and a one-time code or with Google. New accounts are approved by hand, and we will let you in as soon as it is ready. Channels (YouTube, Facebook Pages, Twitch) are connected on the website, then they appear in the app. Features and limits depend on your StreamBird plan.
 
 GO LIVE IN ONE TAP
 - Camera-first screen: the camera fills the screen, you add a title, pick your channels and press Go live.

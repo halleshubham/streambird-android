@@ -128,6 +128,12 @@ class ApiClient(
 
     fun googleMobileBody(idToken: String): RequestBody = buildJsonObject { put("idToken", idToken) }.toString().toRequestBody(jsonType)
 
+    /** PATCH /auth/me/phone {phone}: only the contract field is sent. Answers like /auth/me (`{user, accountId}`); 400 carries the server's own validation text. */
+    suspend fun setPhone(phone: String): AuthResponse =
+        call(Request.Builder().url(url("/auth/me/phone")).patch(setPhoneBody(phone)).build()) { ApiJson.decodeFromString<AuthResponse>(it) }
+
+    fun setPhoneBody(phone: String): RequestBody = buildJsonObject { put("phone", phone) }.toString().toRequestBody(jsonType)
+
     suspend fun me(): AuthResponse = call(get("/auth/me")) { ApiJson.decodeFromString(it) }
     suspend fun logout() = call(post("/auth/logout")) { }
 
