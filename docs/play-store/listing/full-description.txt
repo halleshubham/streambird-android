@@ -3,7 +3,7 @@ StreamBird lets you go live from your phone to YouTube, Facebook and Twitch at t
 Open the app, point the camera, tick the channels you want and tap Go live. StreamBird sends one stream to our servers and relays it to every destination you chose.
 
 REQUIRES A STREAMBIRD ACCOUNT
-Sign in with your email and a one-time code. If you do not have an account yet, register on the StreamBird website. Channels (YouTube, Facebook Pages, Twitch) are connected on the website, then they appear in the app. Features and limits depend on your StreamBird plan.
+Sign in with your StreamBird account using your email and a one-time code. Channels (YouTube, Facebook Pages, Twitch) are connected on the website, then they appear in the app. Features and limits depend on your StreamBird plan.
 
 GO LIVE IN ONE TAP
 - Camera-first screen: the camera fills the screen, you add a title, pick your channels and press Go live.
@@ -14,8 +14,8 @@ GO LIVE IN ONE TAP
 YOUR BRAND ON EVERY STREAM
 - Brand kits: a logo with position and size, separate sets for portrait and landscape.
 - Scrolling news ticker with your own text, changed live while you stream.
-- Your own ads on the stream (picture or animated GIF): lower third, left third or full screen, always shown or on a schedule. Ads and brand kits are available on paid plans.
-- The Free plan includes a small StreamBird mark and a StreamBird banner on the picture.
+- Your own ads on the stream (picture or animated GIF): lower third, left third or full screen, always shown or on a schedule. Which of these are available depends on your account's plan.
+- Depending on your account's plan, a small StreamBird mark and a StreamBird banner can appear on the picture.
 
 STAY ON AIR
 - The stream keeps running with the screen off, with a notification while you are live.
@@ -30,6 +30,8 @@ THINGS TO KNOW
 - Streaming uses your camera and microphone. The app asks for permission and shows a notification while you are live.
 - StreamBird does not record or store your stream.
 - Your channels' own rules still apply: for example, YouTube needs live streaming enabled on your channel.
-- The app does not sell anything inside the app and shows no third-party ads. The only ads are the ones you choose to put on your own stream (or the StreamBird banner on the Free plan).
+- The app does not sell anything inside the app and shows no third-party ads. The only ads are the ones you choose to put on your own stream (or the StreamBird banner, depending on your account's plan).
+
+You can delete your account in the app (Account > Delete account) or at https://streambird.app/delete-account
 
 Privacy policy: https://streambird.app/privacy

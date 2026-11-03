@@ -32,7 +32,6 @@ import app.streambird.android.ui.theme.Amber
 
 @Composable
 fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
-    val ctx = LocalContext.current
     var code by remember { mutableStateOf("") }
     var showServer by remember { mutableStateOf(false) }
     var serverText by remember(a.server) { mutableStateOf(a.server) }
@@ -44,7 +43,7 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
         BirdLogo(96.dp, Modifier.align(Alignment.CenterHorizontally))
         Text("StreamBird", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.align(Alignment.CenterHorizontally))
         Text(
-            if (a.codeSent) "Enter the 6-digit code we emailed you." else "Enter your email and we'll send you a one-time login code.",
+            if (a.codeSent) "Enter the 6-digit code we emailed you." else "Sign in with your StreamBird account. Enter your email and we'll send you a one-time login code.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterHorizontally),
         )
         Spacer(Modifier.height(8.dp))
@@ -68,7 +67,6 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
         a.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
 
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = { openUrl(ctx, a.server) }, modifier = Modifier.fillMaxWidth()) { Text("New here? Register on the website") }
         TextButton(onClick = { showServer = !showServer }) { Text("Server: ${a.server.removePrefix("https://")}") }
         if (showServer) {
             OutlinedTextField(

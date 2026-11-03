@@ -17,6 +17,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import app.streambird.android.data.Stage
 import app.streambird.android.stream.LivePhase
+import app.streambird.android.ui.screens.AccountScreen
 import app.streambird.android.ui.screens.BrandKitEditorScreen
 import app.streambird.android.ui.screens.BrandScreen
 import app.streambird.android.ui.screens.ChannelsScreen
@@ -65,8 +66,10 @@ private fun MainNav() {
                 onOpen = { preset, customize -> studio.openPreset(preset); nav.navigate("go?customize=$customize") },
                 onChannels = { nav.navigate("channels") },
                 onBrand = { nav.navigate("brand") },
+                onAccount = { nav.navigate("account") },
             )
         }
+        composable("account") { AccountScreen(onBack = { nav.popBackStack() }) }
         composable("go?customize={customize}", arguments = listOf(navArgument("customize") { type = NavType.BoolType; defaultValue = false })) { entry ->
             GoLiveScreen(studio, openCustomize = entry.arguments?.getBoolean("customize") == true, onClose = { nav.popBackStack() }, onBrand = { nav.navigate("brand") })
         }
@@ -74,7 +77,7 @@ private fun MainNav() {
         composable("setup") { SetupScreen(studio, onBack = { nav.popBackStack() }, onBrand = { nav.navigate("brand") }) }
         composable("brand") {
             val u by studio.ui.collectAsStateWithLifecycle()
-            BrandScreen(u.connections, studio.baseUrl, onBack = { nav.popBackStack() }, onEdit = { id -> nav.navigate("brand/edit/${id ?: "new"}") })
+            BrandScreen(u.connections, onBack = { nav.popBackStack() }, onEdit = { id -> nav.navigate("brand/edit/${id ?: "new"}") })
         }
         composable("brand/edit/{id}") { entry ->
             val u by studio.ui.collectAsStateWithLifecycle()

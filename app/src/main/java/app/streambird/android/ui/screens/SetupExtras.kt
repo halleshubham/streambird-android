@@ -38,7 +38,7 @@ fun BrandSetupSection(destinationIds: Set<String>, onManage: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Brand kit", style = MaterialTheme.typography.titleSmall)
         when {
-            st.blocked -> Text("Brand kits are on the paid plans.", style = MaterialTheme.typography.bodySmall)
+            st.blocked -> Text("Brand kits are not included in this account's plan.", style = MaterialTheme.typography.bodySmall)
             !st.loaded -> Text("Loading brand kits...", style = MaterialTheme.typography.bodySmall)
             st.kits.isEmpty() -> Text("No brand kits yet. Create one to put your logo on the stream.", style = MaterialTheme.typography.bodySmall)
             else -> {
@@ -149,16 +149,14 @@ fun AdsSetupBlock(
     freePlan: Boolean, useKit: Boolean, destinationIds: Set<String>,
     overrides: Map<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdOverride>,
     onChange: (Map<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdOverride>) -> Unit,
-    serverUrl: String,
     orientation: app.streambird.android.media.StreamOrientation,
     shrink: Boolean?, onShrink: (Boolean?) -> Unit,
 ) {
     val vm: BrandViewModel = hiltViewModel()
     val st by vm.state.collectAsStateWithLifecycle()
-    val ctx = androidx.compose.ui.platform.LocalContext.current
     androidx.compose.runtime.LaunchedEffect(useKit) { if (useKit && !st.loaded && !st.loading) vm.refresh() }
     val kit = if (useKit && !freePlan) vm.repo.effectiveKit(destinationIds, st) else null
     // The kit's set for THIS stream's shape (portrait ads do not fall back to the landscape ones).
     val ads = kit?.let { app.streambird.android.brand.kitSetFor(it, app.streambird.android.brand.BrandOrientation.fromWire(orientation.wire)).ads }.orEmpty()
-    AdsSetupSection(freePlan, ads, overrides, onChange, shrink = shrink, kitShrink = kit?.adsShrinkPicture ?: true, onShrink = onShrink) { openUrl(ctx, "$serverUrl/billing") }
+    AdsSetupSection(freePlan, ads, overrides, onChange, shrink = shrink, kitShrink = kit?.adsShrinkPicture ?: true, onShrink = onShrink)
 }

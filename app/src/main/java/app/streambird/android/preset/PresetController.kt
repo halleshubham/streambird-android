@@ -94,7 +94,10 @@ class PresetController(private val port: PresetsPort) {
         }
     }
 
-    fun clearError() = _state.update { it.copy(error = null) }
+    /** Forget everything (the account was deleted). */
+    fun reset() { _state.value = PresetsState() }
+
+    fun clearError() =_state.update { it.copy(error = null) }
 
     private suspend fun <T> guarded(block: suspend () -> T): T? {
         _state.update { it.copy(busy = true, error = null) }

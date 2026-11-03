@@ -99,13 +99,11 @@ fun AdsSetupSection(
     shrink: Boolean? = null,
     kitShrink: Boolean = true,
     onShrink: (Boolean?) -> Unit = {},
-    onBilling: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Ads", style = MaterialTheme.typography.titleSmall)
         if (freePlan) {
-            Text("Free plan: a StreamBird banner shows now and then and a small \"Powered by StreamBird\" mark stays on the picture. Paid plans run your own ads.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TextButton(onClick = onBilling) { Text("See plans") }
+            Text("On this account's plan a StreamBird banner shows now and then and a small \"Powered by StreamBird\" mark stays on the picture. Your own ads are not included in this account's plan.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             return@Column
         }
         val ctx = LocalContext.current

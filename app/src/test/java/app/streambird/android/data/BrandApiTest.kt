@@ -134,7 +134,7 @@ class BrandApiTest {
         }
         server.enqueue(json("""{"statusCode":403,"message":"Brand storage is on the paid plans. Your logo and wallpaper stay saved in this browser on the Free plan.","error":"Forbidden"}""", 403))
         try { api.uploadAsset(byteArrayOf(1), "image/png", "a.png"); fail() } catch (e: ApiException) {
-            assertTrue(e.message.startsWith("Brand storage is on the paid plans"))
+            assertEquals("This is not included in this account's plan.", e.message)
         }
         server.enqueue(json("""{"statusCode":400,"message":"The image is too big -- its longest side must be at most 8192px.","error":"Bad Request"}""", 400))
         try { api.uploadAsset(byteArrayOf(1), "image/png", "a.png"); fail() } catch (e: ApiException) { assertTrue(e.message.contains("8192")) }

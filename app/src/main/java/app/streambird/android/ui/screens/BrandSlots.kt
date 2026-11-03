@@ -131,7 +131,6 @@ fun KitAdsSection(
     storageEnabled: Boolean,
     onUpload: (AdPlacement) -> Unit,
     onRemoveAds: () -> Unit,
-    onBilling: () -> Unit,
     busy: Boolean,
 ) {
     Section("Ads (${orientation.label})") {
@@ -139,8 +138,8 @@ fun KitAdsSection(
             AdsAccess.LOADING -> Text("Checking your plan...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             AdsAccess.FREE_PLAN, AdsAccess.NO_STORAGE -> {
                 Text(
-                    if (access == AdsAccess.FREE_PLAN) "Your own ads are on the paid plans. The Free plan shows a StreamBird banner instead."
-                    else "Your plan has no brand library, so ads cannot be edited.",
+                    if (access == AdsAccess.FREE_PLAN) "Your own ads are not included in this account's plan. A StreamBird banner is shown instead."
+                    else "This account's plan has no brand library, so ads cannot be edited.",
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (savedAds.isEmpty()) Text("No ${orientation.label} ads saved on this kit.", style = MaterialTheme.typography.bodySmall)
@@ -155,7 +154,6 @@ fun KitAdsSection(
                     }
                 }
                 if (savedAds.isNotEmpty()) OutlinedButton(onClick = onRemoveAds, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Remove ${orientation.label} ads", color = MaterialTheme.colorScheme.error) }
-                if (access == AdsAccess.FREE_PLAN) Button(onClick = onBilling) { Text("See plans") }
             }
             AdsAccess.EDITABLE -> {
                 Text("One ad per placement, a picture or an animated GIF, shown all the time or now and then.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

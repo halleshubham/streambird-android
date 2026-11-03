@@ -138,6 +138,20 @@ class AuthRepository @Inject constructor(
         _ui.update { it.copy(stage = Stage.LOGGED_OUT, user = null, codeSent = false, note = null, error = null) }
     }
 
+    /**
+     * The server deleted the account (DELETE /account answered 204): same teardown as [logout] minus the server call (the session is already gone),
+     * plus the preferences that belong to the person (last email, ticker). The server address is kept (it is app configuration, not account data).
+     */
+    suspend fun accountDeleted() {
+        pollJob?.cancel()
+        jar.clear()
+        settings.lastEmail = ""
+        settings.tickerText = ""
+        settings.tickerSize = "S"
+        jar.flush()
+        _ui.update { it.copy(stage = Stage.LOGGED_OUT, user = null, email = "", codeSent = false, busy = false, error = null, note = "Your account was deleted.") }
+    }
+
     /** "Check again" on the pending screen. */
     suspend fun checkAgain() {
         _ui.update { it.copy(busy = true, note = null) }

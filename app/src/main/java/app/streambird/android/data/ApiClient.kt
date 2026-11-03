@@ -174,7 +174,13 @@ class ApiClient(
                 is JsonObject -> (m["message"] as? JsonPrimitive)?.content
                 else -> null
             }
-            return text?.takeIf { it.isNotBlank() } ?: "Request failed ($status)"
+            return text?.takeIf { it.isNotBlank() }?.let { neutralizePlanSteering(it) } ?: "Request failed ($status)"
         }
+
+        /** What the app says instead of any server text that points at upgrading, plans, prices or billing (Google Play payments policy: no purchase steering in the app). */
+        const val NOT_IN_PLAN = "This is not included in this account's plan."
+        private val STEERING = Regex("""\b(upgrade|paid plans?|free plan|see plans|pricing|prices?|billing|subscribe|subscription)\b""", RegexOption.IGNORE_CASE)
+
+        fun neutralizePlanSteering(message: String): String = if (STEERING.containsMatchIn(message)) NOT_IN_PLAN else message
     }
 }

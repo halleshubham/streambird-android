@@ -69,6 +69,9 @@ class BrandRepository @Inject constructor(
     val selectedKitId: StateFlow<String?> = _selectedKitId.asStateFlow()
     fun select(kitId: String?) { _selectedKitId.value = kitId }
 
+    /** Forget everything cached (the account was deleted). */
+    fun reset() { _state.value = BrandState(); _selectedKitId.value = null }
+
     /** Coil loader that goes through the app's OkHttpClient (session cookie + Origin) and animates GIF/WebP. */
     val imageLoader: ImageLoader by lazy {
         ImageLoader.Builder(context).okHttpClient(http).components {
@@ -77,9 +80,6 @@ class BrandRepository @Inject constructor(
     }
 
     fun assetUrl(assetId: String) = api.assetFileUrl(assetId)
-
-    /** Server origin, for links to the website (billing). */
-    val serverUrl: String get() = assetUrl("x").substringBefore("/api/")
 
     /** Loads plan, kits and library. Throws [ApiException] for 401 / pending so the caller can route it. */
     suspend fun refresh() {
