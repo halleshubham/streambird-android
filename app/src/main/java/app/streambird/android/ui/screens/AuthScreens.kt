@@ -1,7 +1,6 @@
 package app.streambird.android.ui.screens
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
@@ -31,10 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -118,7 +114,7 @@ private fun OrDivider() {
 
 /**
  * Google's "Sign in with Google" button look (light theme: white, thin grey outline, dark text, the "G" mark on the left), drawn in Compose.
- * The G is the four-colour logo built from the official colours as arcs plus the bar; see docs/FEATURES.md for the branding caveat.
+ * The G is Google's standard four-colour mark (res/drawable/ic_google_g.xml).
  */
 @Composable
 private fun GoogleSignInButton(label: String, enabled: Boolean, onClick: () -> Unit) {
@@ -135,19 +131,11 @@ private fun GoogleSignInButton(label: String, enabled: Boolean, onClick: () -> U
 
 @Composable
 private fun GoogleGMark(modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        val stroke = size.minDimension * 0.2f
-        val inset = stroke / 2
-        val arcSize = Size(size.width - stroke, size.height - stroke)
-        val topLeft = Offset(inset, inset)
-        fun arc(color: Color, start: Float, sweep: Float) = drawArc(color, start, sweep, false, topLeft, arcSize, style = Stroke(stroke))
-        arc(Color(0xFFEA4335), 200f, 90f) // red, top
-        arc(Color(0xFFFBBC05), 140f, 60f) // yellow, left
-        arc(Color(0xFF34A853), 50f, 90f) // green, bottom
-        arc(Color(0xFF4285F4), -40f, 90f) // blue, right
-        val midY = size.height / 2
-        drawRect(Color(0xFF4285F4), Offset(size.width / 2, midY - stroke / 2), Size(size.width / 2 - inset * 0.2f, stroke)) // the bar
-    }
+    androidx.compose.foundation.Image(
+        painter = androidx.compose.ui.res.painterResource(app.streambird.android.R.drawable.ic_google_g),
+        contentDescription = null,
+        modifier = modifier,
+    )
 }
 
 @Composable
