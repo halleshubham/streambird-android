@@ -166,7 +166,7 @@ jobs:
           name: Presets build (latest)
           prerelease: true
           body: |
-            Debug APK of StreamBird Android 0.5.0-presets (one-tap camera-first go-live screen, saved presets on the home screen, "Customize" sheet with all the older setup), built from ${{ github.sha }} (${{ github.ref_name }}).
+            Debug APK of StreamBird Android 0.5.1-presets (one-tap camera-first go-live screen, saved presets on the home screen, "Customize" sheet with all the older setup), built from ${{ github.sha }} (${{ github.ref_name }}).
             Install: download `streambird-presets-debug.apk` on the phone, allow "install unknown apps" for the browser, open it.
             Presets need the matching server release (/api/presets); without it the app shows one "Quick start" card.
             See docs/FEATURES.md.

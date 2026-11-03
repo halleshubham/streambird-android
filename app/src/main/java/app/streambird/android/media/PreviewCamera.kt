@@ -27,6 +27,8 @@ class PreviewCamera(private val context: Context) {
     fun start(view: SurfaceViewRenderer, front: Boolean): String? {
         stop()
         return try {
+            // The engine normally loads WebRTC's native library when going live; the preview runs before that.
+            StreamEngine.initFactoryOnce(context)
             val eglBase = EglBase.create().also { egl = it }
             view.init(eglBase.eglBaseContext, null)
             view.setEnableHardwareScaler(false)
