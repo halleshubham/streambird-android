@@ -25,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,10 +36,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.streambird.android.BuildConfig
 import app.streambird.android.auth.BrowserSignIn
-import app.streambird.android.auth.CredentialManagerGoogleProvider
-import app.streambird.android.auth.GoogleSignInText
 import app.streambird.android.data.AuthUi
 import app.streambird.android.data.GoogleStage
 import app.streambird.android.ui.AuthViewModel
@@ -85,25 +87,22 @@ fun LoginScreen(a: AuthUi, vm: AuthViewModel) {
         if (!a.codeSent) {
             OrDivider()
             val ctx = LocalContext.current
+            // Back from the Custom Tab without a deep link: the repository decides (only after a launch) whether to show the calm note.
+            val owner = LocalLifecycleOwner.current
+            DisposableEffect(owner) {
+                val o = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) vm.onReturnedToApp() }
+                owner.lifecycle.addObserver(o)
+                onDispose { owner.lifecycle.removeObserver(o) }
+            }
             GoogleSignInButton(
-                label = when (a.google) {
-                    GoogleStage.LAUNCHING -> "Opening Google..."
-                    GoogleStage.EXCHANGING -> "Signing in..."
-                    GoogleStage.REDEEMING -> BrowserSignIn.Text.SIGNING_IN
-                    else -> "Continue with Google"
-                },
+                label = if (a.google == GoogleStage.REDEEMING) BrowserSignIn.Text.SIGNING_IN else "Continue with Google",
                 enabled = !a.busy,
-                onClick = { vm.signInWithGoogle(CredentialManagerGoogleProvider(ctx, BuildConfig.GOOGLE_WEB_CLIENT_ID)) },
+                onClick = { vm.beginBrowserSignIn()?.let { if (!openInBrowser(ctx, it)) vm.browserUnavailable() } },
             )
-            if (a.google == GoogleStage.REDEEMING) Text(BrowserSignIn.Text.SIGNING_IN, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            a.googleNote?.let { note ->
-                Text(note, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            a.googleNote?.let { note -> Text(note, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (a.googleNote != null || a.google == GoogleStage.ERROR) {
                 TextButton(onClick = { app.streambird.android.diag.CrashReporter.shareDiagnostics(ctx, "Google sign-in diagnostics") }) { Text("Share sign-in diagnostics") }
             }
-            OutlinedButton(
-                onClick = { vm.beginBrowserSignIn()?.let { if (!openInBrowser(ctx, it)) vm.browserUnavailable() } },
-                enabled = !a.busy, modifier = Modifier.fillMaxWidth(),
-            ) { Text(GoogleSignInText.BROWSER_LABEL) }
         }
 
         if (!a.codeSent) {
