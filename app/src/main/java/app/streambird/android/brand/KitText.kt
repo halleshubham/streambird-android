@@ -8,8 +8,8 @@ import app.streambird.android.data.BrandKit
  * what goes on air). Pure Kotlin, JVM-tested.
  */
 object KitText {
-    /** Server limit of the kit title. */
-    const val TITLE_MAX = 100
+    /** Server limit of the kit title (PR streambird#85: 200, same as a stream title). */
+    const val TITLE_MAX = 200
 
     /** Server limit of the kit description = the stream description limit (CreateStreamDto.description, @MaxLength(5000)). */
     const val DESCRIPTION_MAX = 5000
@@ -77,7 +77,7 @@ object KitText {
 
     /** The line under the title field: where the shown text comes from. */
     fun titleNote(state: TitleState, kit: BrandKit?): String? = when {
-        state.fromKit != null -> "From brand kit ${state.fromKit}"
+        state.fromKit != null -> "From brand kit ${state.fromKit}. Edit it to change it for this stream only."
         state.edited && state.text.isBlank() && cleanTitle(kit?.title) != null -> "Left blank: the title of brand kit ${kit?.name} is used."
         else -> null
     }

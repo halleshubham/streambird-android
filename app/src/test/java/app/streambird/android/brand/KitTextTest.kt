@@ -20,15 +20,15 @@ import org.junit.Test
 class KitTextTest {
     private fun kit(title: String? = null, description: String? = null, name: String = "Acme") = BrandKit(id = "k-$name", name = name, title = title, description = description)
 
-    // ---- limits (server: kit title <= 100, description = stream description limit 5000, stream title 200) ----
+    // ---- limits (server: kit title <= 200, description = stream description limit 5000, stream title 200) ----
 
     @Test fun `limits mirror the server`() {
-        assertEquals(100, KitText.TITLE_MAX); assertEquals(5000, KitText.DESCRIPTION_MAX); assertEquals(200, KitText.STREAM_TITLE_MAX)
+        assertEquals(200, KitText.TITLE_MAX); assertEquals(5000, KitText.DESCRIPTION_MAX); assertEquals(200, KitText.STREAM_TITLE_MAX)
     }
 
     @Test fun `texts are trimmed, blank is null, and capped`() {
         assertNull(KitText.cleanTitle(null)); assertNull(KitText.cleanTitle("   ")); assertEquals("Hi", KitText.cleanTitle("  Hi \n"))
-        assertEquals(100, KitText.cleanTitle("x".repeat(150))!!.length)
+        assertEquals(200, KitText.cleanTitle("x".repeat(250))!!.length)
         assertEquals(5000, KitText.cleanDescription("y".repeat(6000))!!.length)
         assertNull(KitText.cleanDescription("\n \t"))
     }
@@ -38,7 +38,7 @@ class KitTextTest {
     @Test fun `untouched title takes the kit default and says where from`() {
         val s = KitText.reconcile(TitleState(), kit("Friday Live"))
         assertEquals(TitleState("Friday Live", edited = false, fromKit = "Acme"), s)
-        assertEquals("From brand kit Acme", KitText.titleNote(s, kit("Friday Live")))
+        assertEquals("From brand kit Acme. Edit it to change it for this stream only.", KitText.titleNote(s, kit("Friday Live")))
     }
 
     @Test fun `switching the kit while untouched follows the new kit`() {
@@ -89,8 +89,8 @@ class KitTextTest {
         assertEquals(200, KitText.typed(TitleState(), "z".repeat(300)).text.length)
     }
 
-    @Test fun `a kit title longer than the server limit would never show more than 100`() {
-        assertEquals(100, KitText.reconcile(TitleState(), kit("t".repeat(250))).text.length)
+    @Test fun `a kit title longer than the server limit would never show more than 200`() {
+        assertEquals(200, KitText.reconcile(TitleState(), kit("t".repeat(250))).text.length)
     }
 
     @Test fun `blank kit default means none`() {
@@ -143,9 +143,9 @@ class KitTextTest {
     @Test fun `PATCH and POST cap the texts at the server limits`() {
         val k = kit()
         val p = BrandKitPayload.patch(k, draftOf(k, title = "t".repeat(300), description = "d".repeat(9000)))
-        assertEquals(100, p["title"]!!.jsonPrimitive.content.length); assertEquals(5000, p["description"]!!.jsonPrimitive.content.length)
+        assertEquals(200, p["title"]!!.jsonPrimitive.content.length); assertEquals(5000, p["description"]!!.jsonPrimitive.content.length)
         val c = BrandKitPayload.create(KitDraft("New", null, "left", 90, "accent", false, title = "t".repeat(300), description = "d".repeat(9000)))
-        assertEquals(100, c["title"]!!.jsonPrimitive.content.length); assertEquals(5000, c["description"]!!.jsonPrimitive.content.length)
+        assertEquals(200, c["title"]!!.jsonPrimitive.content.length); assertEquals(5000, c["description"]!!.jsonPrimitive.content.length)
     }
 
     @Test fun `POST sends the texts only when filled`() {

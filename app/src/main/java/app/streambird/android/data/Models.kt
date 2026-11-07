@@ -77,7 +77,7 @@ data class BrandKit(
     val adsShrinkPicture: Boolean = true,
     /** The kit's stream thumbnail (a JPG/PNG library file, shared by both orientations). Absent on servers without the thumbnail release = null. */
     val thumbnailAssetId: String? = null,
-    /** Default stream title of the kit (max 100 characters), used by streams that have no title of their own. Absent on older servers = null. */
+    /** Default stream title of the kit (max 200 characters), used by streams that have no title of their own. Absent on older servers = null. */
     val title: String? = null,
     /** Default stream description of the kit (max 5000 characters). Absent on older servers = null. */
     val description: String? = null,
@@ -129,6 +129,9 @@ data class StreamDto(
     val destinations: List<DestinationDto> = emptyList(),
     /** Whether the server took the title / description from the brand kit (stream sent none of its own). Absent on older servers; read leniently (any JSON), see [fromKitFlag]. Only logged. */
     val titleFromKit: kotlinx.serialization.json.JsonElement? = null,
+    /** `{id,name}` of the kit the title / description came from, or null; read leniently, unused. */
+    val titleKit: kotlinx.serialization.json.JsonElement? = null,
+    val descriptionKit: kotlinx.serialization.json.JsonElement? = null,
     val descriptionFromKit: kotlinx.serialization.json.JsonElement? = null,
 )
 

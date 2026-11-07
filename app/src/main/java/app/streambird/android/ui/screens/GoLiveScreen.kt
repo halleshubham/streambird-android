@@ -161,7 +161,7 @@ fun GoLiveScreen(vm: StudioViewModel, openCustomize: Boolean, onClose: () -> Uni
                 fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth().clickable { editTitle = true },
             )
-            s.titleFromKit?.let { Text("From brand kit $it", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelMedium) }
+            s.titleFromKit?.let { Text("From brand kit $it. Edit it to change it for this stream only.", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelMedium) }
             s.activePreset?.let { Text("Preset: ${it.name}", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelMedium) }
             s.presetNote?.let { Text(it, color = Amber, style = MaterialTheme.typography.bodySmall) }
             s.limitNote?.let { Text(it, color = Amber, style = MaterialTheme.typography.bodySmall) }
