@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.streambird.android.brand.BrandRepository
+import app.streambird.android.brand.KitDeleteText
 import app.streambird.android.data.ApiException
 import app.streambird.android.data.AuthRepository
 import app.streambird.android.data.BrandKit
@@ -62,7 +63,7 @@ class BrandViewModel @Inject constructor(
         var saved: BrandKit? = null
         run(onDone = { saved?.let(onDone) }) { saved = repo.saveKit(original, draft, channels) }
     }
-    fun deleteKit(id: String, onDone: () -> Unit) = run("Brand kit deleted.", onDone) { repo.deleteKit(id) }
+    fun deleteKit(id: String, name: String, onDone: () -> Unit = {}) = run(KitDeleteText.done(name), onDone) { repo.deleteKit(id) }
     fun deleteAsset(id: String) = run("File deleted.") { repo.deleteAsset(id) }
     fun upload(uri: Uri, kind: String = "logo", onDone: (String) -> Unit) {
         var id: String? = null
