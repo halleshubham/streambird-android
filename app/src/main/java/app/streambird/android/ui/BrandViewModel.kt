@@ -67,6 +67,6 @@ class BrandViewModel @Inject constructor(
     fun deleteAsset(id: String) = run("File deleted.") { repo.deleteAsset(id) }
     fun upload(uri: Uri, kind: String = "logo", onDone: (String) -> Unit) {
         var id: String? = null
-        run(when (kind) { "ad" -> "Ad picture uploaded."; "wallpaper" -> "Wallpaper uploaded."; else -> "Logo uploaded." }, onDone = { id?.let(onDone) }) { id = repo.uploadPicked(uri, kind).id }
+        run(when (kind) { "ad" -> "Ad picture uploaded."; "wallpaper" -> "Wallpaper uploaded."; "thumbnail" -> "Thumbnail uploaded."; else -> "Logo uploaded." }, onDone = { id?.let(onDone) }) { id = repo.uploadPicked(uri, kind).id }
     }
 }

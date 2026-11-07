@@ -65,6 +65,21 @@ fun checkAssetUpload(bytes: ByteArray, allowGif: Boolean = true): UploadCheck {
     return UploadCheck.Ok(info)
 }
 
+/**
+ * Pre-check for a picture uploaded as the kit's stream thumbnail (asset kind `thumbnail`): the library rules plus the platform ones
+ * (JPG or PNG, at most 2 MB, at least 640 px wide), in the same words as the server's thumbnail.util.ts.
+ */
+fun checkThumbnailUpload(bytes: ByteArray): UploadCheck {
+    if (bytes.isEmpty()) return UploadCheck.Refused("Choose an image file to upload.")
+    if (bytes.size > ThumbnailLimits.MAX_BYTES) return UploadCheck.Refused("The thumbnail is too large -- the limit is ${ThumbnailLimits.MAX_BYTES / 1024 / 1024} MB.")
+    val info = sniffImage(bytes)
+    if (info == null || (info.format != ImageFormat.JPEG && info.format != ImageFormat.PNG)) return UploadCheck.Refused("The thumbnail must be a JPG or PNG image.")
+    if (info.width <= 0 || info.height <= 0) return UploadCheck.Refused("That image file looks damaged -- couldn't read its size.")
+    if (info.width < ThumbnailLimits.MIN_WIDTH) return UploadCheck.Refused("The thumbnail is too small -- it must be at least ${ThumbnailLimits.MIN_WIDTH}px wide (1280x720 is recommended).")
+    if (info.width > MAX_ASSET_SIDE || info.height > MAX_ASSET_SIDE) return UploadCheck.Refused("The image is too big -- its longest side must be at most ${MAX_ASSET_SIDE}px.")
+    return UploadCheck.Ok(info)
+}
+
 fun formatBytes(n: Long): String = when {
     n >= 1024L * 1024 -> String.format(java.util.Locale.US, "%.1f MB", n / 1024.0 / 1024.0)
     n >= 1024 -> "${Math.round(n / 1024.0)} KB"

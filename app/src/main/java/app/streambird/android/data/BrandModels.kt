@@ -30,6 +30,8 @@ data class AssetLibrary(
     val logos get() = items.filter { it.kind == "logo" }
     val adFiles get() = items.filter { it.kind == "ad" }
     val wallpapers get() = items.filter { it.kind == "wallpaper" || it.kind == "background" }
+    /** Files that can be a kit's stream thumbnail: asset kind `thumbnail`, or any JPG/PNG within the platform limits (the server only checks the file). */
+    val thumbnails get() = items.filter { it.kind == "thumbnail" || app.streambird.android.brand.isThumbnailCandidate(it.contentType, it.sizeBytes, it.width) }
 }
 
 /** Response of POST /assets (the stored row; only what the app needs). */

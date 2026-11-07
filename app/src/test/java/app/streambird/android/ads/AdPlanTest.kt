@@ -26,7 +26,7 @@ class AdPlanTest {
 
     @Test fun `kit ads round trip through the editor slots, ordered by placement`() {
         val slots = slotsFromKit(kitAds)
-        assertEquals(listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.FULL_SCREEN), slots.map { it.placement })
+        assertEquals(listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.FULL_SCREEN, AdPlacement.L_SHAPE), slots.map { it.placement })
         assertNull(slots[1].assetId)                                                  // no side_third ad
         assertEquals(AdSchedule.Interval(15, 180), slots[2].schedule); assertFalse(slots[2].enabled)
         assertEquals(kitAds, kitAdsFromSlots(slots))                                   // slots without a picture are not sent

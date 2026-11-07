@@ -153,6 +153,7 @@ fun AdsSetupSection(
                         }
                         if (hasAd) Switch(checked = enabled, onCheckedChange = { v -> onChange(overrides + (p to (o ?: AdOverride()).copy(enabled = v))) })
                     }
+                    if (p == AdPlacement.L_SHAPE && hasAd && !(shrink ?: kitShrink)) Text(app.streambird.android.ads.FRAME_NEEDS_SHRINK, style = MaterialTheme.typography.bodySmall, color = Amber)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { pickFor = p; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) { Text(if (o?.phone != null) "Change picture" else "Use a picture from this phone") }
                         if (hasAd) TextButton(onClick = { scheduleFor = p }) { Text("Schedule") }
@@ -187,7 +188,7 @@ fun ShrinkSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("Shrink picture while ads show", style = MaterialTheme.typography.titleSmall)
-            Text("Lower and left third ads get their own space instead of covering the picture. Full screen ads always cover it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Lower and left third ads get their own space instead of covering the picture. Full screen ads always cover it. L-shaped ads always resize the picture.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked = checked, onCheckedChange = onChange)
     }
@@ -203,6 +204,7 @@ fun AdsLiveSheet(ads: List<LiveAd>, shrink: Boolean, onShrink: (Boolean) -> Unit
             ads.forEach { a ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(a.placement.label, style = MaterialTheme.typography.titleSmall)
+                    if (a.placement == AdPlacement.L_SHAPE && !shrink) Text(app.streambird.android.ads.FRAME_NEEDS_SHRINK, style = MaterialTheme.typography.bodySmall, color = Amber)
                     Segmented(listOf("show", "hide", "auto"), when (a.manual) { AdManual.SHOWN -> "show"; AdManual.HIDDEN -> "hide"; null -> "auto" }, { when (it) { "show" -> "Show now"; "hide" -> "Hide"; else -> "Follow schedule" } }, { v ->
                         onSet(a.placement, when (v) { "show" -> AdManual.SHOWN; "hide" -> AdManual.HIDDEN; else -> null })
                     })

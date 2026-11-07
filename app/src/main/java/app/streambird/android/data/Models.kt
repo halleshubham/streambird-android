@@ -69,12 +69,14 @@ data class BrandKit(
     val lowerThirdStyle: String = "accent",
     val isDefault: Boolean = false,
     val connectionIds: List<String> = emptyList(),
-    /** Up to three ads (lower_third, side_third, full_screen), one per placement. Absent on older servers. */
+    /** Up to four ads (lower_third, side_third, full_screen, l_shape), one per placement. Absent on older servers; `l_shape` only exists on servers with the frame release. */
     val ads: List<KitAd> = emptyList(),
     /** Portrait (9:16) ads, same shape. */
     val adsPortrait: List<KitAd> = emptyList(),
     /** Shrink the live picture into the space an ad leaves free while it shows (default on; absent on older servers = on). */
     val adsShrinkPicture: Boolean = true,
+    /** The kit's stream thumbnail (a JPG/PNG library file, shared by both orientations). Absent on servers without the thumbnail release = null. */
+    val thumbnailAssetId: String? = null,
 )
 
 /** One ad of a brand kit. `everySec` is the HIDDEN time between showings (not the period); continuous ads have null seconds. */
@@ -94,6 +96,11 @@ data class CreateStreamRequest(
     val visibility: String = "public",
     val orientation: String = "portrait",
     val destinationConnectionIds: List<String>,
+    /**
+     * Which kit's thumbnail a stream without its own gets. null = omitted (explicitNulls = false) = the server's automatic rule (the destination's
+     * kit, else the account default). Set only when the user explicitly picked a kit that has a thumbnail, so older servers never see the field.
+     */
+    val thumbnailBrandKitId: String? = null,
 )
 
 @Serializable

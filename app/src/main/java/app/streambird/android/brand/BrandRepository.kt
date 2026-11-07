@@ -19,6 +19,12 @@ import app.streambird.android.data.deleteAsset
 import app.streambird.android.data.deleteBrandKit
 import app.streambird.android.data.updateBrandKit
 import app.streambird.android.data.uploadAsset
+import app.streambird.android.ads.FrameWindowState
+import app.streambird.android.ads.windowOfBytes
+import app.streambird.android.media.GifLogoPlan
+import app.streambird.android.media.GifTiming
+import app.streambird.android.media.parseGifTiming
+import app.streambird.android.media.planGifLogo
 import app.streambird.android.media.pickBrandKit
 import coil.ImageLoader
 import coil.decode.GifDecoder
@@ -81,6 +87,42 @@ class BrandRepository @Inject constructor(
 
     fun assetUrl(assetId: String) = api.assetFileUrl(assetId)
 
+    // ---- checks the kit editor shows (cached per file: library files never change under the same id) ----
+    private val windowCache = java.util.concurrent.ConcurrentHashMap<String, FrameWindowState>()
+    private val gifTimingCache = java.util.concurrent.ConcurrentHashMap<String, GifTiming>()
+
+    /** The clear window of an L-shaped frame picture (downloads it once). [FrameWindowState.Unreadable] when it cannot be fetched or decoded; that is not cached. */
+    suspend fun frameWindow(assetId: String): FrameWindowState {
+        windowCache[assetId]?.let { return it }
+        return try {
+            val bytes = api.assetFile(assetId)
+            val state = withContext(Dispatchers.Default) {
+                windowOfBytes(bytes)?.let { FrameWindowState.Found(it) as FrameWindowState } ?: FrameWindowState.NoWindow
+            }
+            windowCache[assetId] = state
+            state
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FrameWindowState.Unreadable((t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName)
+        }
+    }
+
+    /** What the broadcast does with this GIF logo at [logoSizePx] (null = could not be checked: no note). */
+    suspend fun gifLogoPlan(assetId: String, logoSizePx: Int): GifLogoPlan? {
+        val cached = gifTimingCache[assetId]
+        val timing = cached ?: try {
+            val t = parseGifTiming(api.assetFile(assetId))
+            if (t != null) gifTimingCache[assetId] = t
+            t ?: return GifLogoPlan.Still("the GIF could not be read")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            return null
+        }
+        return planGifLogo(timing, logoSizePx)
+    }
+
     /** Loads plan, kits and library. Throws [ApiException] for 401 / pending so the caller can route it. */
     suspend fun refresh() {
         _state.update { it.copy(loading = true, error = null) }
@@ -115,7 +157,12 @@ class BrandRepository @Inject constructor(
 
     /** Creates or updates a kit and then syncs which channels use it (PUT /brand-kits/connections/:id; null = account default). */
     suspend fun saveKit(original: BrandKit?, draft: KitDraft, channels: Set<String>): BrandKit {
-        val saved = if (original == null) api.createBrandKit(draft) else api.updateBrandKit(original, draft)
+        val saved = try {
+            if (original == null) api.createBrandKit(draft) else api.updateBrandKit(original, draft)
+        } catch (e: ApiException) {
+            // An older server rejects the new fields with a validator message: say it in plain words.
+            throw KitCompat.saveError(e.status, e.message, draft)?.let { ApiException(e.status, it) } ?: e
+        }
         val before = original?.connectionIds?.toSet() ?: emptySet()
         for (c in channels - before) api.assignBrandKit(c, saved.id)
         for (c in before - channels) api.assignBrandKit(c, null)
@@ -134,18 +181,19 @@ class BrandRepository @Inject constructor(
         refresh()
     }
 
-    /** Reads the picked image (<= 4 MB), checks it like the backend would, uploads it (kind logo, wallpaper or ad; GIF only for logo and ad). */
+    /** Reads the picked image (<= 4 MB), checks it like the backend would, uploads it (kind logo, wallpaper, ad or thumbnail; GIF only for logo and ad; a thumbnail is a JPG/PNG <= 2 MB, >= 640 px wide). */
     suspend fun uploadPicked(uri: Uri, kind: String = "logo"): UploadedAsset = withContext(Dispatchers.IO) {
         val cr = context.contentResolver
         val bytes = (cr.openInputStream(uri) ?: throw UploadRefused("Cannot open the chosen image.")).use { readLimited(it, MAX_ASSET_BYTES + 1) }
-        val info = when (val c = checkAssetUpload(bytes, allowGif = kind != "wallpaper")) {
+        val check = if (kind == "thumbnail") checkThumbnailUpload(bytes) else checkAssetUpload(bytes, allowGif = kind != "wallpaper")
+        val info = when (val c = check) {
             is UploadCheck.Refused -> throw UploadRefused(c.message)
             is UploadCheck.Ok -> c.info
         }
         val display = runCatching {
             cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
         }.getOrNull()
-        val fileName = (display ?: "logo").let { if (it.contains('.')) it else "$it.${info.format.ext}" }
+        val fileName = (display ?: kind).let { if (it.contains('.')) it else "$it.${info.format.ext}" }
         val up = api.uploadAsset(bytes, info.format.mime, fileName, kind = kind, name = display?.substringBeforeLast('.')?.take(120))
         refresh()
         up

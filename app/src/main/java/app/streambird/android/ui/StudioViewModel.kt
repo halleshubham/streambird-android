@@ -233,6 +233,9 @@ class StudioViewModel @Inject constructor(
                 tickerText = app.streambird.android.media.Ticker.sanitize(s.tickerText), tickerSize = s.tickerSize,
                 brandKitId = brand.selectedKitId.value,
                 adOverrides = s.adOverrides, adsShrinkOverride = s.adsShrink, useKitAds = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, freePlan = s.limits?.watermark == true, thumbnailUri = s.thumbnailUri,
+                thumbnailKitId = app.streambird.android.brand.KitThumbnail.requestKitId(
+                    brand.selectedKitId.value, brand.state.value.kits, usingKit = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, ownPicked = s.thumbnailUri != null,
+                ),
                 liveLinks = s.connections.filter { it.id in s.selected }.associate { it.id to it.liveLinkUrl },
             ),
         )

@@ -20,7 +20,13 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** A logo to burn into every frame. Geometry follows web-app useHostStudio.ts drawLogo: height = [heightPx] canvas px, 16 px margin. */
-class LogoOverlay(val bitmap: Bitmap, val onRight: Boolean, val heightPx: Int)
+class LogoOverlay(val bitmap: Bitmap, val onRight: Boolean, val heightPx: Int) {
+    /**
+     * Frames of an animated GIF logo, set (from any thread) once they are decoded; until then, and whenever it is null, [bitmap] (the first frame) is drawn.
+     * The compositor picks the frame from the wall clock and uploads it to a texture only when it changes.
+     */
+    @Volatile var animation: LogoAnimation? = null
+}
 
 /**
  * GPU compositing step between the camera and the WebRTC VideoSource.
@@ -53,6 +59,10 @@ class FrameCompositor(
     private var yuv: YuvConverter? = null
     private var slots: List<Slot> = emptyList()
     private var logoTexture = 0
+    // animated GIF logo: one texture, re-filled only when the wall-clock frame changes
+    private var animTexture = 0
+    private var animSource: LogoAnimation? = null
+    private var animShown = -1
     private var released = false
 
     /** Front-camera frames arrive mirrored (selfie style); the published picture must not be. Changed by a live camera switch. */
@@ -97,6 +107,7 @@ class FrameCompositor(
             // Ads first advance their clock/fades (no GL) so the scene can make room for a visible lower/left third ad (picture shrink).
             val layer = ads
             layer?.update(if (ticker != null) tickerBarPx else 0)
+            layer?.drawBase()   // an L-shaped frame is the base layer: drawn under the scene, which then goes into its window
             val sc = layer?.sceneRect()
             val full = sc == null || (sc.w >= outWidth && sc.h >= outHeight)
             val sx = if (full) 0 else Math.round(sc!!.x).toInt()
@@ -230,11 +241,38 @@ class FrameCompositor(
         val w = (l.bitmap.width.toFloat() / l.bitmap.height * h).toInt().coerceAtMost(outWidth - 2 * MARGIN)
         val x = if (l.onRight) outWidth - MARGIN - w else MARGIN
         val y = outHeight - MARGIN - h // GL origin is bottom-left; the web draws the logo 16 px from the TOP.
+        val tex = currentLogoTexture(l)
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA) // Android bitmaps are premultiplied
-        if (scale == 1f && offX == 0 && offY == 0) drawer!!.drawRgb(logoTexture, FLIP_Y, l.bitmap.width, l.bitmap.height, x, y, w, h)
-        else drawer!!.drawRgb(logoTexture, FLIP_Y, l.bitmap.width, l.bitmap.height, offX + (x * scale).toInt(), offY + (y * scale).toInt(), (w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1))
+        if (scale == 1f && offX == 0 && offY == 0) drawer!!.drawRgb(tex, FLIP_Y, l.bitmap.width, l.bitmap.height, x, y, w, h)
+        else drawer!!.drawRgb(tex, FLIP_Y, l.bitmap.width, l.bitmap.height, offX + (x * scale).toInt(), offY + (y * scale).toInt(), (w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1))
         GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    /**
+     * The texture to draw the logo with: the static one, or, for an animated GIF logo, the frame the wall clock selects (frame loop in
+     * [LogoAnimation]; uploaded only when the frame index changes). Any problem falls back to the static first frame.
+     */
+    private fun currentLogoTexture(l: LogoOverlay): Int {
+        val anim = l.animation ?: return logoTexture
+        if (anim.startedAtMs == 0L) return logoTexture
+        return try {
+            val idx = anim.indexAt(SystemClock.elapsedRealtime())
+            val bmp = anim.frames[idx]
+            if (bmp.isRecycled) return logoTexture
+            if (animSource !== anim || animTexture == 0) {
+                if (animTexture != 0) GLES20.glDeleteTextures(1, intArrayOf(animTexture), 0)
+                animTexture = uploadLogo(bmp); animSource = anim; animShown = idx
+            } else if (idx != animShown) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, animTexture)
+                GLUtils.texSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, bmp)
+                animShown = idx
+            }
+            animTexture
+        } catch (t: Throwable) {
+            l.animation = null // never break the frame for a logo effect: back to the still first frame
+            logoTexture
+        }
     }
 
     /** Must be called before the helper is disposed; runs the GL clean-up on the camera thread. */
@@ -252,6 +290,8 @@ class FrameCompositor(
                     GLES20.glDeleteTextures(1, intArrayOf(it.texture), 0)
                 }
                 if (logoTexture != 0) GLES20.glDeleteTextures(1, intArrayOf(logoTexture), 0)
+                if (animTexture != 0) GLES20.glDeleteTextures(1, intArrayOf(animTexture), 0)
+                animTexture = 0; animSource = null
                 freeTicker()
                 runCatching { ads?.release() }
                 drawer?.release(); frameDrawer?.release(); yuv?.release()

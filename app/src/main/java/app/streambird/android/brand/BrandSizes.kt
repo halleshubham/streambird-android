@@ -22,7 +22,20 @@ enum class BrandSlot(val label: String, val gifAllowed: Boolean) {
     LOWER_THIRD("Lower third", true),
     SIDE_THIRD("Left third", true),
     FULL_SCREEN("Full screen", true),
+    L_SHAPE("L-shaped frame", true),
+    /** The kit's stream thumbnail: one picture shared by both orientations; JPG or PNG only. */
+    THUMBNAIL("Stream thumbnail", false),
 }
+
+/** The stream-thumbnail limits the platforms (and the server, thumbnail.util.ts) set. */
+object ThumbnailLimits {
+    const val MAX_BYTES = 2 * 1024 * 1024
+    const val MIN_WIDTH = 640
+}
+
+/** True for a library file that can be a kit's thumbnail (JPG/PNG, within the limits). */
+fun isThumbnailCandidate(contentType: String, sizeBytes: Long, width: Int): Boolean =
+    (contentType == "image/jpeg" || contentType == "image/png") && sizeBytes in 1..ThumbnailLimits.MAX_BYTES.toLong() && width >= ThumbnailLimits.MIN_WIDTH
 
 /** File limits the server enforces for every library file. */
 object BrandFileLimits {
@@ -42,6 +55,10 @@ private fun around(w: Int, h: Int, label: String, hint: String) =
 
 private val LOGO_SPEC = SlotSpec("Logo", 512, 512, 0.4, 5.0, "Square or wide PNG with a transparent background, about 512 x 512 (up to 1024 px).")
 
+/** The thumbnail is 16:9 for both orientations (vertical streams use a 16:9 thumbnail too). */
+const val THUMBNAIL_HELP = "Suggested 1280x720 JPG or PNG, under 2 MB. Vertical streams use this 16:9 image too."
+private val THUMBNAIL_SPEC = around(1280, 720, "Stream thumbnail", "16:9, 1280 x 720. Vertical (9:16) streams use a 16:9 thumbnail too.")
+
 fun slotSpec(o: BrandOrientation, slot: BrandSlot): SlotSpec = when (o) {
     BrandOrientation.LANDSCAPE -> when (slot) {
         BrandSlot.LOGO -> LOGO_SPEC
@@ -49,6 +66,8 @@ fun slotSpec(o: BrandOrientation, slot: BrandSlot): SlotSpec = when (o) {
         BrandSlot.LOWER_THIRD -> around(1280, 240, "Lower third", "Wide banner, about 16:3 (1280 x 240). It sits in the bottom third of the picture.")
         BrandSlot.SIDE_THIRD -> around(640, 1080, "Left third", "Tall slice, 640 x 1080. It fills the left third, full height.")
         BrandSlot.FULL_SCREEN -> around(1920, 1080, "Full screen", "16:9, 1920 x 1080. It covers the whole picture while it shows.")
+        BrandSlot.L_SHAPE -> around(1920, 1080, "L-shaped frame", "Full frame, 16:9, 1920 x 1080: a coloured column and/or band around a plain white (or transparent) window, 16:9, where the live picture goes.")
+        BrandSlot.THUMBNAIL -> THUMBNAIL_SPEC
     }
     BrandOrientation.PORTRAIT -> when (slot) {
         BrandSlot.LOGO -> LOGO_SPEC
@@ -56,6 +75,8 @@ fun slotSpec(o: BrandOrientation, slot: BrandSlot): SlotSpec = when (o) {
         BrandSlot.LOWER_THIRD -> around(1080, 360, "Lower third", "Banner about 3:1 (1080 x 360, at most 1080 x 640). It sits at the bottom of the tall picture.")
         BrandSlot.SIDE_THIRD -> around(360, 1920, "Left third", "Narrow tall strip, 360 x 1920. It fills the left third, full height.")
         BrandSlot.FULL_SCREEN -> around(1080, 1920, "Full screen", "9:16, 1080 x 1920. It covers the whole picture while it shows.")
+        BrandSlot.L_SHAPE -> around(1080, 1920, "L-shaped frame", "Full frame, 9:16, 1080 x 1920: a coloured band around a plain white (or transparent) window where the live picture goes.")
+        BrandSlot.THUMBNAIL -> THUMBNAIL_SPEC
     }
 }
 
@@ -68,6 +89,7 @@ fun aspectMismatch(width: Int, height: Int, spec: SlotSpec): Boolean {
 
 /** The helper line for a slot: shape advice plus the file limits. */
 fun slotHelp(o: BrandOrientation, slot: BrandSlot): String {
+    if (slot == BrandSlot.THUMBNAIL) return THUMBNAIL_HELP
     val gif = if (slot.gifAllowed) "PNG, JPG, WebP or GIF" else "PNG, JPG or WebP"
     return "${slotSpec(o, slot).hint} $gif, up to ${BrandFileLimits.MAX_BYTES / 1024 / 1024} MB."
 }

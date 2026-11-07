@@ -78,6 +78,12 @@ data class GoLiveRequest(
     val brandKitId: String? = null,
     /** Optional thumbnail (photo-picker Uri), prepared and uploaded in the background after the stream exists. */
     val thumbnailUri: String? = null,
+    /**
+     * Sent as `thumbnailBrandKitId` on POST /streams ONLY when the user explicitly picked a kit that has a thumbnail (so only servers that know the
+     * field ever see it). null = omitted = the server's automatic rule (the destination's kit, else the account default). A thumbnail the user picked
+     * on the phone is still uploaded afterwards and wins, as before.
+     */
+    val thumbnailKitId: String? = null,
     /** connectionId -> permanent live link (PlatformConnection.liveLinkUrl), for "Share live link". */
     val liveLinks: Map<String, String?> = emptyMap(),
     /** News ticker at the bottom of the picture (empty = none) and its S/M/L size. */
@@ -169,6 +175,8 @@ class StreamController @Inject constructor(
     private val created = AtomicReference<StreamDto?>(null)
     private val endSent = AtomicBoolean(false)
     private var logoBmp: android.graphics.Bitmap? = null
+    private var logoOverlay: LogoOverlay? = null
+    private var logoAnimJob: Job? = null
 
     /** Timings; tests shorten them. */
     internal var pollIntervalMs = 5_000L
@@ -205,7 +213,7 @@ class StreamController @Inject constructor(
     private suspend fun run(req: GoLiveRequest, g: Int) {
         try {
             val stream = api.createStream(
-                CreateStreamRequest(title = req.title.ifBlank { "Mobile stream" }, visibility = req.visibility, orientation = req.orientation.wire, destinationConnectionIds = req.destinationIds.toList()),
+                CreateStreamRequest(title = req.title.ifBlank { "Mobile stream" }, visibility = req.visibility, orientation = req.orientation.wire, destinationConnectionIds = req.destinationIds.toList(), thumbnailBrandKitId = req.thumbnailKitId),
             )
             created.set(stream)
             currentCoroutineContext().ensureActive()
@@ -216,7 +224,7 @@ class StreamController @Inject constructor(
             val ice = runCatching { api.turnCredentials().iceServers.map { IceServerSpec(it.urlList(), it.username, it.credential) } }
                 .getOrDefault(emptyList()).ifEmpty { listOf(IceServerSpec(listOf("stun:stun.l.google.com:19302"))) }
             currentCoroutineContext().ensureActive()
-            val (logo, logoNote) = loadLogo(req)
+            val (logo, logoNote) = loadLogo(req, g)
             currentCoroutineContext().ensureActive()
             startUpdate(g) { it.copy(logoNote = logoNote) }
             // Each ad loads on its own: one failing fetch drops only that ad, and the host is told which.
@@ -566,9 +574,39 @@ class StreamController @Inject constructor(
 
     // ---- logo ----
 
-    private fun releaseLogo() { runCatching { logoBmp?.recycle() }; logoBmp = null }
+    private fun releaseLogo() {
+        logoAnimJob?.cancel(); logoAnimJob = null
+        logoOverlay?.let { o -> val a = o.animation; o.animation = null; a?.recycle() }
+        logoOverlay = null
+        runCatching { logoBmp?.recycle() }; logoBmp = null
+    }
 
-    private suspend fun loadLogo(req: GoLiveRequest): Pair<LogoOverlay?, String> = when (req.logoChoice) {
+    /**
+     * An animated GIF logo: the first frame is already on the picture; the frames are decoded in the background (an evenly spaced subset when the
+     * GIF is long, see GifFrames.kt) and take over from the wall clock once ready. A GIF that cannot animate stays a still picture; the host is told.
+     */
+    private fun startLogoAnimation(overlay: LogoOverlay, bytes: ByteArray, logoSize: Int, g: Int) {
+        val plan = app.streambird.android.media.planGifLogo(app.streambird.android.media.parseGifTiming(bytes), logoSize)
+        if (plan is app.streambird.android.media.GifLogoPlan.Still) {
+            plan.reason?.let { event("logo GIF stays a still picture: $it", withRow = true) }
+            return
+        }
+        logoAnimJob = scope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            val r = env.decodeLogoAnimation(bytes, logoSize)
+            when (r) {
+                is app.streambird.android.media.LogoAnimationResult.Ready -> {
+                    if (gen != g || logoOverlay !== overlay || !isActive) { r.animation.recycle(); return@launch }
+                    r.animation.startedAtMs = android.os.SystemClock.elapsedRealtime()
+                    overlay.animation = r.animation
+                    val f = r.plan.frames
+                    event("logo animated: ${f.size} frames" + if (f.subsampled) " (of ${f.sourceCount})" else "", withRow = true)
+                }
+                is app.streambird.android.media.LogoAnimationResult.Still -> r.reason?.let { event("logo GIF stays a still picture: $it", withRow = true) }
+            }
+        }
+    }
+
+    private suspend fun loadLogo(req: GoLiveRequest, g: Int): Pair<LogoOverlay?, String> = when (req.logoChoice) {
         LogoChoice.NONE -> null to "none"
         LogoChoice.TEST -> env.testLogo()?.let { logoBmp = it; LogoOverlay(it, onRight = false, heightPx = 120) to "test logo (StreamBird bird)" } ?: (null to "test logo unavailable")
         LogoChoice.BRAND -> try {
@@ -580,7 +618,15 @@ class StreamController @Inject constructor(
                 val bytes = api.assetFile(assetId)
                 val bmp = env.decodeLogo(bytes) ?: error("logo image could not be decoded")
                 logoBmp = bmp
-                LogoOverlay(bmp, onRight = kit.logoPosition == "right", heightPx = kit.logoSize) to "kit '${kit.name}' ${bmp.width}x${bmp.height}, ${kit.logoPosition}, ${kit.logoSize}px"
+                val overlay = LogoOverlay(bmp, onRight = kit.logoPosition == "right", heightPx = kit.logoSize)
+                logoOverlay = overlay
+                val gif = app.streambird.android.brand.sniffImage(bytes)?.format == app.streambird.android.brand.ImageFormat.GIF
+                val gifNote = if (gif) {
+                    (app.streambird.android.media.planGifLogo(app.streambird.android.media.parseGifTiming(bytes), kit.logoSize) as? app.streambird.android.media.GifLogoPlan.Animate)
+                        ?.let { ", animated GIF (${it.frames.size} frames)" } ?: ", GIF shown as a still picture"
+                } else ""
+                if (gif) startLogoAnimation(overlay, bytes, kit.logoSize, g)
+                overlay to "kit '${kit.name}' ${bmp.width}x${bmp.height}, ${kit.logoPosition}, ${kit.logoSize}px$gifNote"
             }
         } catch (t: CancellationException) {
             throw t
