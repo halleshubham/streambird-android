@@ -39,7 +39,7 @@ fun isThumbnailCandidate(contentType: String, sizeBytes: Long, width: Int): Bool
 
 /** File limits the server enforces for every library file. */
 object BrandFileLimits {
-    const val MAX_BYTES = 4 * 1024 * 1024
+    const val MAX_BYTES = 8 * 1024 * 1024
     const val MAX_SIDE = 8192
 }
 

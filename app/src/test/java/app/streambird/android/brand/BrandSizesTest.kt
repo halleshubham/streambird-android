@@ -22,13 +22,13 @@ class BrandSizesTest {
     }
 
     @Test fun `file limits and gif rule`() {
-        assertEquals(4 * 1024 * 1024, BrandFileLimits.MAX_BYTES)
+        assertEquals(8 * 1024 * 1024, BrandFileLimits.MAX_BYTES)
         assertEquals(8192, BrandFileLimits.MAX_SIDE)
         assertEquals(1.5, ASPECT_TOLERANCE, 0.0)
         assertTrue(BrandSlot.LOGO.gifAllowed); assertTrue(BrandSlot.LOWER_THIRD.gifAllowed); assertTrue(BrandSlot.SIDE_THIRD.gifAllowed); assertTrue(BrandSlot.FULL_SCREEN.gifAllowed)
         assertFalse(BrandSlot.WALLPAPER.gifAllowed)
-        assertTrue(slotHelp(BrandOrientation.LANDSCAPE, BrandSlot.LOGO).endsWith("PNG, JPG, WebP or GIF, up to 4 MB."))
-        assertTrue(slotHelp(BrandOrientation.PORTRAIT, BrandSlot.WALLPAPER).endsWith("PNG, JPG or WebP, up to 4 MB."))
+        assertTrue(slotHelp(BrandOrientation.LANDSCAPE, BrandSlot.LOGO).endsWith("PNG, JPG, WebP or GIF, up to 8 MB."))
+        assertTrue(slotHelp(BrandOrientation.PORTRAIT, BrandSlot.WALLPAPER).endsWith("PNG, JPG or WebP, up to 8 MB."))
         assertTrue(slotHelp(BrandOrientation.PORTRAIT, BrandSlot.WALLPAPER).startsWith("9:16, 1080 x 1920."))
     }
 

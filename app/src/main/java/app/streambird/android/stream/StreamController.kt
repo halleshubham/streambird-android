@@ -216,6 +216,10 @@ class StreamController @Inject constructor(
                 CreateStreamRequest(title = req.title.ifBlank { "Mobile stream" }, visibility = req.visibility, orientation = req.orientation.wire, destinationConnectionIds = req.destinationIds.toList(), thumbnailBrandKitId = req.thumbnailKitId),
             )
             created.set(stream)
+            // The server says (newer servers only) whether the kit's default title / description were used; absent = nothing to say.
+            app.streambird.android.data.fromKitFlag(stream.titleFromKit)?.let { t ->
+                runCatching { app.streambird.android.diag.Diag.log("stream created: title from brand kit=$t, description from brand kit=${app.streambird.android.data.fromKitFlag(stream.descriptionFromKit)}") }
+            }
             currentCoroutineContext().ensureActive()
             startUpdate(g) { it.copy(stream = stream, message = "Preparing camera and encoder...") }
             launchThumbnail(stream, req, g)

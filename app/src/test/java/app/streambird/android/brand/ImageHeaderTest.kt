@@ -33,7 +33,7 @@ class ImageHeaderTest {
 
     @Test fun `refuses like the backend`() {
         assertEquals("Choose an image file to upload.", (checkAssetUpload(ByteArray(0)) as UploadCheck.Refused).message)
-        assertTrue((checkAssetUpload(ByteArray(MAX_ASSET_BYTES + 1)) as UploadCheck.Refused).message.contains("limit is 4 MB"))
+        assertTrue((checkAssetUpload(ByteArray(MAX_ASSET_BYTES + 1)) as UploadCheck.Refused).message.contains("limit is 8 MB"))
         assertTrue((checkAssetUpload(ByteArray(100) { 7 }) as UploadCheck.Refused).message.contains("PNG, JPG or WebP"))
         assertTrue((checkAssetUpload(png(9000, 100)) as UploadCheck.Refused).message.contains("8192"))
         assertTrue((checkAssetUpload(png(100, 8193)) as UploadCheck.Refused).message.contains("8192"))

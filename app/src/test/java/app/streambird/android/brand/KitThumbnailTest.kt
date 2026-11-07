@@ -39,7 +39,7 @@ class KitThumbnailTest {
         assertEquals("1280 x 720", slotSpec(l, BrandSlot.THUMBNAIL).sizeText); assertEquals("1280 x 720", slotSpec(p, BrandSlot.THUMBNAIL).sizeText)   // shared by both shapes
         assertEquals("L-shaped frame", BrandSlot.L_SHAPE.label); assertEquals("Stream thumbnail", BrandSlot.THUMBNAIL.label)
         assertTrue(BrandSlot.L_SHAPE.gifAllowed); assertFalse(BrandSlot.THUMBNAIL.gifAllowed)
-        assertTrue(slotHelp(l, BrandSlot.L_SHAPE).endsWith("PNG, JPG, WebP or GIF, up to 4 MB."))
+        assertTrue(slotHelp(l, BrandSlot.L_SHAPE).endsWith("PNG, JPG, WebP or GIF, up to 8 MB."))
         assertTrue(slotHelp(l, BrandSlot.L_SHAPE).startsWith("Full frame, 16:9, 1920 x 1080:")); assertTrue(slotHelp(p, BrandSlot.L_SHAPE).startsWith("Full frame, 9:16, 1080 x 1920:"))
         assertEquals("Suggested 1280x720 JPG or PNG, under 2 MB. Vertical streams use this 16:9 image too.", slotHelp(l, BrandSlot.THUMBNAIL))
         assertEquals(slotHelp(l, BrandSlot.THUMBNAIL), slotHelp(p, BrandSlot.THUMBNAIL))

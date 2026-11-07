@@ -40,6 +40,7 @@ import app.streambird.android.ads.AdPlacement
 import app.streambird.android.brand.BrandOrientation
 import app.streambird.android.brand.BrandSlot
 import app.streambird.android.brand.KitDeleteText
+import app.streambird.android.brand.KitText
 import app.streambird.android.ads.AdsAccess
 import app.streambird.android.ads.adsAccess
 import app.streambird.android.ads.adsEdited
@@ -88,6 +89,8 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
     var style by remember(key) { mutableStateOf(original?.lowerThirdStyle ?: "accent") }
     var shrink by remember(key) { mutableStateOf(original?.adsShrinkPicture ?: true) }
     var thumbId by remember(key) { mutableStateOf(original?.thumbnailAssetId) }
+    var kitTitle by remember(key) { mutableStateOf(original?.title.orEmpty()) }
+    var kitDescription by remember(key) { mutableStateOf(original?.description.orEmpty()) }
     var isDefault by remember(key) { mutableStateOf(original?.isDefault ?: false) }
     var channels by remember(key) { mutableStateOf(original?.connectionIds?.toSet() ?: emptySet()) }
     var adSlots by remember(key) { mutableStateOf(slotsFromKit(original?.ads.orEmpty())) }
@@ -127,6 +130,18 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
         if (!st.storageEnabled) Text("Brand storage is not enabled on this server yet, so uploads are off.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         OutlinedTextField(value = name, onValueChange = { name = it.take(80) }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+
+        Section("Default title and description") {
+            OutlinedTextField(
+                value = kitTitle, onValueChange = { kitTitle = it.take(KitText.TITLE_MAX) }, label = { Text("Default title") }, singleLine = true,
+                supportingText = { Text("${kitTitle.length}/${KitText.TITLE_MAX}") }, modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = kitDescription, onValueChange = { kitDescription = it.take(KitText.DESCRIPTION_MAX) }, label = { Text("Default description") }, minLines = 3, maxLines = 8,
+                supportingText = { Text("${kitDescription.length}/${KitText.DESCRIPTION_MAX}") }, modifier = Modifier.fillMaxWidth(),
+            )
+            Text(KitText.HINT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
 
         Section("Picture shape") {
             Segmented(BrandOrientation.entries, orientation, { it.label }, { orientation = it })
@@ -262,6 +277,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                     KitDraft(
                         name, logoId, position, size.toInt(), style, isDefault, ads, wallpaperAssetId = wallId,
                         logoAssetIdPortrait = logoIdP, wallpaperAssetIdPortrait = wallIdP, adsPortrait = adsP, adsShrinkPicture = shrink, thumbnailAssetId = thumbId,
+                        title = kitTitle, description = kitDescription,
                     ),
                     channels,
                 ) { onBack() }

@@ -20,7 +20,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
 
-class ApiException(val status: Int, override val message: String) : IOException(message) {
+class ApiException(val status: Int, override val message: String, /** First 300 characters of the raw response body, for the diagnostics log only (never shown to the user). */ val body: String = "") : IOException(message) {
     val isUnauthorized get() = status == 401
     val isPendingApproval get() = status == 403 && message.contains("pending", ignoreCase = true)
 }
@@ -79,12 +79,25 @@ class ApiClient(
 ) {
     internal val jsonType = "application/json".toMediaType()
 
+    /**
+     * Client for big uploads (brand images up to 8 MB over a slow mobile uplink): same cookie jar, interceptors (Origin) and connection pool as [http],
+     * but a write that stalls fails after 60 s instead of the default 10 s, the server gets 2 minutes to store the file and answer, and there is no overall
+     * call deadline (a slow but moving upload may take minutes; the coroutine can still be cancelled).
+     */
+    internal val uploadHttp: OkHttpClient by lazy {
+        http.newBuilder()
+            .writeTimeout(UPLOAD_WRITE_TIMEOUT_S, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(UPLOAD_READ_TIMEOUT_S, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     internal fun url(path: String): HttpUrl = (baseUrl().trimEnd('/') + "/api" + path).toHttpUrl()
 
     /** Cancellable: cancelling the coroutine cancels the HTTP call, also while the body is being read. Unexpected bodies (HTML from a captive portal, missing fields) become [ApiException]. */
-    internal suspend fun <T> call(req: Request, parse: (String) -> T): T {
-        val (code, text) = exec(req) { res -> res.code to res.body?.string().orEmpty() }
-        if (code !in 200..299) throw ApiException(code, errorMessage(code, text))
+    internal suspend fun <T> call(req: Request, client: OkHttpClient = http, parse: (String) -> T): T {
+        val (code, text) = exec(req, client) { res -> res.code to res.body?.string().orEmpty() }
+        if (code !in 200..299) throw ApiException(code, errorMessage(code, text), text.take(300))
         return try {
             parse(text)
         } catch (e: kotlinx.serialization.SerializationException) {
@@ -95,8 +108,8 @@ class ApiClient(
     }
 
     /** Runs [read] on OkHttp's thread as soon as the response arrives (the body is read there, so a cancel interrupts it). */
-    private suspend fun <R> exec(req: Request, read: (Response) -> R): R = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-        val call = http.newCall(req)
+    private suspend fun <R> exec(req: Request, client: OkHttpClient = http, read: (Response) -> R): R = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+        val call = client.newCall(req)
         cont.invokeOnCancellation { runCatching { call.cancel() } }
         call.enqueue(object : okhttp3.Callback {
             override fun onFailure(call: okhttp3.Call, e: IOException) { if (cont.isActive) cont.resumeWith(Result.failure(e)) }
@@ -145,7 +158,7 @@ class ApiClient(
     suspend fun myLimits(): EffectiveLimits = call(get("/plans/me")) { ApiJson.decodeFromString(it) }
     suspend fun brandKits(): List<BrandKit> = call(get("/brand-kits")) { ApiJson.decodeFromString(it) }
 
-    /** The image bytes of a library asset; refuses anything over [MAX_ASSET_DOWNLOAD] (the backend's own cap is 4 MB). */
+    /** The image bytes of a library asset; refuses anything over [MAX_ASSET_DOWNLOAD] (the backend's own cap is 8 MB per brand image). */
     suspend fun assetFile(id: String): ByteArray {
         val r = exec(get("/assets/$id/file")) { res ->
             if (!res.isSuccessful) Triple(res.code, res.body?.string().orEmpty(), null)
@@ -177,17 +190,30 @@ class ApiClient(
     companion object {
         const val MAX_ASSET_DOWNLOAD = 10L * 1024 * 1024
 
-        /** Pulls a human message out of Nest's error body, whatever its shape (string, string[], or nested). */
+        /** Uploads over a slow mobile uplink: a write that makes no progress for this long fails (OkHttp counts per write, not per call). */
+        const val UPLOAD_WRITE_TIMEOUT_S = 60L
+
+        /** After the last byte is sent the server validates and stores the file (object storage) before it answers. */
+        const val UPLOAD_READ_TIMEOUT_S = 120L
+
+        /**
+         * Pulls a human message out of the backend's error body, whatever its shape. The real server wraps Nest's own response in its AllExceptionsFilter:
+         * `{"statusCode":400,"message":{"message":["config.each value in destinationIds must be a UUID"],"error":"Bad Request","statusCode":400},"timestamp":"..."}`
+         * (a validation failure carries an ARRAY one level down), while thrown HttpExceptions with a string carry `message.message` as a string, and
+         * a bare `{"message":"..."}` / `{"message":["..."]}` also works. Arrays are joined with ", ".
+         */
         fun errorMessage(status: Int, body: String): String {
             val parsed = runCatching { ApiJson.decodeFromString<ErrorBody>(body) }.getOrNull()
-            val m = parsed?.message
-            val text = when (m) {
-                is JsonPrimitive -> m.content
-                is JsonArray -> m.joinToString(", ") { (it as? JsonPrimitive)?.content ?: it.toString() }
-                is JsonObject -> (m["message"] as? JsonPrimitive)?.content
-                else -> null
-            }
+            val text = messageText(parsed?.message)
             return text?.takeIf { it.isNotBlank() }?.let { neutralizePlanSteering(it) } ?: "Request failed ($status)"
+        }
+
+        private fun messageText(el: kotlinx.serialization.json.JsonElement?, depth: Int = 0): String? = when {
+            el == null || depth > 3 || el is kotlinx.serialization.json.JsonNull -> null
+            el is JsonPrimitive -> el.content
+            el is JsonArray -> el.mapNotNull { messageText(it, depth + 1) }.filter { it.isNotBlank() }.joinToString(", ").ifBlank { null }
+            el is JsonObject -> messageText(el["message"], depth + 1)
+            else -> null
         }
 
         /** What the app says instead of any server text that points at upgrading, plans, prices or billing (Google Play payments policy: no purchase steering in the app). */

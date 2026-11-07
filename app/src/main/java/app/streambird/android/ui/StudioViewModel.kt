@@ -27,6 +27,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.IOException
@@ -40,6 +41,10 @@ data class StudioUi(
     val selected: Set<String> = emptySet(),
     val limitNote: String? = null,
     val title: String = "",
+    /** The host typed the title (it then always wins over the brand kit's default title). */
+    val titleEdited: Boolean = false,
+    /** Name of the brand kit the shown title was taken from (null = typed or none). */
+    val titleFromKit: String? = null,
     val visibility: String = "public",
     val tier: StreamTier = StreamTier.P720,
     val orientation: StreamOrientation = StreamOrientation.PORTRAIT,
@@ -86,7 +91,34 @@ class StudioViewModel @Inject constructor(
     )
     val ui: StateFlow<StudioUi> = _ui.asStateFlow()
 
-    init { refresh(); checkStaleStreams() }
+    init { refresh(); checkStaleStreams(); watchKitTitle() }
+
+    /**
+     * The kit that applies to this stream for the TITLE: the one the host chose or the automatic one, only while the brand kit is in use (logo choice
+     * "brand kit" on a plan with a brand library), like the thumbnail note. Null otherwise.
+     */
+    fun kitInUse(s: StudioUi = _ui.value, b: app.streambird.android.brand.BrandState = brand.state.value): app.streambird.android.data.BrandKit? =
+        if (s.logoChoice == LogoChoice.BRAND && s.brandAllowed && s.limits?.watermark != true) brand.effectiveKit(s.selected, b) else null
+
+    /** The title field follows the kit in use (chosen, automatic, switched, loaded later) until the host types; a typed title is never touched. */
+    private fun watchKitTitle() {
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(brand.state, brand.selectedKitId, _ui) { b, _, s -> kitInUse(s, b) }
+                .distinctUntilChanged()
+                .collect { kit -> _ui.update { applyKitTitle(it, kit) } }
+        }
+    }
+
+    private fun applyKitTitle(s: StudioUi, kit: app.streambird.android.data.BrandKit?): StudioUi {
+        val r = app.streambird.android.brand.KitText.reconcile(app.streambird.android.brand.KitText.TitleState(s.title, s.titleEdited, s.titleFromKit), kit)
+        return if (r.text == s.title && r.edited == s.titleEdited && r.fromKit == s.titleFromKit) s else s.copy(title = r.text, titleEdited = r.edited, titleFromKit = r.fromKit)
+    }
+
+    /** The host typed a title. */
+    fun setTitle(text: String) = _ui.update { s ->
+        val r = app.streambird.android.brand.KitText.typed(app.streambird.android.brand.KitText.TitleState(s.title, s.titleEdited, s.titleFromKit), text)
+        s.copy(title = r.text, titleEdited = r.edited, titleFromKit = r.fromKit)
+    }
 
     fun refresh() {
         checkStaleStreams()
@@ -208,11 +240,24 @@ class StudioViewModel @Inject constructor(
     fun savePreset(name: String, overwrite: Boolean, onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
             val s = _ui.value
-            val saved = presets.save(if (overwrite) s.activePreset?.id else null, name, choicesToConfig(choices(s)))
+            val cfg = choicesToConfig(choices(s))
+            app.streambird.android.diag.Diag.log("presets: ${if (overwrite) "update" else "save"} tapped, ${cfg.destinationIds?.size ?: 0} destination(s), quality ${cfg.quality}, shape ${cfg.orientation}, kit ${cfg.brandKitId != null}")
+            val saved = presets.save(if (overwrite) s.activePreset?.id else null, name, cfg)
             if (saved != null) _ui.update { it.copy(activePreset = saved) }
+            // The preset this screen was editing is gone (deleted elsewhere): stop pretending it is still open.
+            else if (overwrite) _ui.update { cur -> if (cur.activePreset != null && presets.state.value.items.none { it.id == cur.activePreset.id }) cur.copy(activePreset = null) else cur }
             onDone(saved != null)
         }
     }
+
+    /** A name for the "Save as preset" field (the ticked channels), unique among the saved presets. */
+    fun suggestPresetName(): String {
+        val s = _ui.value
+        return app.streambird.android.preset.suggestPresetName(s.selected, s.connections, presets.state.value.items.map { it.name })
+    }
+
+    /** Pulls the presets again (Home opening, the Retry button); silent. */
+    fun refreshPresets() { viewModelScope.launch { runCatching { presets.refresh() } } }
 
     fun deletePreset(id: String, onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
@@ -227,7 +272,8 @@ class StudioViewModel @Inject constructor(
         settings.tickerText = app.streambird.android.media.Ticker.sanitize(s.tickerText); settings.tickerSize = s.tickerSize.name
         controller.start(
             GoLiveRequest(
-                title = s.title, visibility = s.visibility, destinationIds = s.selected, tier = s.tier, orientation = s.orientation, priority = s.priority,
+                // A blank title falls back to the kit's default title (like the server does); the controller's own "Mobile stream" is the last resort.
+                title = app.streambird.android.brand.KitText.finalTitle(s.title, kitInUse(s)), visibility = s.visibility, destinationIds = s.selected, tier = s.tier, orientation = s.orientation, priority = s.priority,
                 frontCamera = s.frontCamera, h264HighProfile = s.h264HighProfile, forceKeyFrames = s.forceKeyFrames,
                 logoChoice = if (s.logoChoice == LogoChoice.BRAND && !s.brandAllowed) LogoChoice.NONE else s.logoChoice,
                 tickerText = app.streambird.android.media.Ticker.sanitize(s.tickerText), tickerSize = s.tickerSize,

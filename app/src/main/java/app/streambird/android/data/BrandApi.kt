@@ -8,6 +8,7 @@ import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
@@ -33,6 +34,9 @@ data class KitDraft(
     val adsShrinkPicture: Boolean = true,
     /** The kit's stream thumbnail (shared by both sets); null = none. Sent on PATCH only when it changed (explicit null clears), on POST only when set. */
     val thumbnailAssetId: String? = null,
+    /** Default stream title of the kit (max 100) and description (max 5000): PATCH sends each only when it changed (blank = clear, explicit null), POST only when set. */
+    val title: String? = null,
+    val description: String? = null,
 )
 
 object BrandKitPayload {
@@ -46,7 +50,7 @@ object BrandKitPayload {
     fun draftOf(k: BrandKit) = KitDraft(
         k.name, k.logoAssetId, k.logoPosition, k.logoSize, k.lowerThirdStyle, k.isDefault,
         wallpaperAssetId = k.wallpaperAssetId, logoAssetIdPortrait = k.logoAssetIdPortrait,
-        wallpaperAssetIdPortrait = k.wallpaperAssetIdPortrait, adsShrinkPicture = k.adsShrinkPicture, thumbnailAssetId = k.thumbnailAssetId,
+        wallpaperAssetIdPortrait = k.wallpaperAssetIdPortrait, adsShrinkPicture = k.adsShrinkPicture, thumbnailAssetId = k.thumbnailAssetId, title = k.title, description = k.description,
     )
 
     /**
@@ -69,6 +73,8 @@ object BrandKitPayload {
         if (d.wallpaperAssetIdPortrait != original.wallpaperAssetIdPortrait) put("wallpaperAssetIdPortrait", d.wallpaperAssetIdPortrait?.let { JsonPrimitive(it) } ?: JsonNull)
         if (d.adsShrinkPicture != original.adsShrinkPicture) put("adsShrinkPicture", d.adsShrinkPicture)
         if (d.thumbnailAssetId != original.thumbnailAssetId) put("thumbnailAssetId", d.thumbnailAssetId?.let { JsonPrimitive(it) } ?: JsonNull)
+        textChange(this, "title", app.streambird.android.brand.KitText.titleChange(original.title, d.title))
+        textChange(this, "description", app.streambird.android.brand.KitText.descriptionChange(original.description, d.description))
         if (d.isDefault && !original.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
         d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
@@ -83,12 +89,22 @@ object BrandKitPayload {
         d.wallpaperAssetIdPortrait?.let { put("wallpaperAssetIdPortrait", it) }
         if (!d.adsShrinkPicture) put("adsShrinkPicture", false)
         d.thumbnailAssetId?.let { put("thumbnailAssetId", it) }
+        app.streambird.android.brand.KitText.cleanTitle(d.title)?.let { put("title", it) }
+        app.streambird.android.brand.KitText.cleanDescription(d.description)?.let { put("description", it) }
         put("logoPosition", d.logoPosition)
         put("logoSize", clampSize(d.logoSize))
         put("lowerThirdStyle", d.lowerThirdStyle)
         if (d.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
         d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
+    }
+
+    private fun textChange(b: kotlinx.serialization.json.JsonObjectBuilder, key: String, c: app.streambird.android.brand.KitText.Change) {
+        when (c) {
+            is app.streambird.android.brand.KitText.Change.Set -> b.put(key, c.value)
+            app.streambird.android.brand.KitText.Change.Clear -> b.put(key, JsonNull)
+            app.streambird.android.brand.KitText.Change.Unchanged -> Unit
+        }
     }
 
     /** The exact shape the backend expects: placement, assetId, enabled, mode, showSec, everySec (null for continuous). */
@@ -125,16 +141,23 @@ suspend fun ApiClient.assetLibrary(): AssetLibrary = call(get("/assets")) { ApiJ
 
 suspend fun ApiClient.deleteAsset(id: String) = call(Request.Builder().url(url("/assets/$id")).delete().build()) { }
 
-/** POST /assets multipart: fields `kind`, optional `name`, and the file as `file`. */
-fun assetUploadBody(bytes: ByteArray, mime: String, fileName: String, kind: String, name: String?): MultipartBody =
+/** POST /assets multipart: fields `kind`, optional `name`, and the file as `file`. The file is any [RequestBody] (a streaming one for the phone's gallery). */
+fun assetUploadBody(file: RequestBody, fileName: String, kind: String, name: String?): MultipartBody =
     MultipartBody.Builder().setType(MultipartBody.FORM)
         .addFormDataPart("kind", kind)
         .apply { if (!name.isNullOrBlank()) addFormDataPart("name", name) }
-        .addFormDataPart("file", fileName, bytes.toRequestBody(mime.toMediaType()))
+        .addFormDataPart("file", fileName, file)
         .build()
 
+fun assetUploadBody(bytes: ByteArray, mime: String, fileName: String, kind: String, name: String?): MultipartBody =
+    assetUploadBody(bytes.toRequestBody(mime.toMediaType()), fileName, kind, name)
+
 suspend fun ApiClient.uploadAsset(bytes: ByteArray, mime: String, fileName: String, kind: String = "logo", name: String? = null): UploadedAsset =
-    call(Request.Builder().url(url("/assets")).post(assetUploadBody(bytes, mime, fileName, kind, name)).build()) { ApiJson.decodeFromString(it) }
+    call(Request.Builder().url(url("/assets")).post(assetUploadBody(bytes, mime, fileName, kind, name)).build(), uploadHttp) { ApiJson.decodeFromString(it) }
+
+/** Streams [file] (never held in memory) to POST /assets over the upload client (stall-based timeouts for slow uplinks). */
+suspend fun ApiClient.uploadAssetStreaming(file: RequestBody, fileName: String, kind: String = "logo", name: String? = null): UploadedAsset =
+    call(Request.Builder().url(url("/assets")).post(assetUploadBody(file, fileName, kind, name)).build(), uploadHttp) { ApiJson.decodeFromString(it) }
 
 /** URL Coil loads (authenticated through the app's OkHttpClient: cookie + Origin). */
 fun ApiClient.assetFileUrl(id: String): String = url("/assets/$id/file").toString()
@@ -144,5 +167,5 @@ fun thumbnailUploadBody(jpeg: ByteArray): MultipartBody =
     MultipartBody.Builder().setType(MultipartBody.FORM).addFormDataPart("file", "thumbnail.jpg", jpeg.toRequestBody("image/jpeg".toMediaType())).build()
 
 suspend fun ApiClient.uploadStreamThumbnail(streamId: String, jpeg: ByteArray): ThumbnailResult =
-    call(Request.Builder().url(url("/streams/$streamId/thumbnail")).put(thumbnailUploadBody(jpeg)).build()) { ApiJson.decodeFromString(it) }
+    call(Request.Builder().url(url("/streams/$streamId/thumbnail")).put(thumbnailUploadBody(jpeg)).build(), uploadHttp) { ApiJson.decodeFromString(it) }
 

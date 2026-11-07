@@ -1,13 +1,14 @@
 package app.streambird.android.brand
 
-/** Pure-Kotlin image sniffing for uploads. Mirrors the backend's image.util.ts (PNG/JPEG/WebP/GIF, 4 MB, 8192 px) so refusals show before the upload. */
+/** Pure-Kotlin image sniffing for uploads. Mirrors the backend's image.util.ts (PNG/JPEG/WebP/GIF, 8 MB, 8192 px) so refusals show before the upload. */
 enum class ImageFormat(val mime: String, val ext: String) {
     PNG("image/png", "png"), JPEG("image/jpeg", "jpg"), WEBP("image/webp", "webp"), GIF("image/gif", "gif")
 }
 
 data class ImageInfo(val format: ImageFormat, val width: Int, val height: Int)
 
-const val MAX_ASSET_BYTES = 4 * 1024 * 1024
+/** Per-file cap of every brand image (logo, wallpaper, ads incl. portrait and the L-shape frame): 8 MB since the server raised it from 4 MB. The stream/kit THUMBNAIL stays at [ThumbnailLimits.MAX_BYTES] (2 MB). */
+const val MAX_ASSET_BYTES = 8 * 1024 * 1024
 const val MAX_ASSET_SIDE = 8192
 
 private fun ByteArray.u8(i: Int) = this[i].toInt() and 0xff
@@ -54,31 +55,55 @@ sealed interface UploadCheck {
     data class Refused(val message: String) : UploadCheck
 }
 
-/** Same refusals (and nearly the same words) as the backend's parseImage, so the user sees them before spending the upload. */
-fun checkAssetUpload(bytes: ByteArray, allowGif: Boolean = true): UploadCheck {
-    if (bytes.isEmpty()) return UploadCheck.Refused("Choose an image file to upload.")
-    if (bytes.size > MAX_ASSET_BYTES) return UploadCheck.Refused("The image is too large -- the limit is ${MAX_ASSET_BYTES / 1024 / 1024} MB per file.")
-    val info = sniffImage(bytes) ?: return UploadCheck.Refused("The file must be a PNG, JPG or WebP image (a GIF also works for logos).")
+/**
+ * Same refusals (and nearly the same words) as the backend's parseImage, so the user sees them before spending the upload.
+ * [head] is the start of the file (enough to read the format and the pixel size) and [totalSize] the size of the WHOLE file in bytes, so an 8 MB
+ * picture is judged by its declared size without being held in memory. A file of exactly [MAX_ASSET_BYTES] is fine, one byte more is refused.
+ */
+fun checkAssetHead(head: ByteArray, totalSize: Long, allowGif: Boolean = true): UploadCheck {
+    if (totalSize <= 0L) return UploadCheck.Refused("Choose an image file to upload.")
+    if (totalSize > MAX_ASSET_BYTES) return UploadCheck.Refused("The image is too large -- the limit is ${MAX_ASSET_BYTES / 1024 / 1024} MB per file.")
+    val info = sniffImage(head) ?: return UploadCheck.Refused("The file must be a PNG, JPG or WebP image (a GIF also works for logos).")
     if (info.format == ImageFormat.GIF && !allowGif) return UploadCheck.Refused("GIF images can only be used as a logo.")
     if (info.width <= 0 || info.height <= 0) return UploadCheck.Refused("That image file looks damaged -- couldn't read its size.")
     if (info.width > MAX_ASSET_SIDE || info.height > MAX_ASSET_SIDE) return UploadCheck.Refused("The image is too big -- its longest side must be at most ${MAX_ASSET_SIDE}px.")
     return UploadCheck.Ok(info)
 }
 
+fun checkAssetUpload(bytes: ByteArray, allowGif: Boolean = true): UploadCheck = checkAssetHead(bytes, bytes.size.toLong(), allowGif)
+
 /**
  * Pre-check for a picture uploaded as the kit's stream thumbnail (asset kind `thumbnail`): the library rules plus the platform ones
- * (JPG or PNG, at most 2 MB, at least 640 px wide), in the same words as the server's thumbnail.util.ts.
+ * (JPG or PNG, at most 2 MB, at least 640 px wide), in the same words as the server's thumbnail.util.ts. The thumbnail cap stays 2 MB.
  */
-fun checkThumbnailUpload(bytes: ByteArray): UploadCheck {
-    if (bytes.isEmpty()) return UploadCheck.Refused("Choose an image file to upload.")
-    if (bytes.size > ThumbnailLimits.MAX_BYTES) return UploadCheck.Refused("The thumbnail is too large -- the limit is ${ThumbnailLimits.MAX_BYTES / 1024 / 1024} MB.")
-    val info = sniffImage(bytes)
+fun checkThumbnailHead(head: ByteArray, totalSize: Long): UploadCheck {
+    if (totalSize <= 0L) return UploadCheck.Refused("Choose an image file to upload.")
+    if (totalSize > ThumbnailLimits.MAX_BYTES) return UploadCheck.Refused("The thumbnail is too large -- the limit is ${ThumbnailLimits.MAX_BYTES / 1024 / 1024} MB.")
+    val info = sniffImage(head)
     if (info == null || (info.format != ImageFormat.JPEG && info.format != ImageFormat.PNG)) return UploadCheck.Refused("The thumbnail must be a JPG or PNG image.")
     if (info.width <= 0 || info.height <= 0) return UploadCheck.Refused("That image file looks damaged -- couldn't read its size.")
     if (info.width < ThumbnailLimits.MIN_WIDTH) return UploadCheck.Refused("The thumbnail is too small -- it must be at least ${ThumbnailLimits.MIN_WIDTH}px wide (1280x720 is recommended).")
     if (info.width > MAX_ASSET_SIDE || info.height > MAX_ASSET_SIDE) return UploadCheck.Refused("The image is too big -- its longest side must be at most ${MAX_ASSET_SIDE}px.")
     return UploadCheck.Ok(info)
 }
+
+fun checkThumbnailUpload(bytes: ByteArray): UploadCheck = checkThumbnailHead(bytes, bytes.size.toLong())
+
+/** The most bytes a file of this upload kind may have: 2 MB for a thumbnail, [MAX_ASSET_BYTES] for everything else. */
+fun maxUploadBytes(kind: String): Long = if (kind == "thumbnail") ThumbnailLimits.MAX_BYTES.toLong() else MAX_ASSET_BYTES.toLong()
+
+/** How much of the start of a file is read to find its format and size (a JPEG can hide its size marker behind large metadata). */
+const val SNIFF_HEAD_BYTES = 512 * 1024
+
+/** Size-only refusal for a file whose size the phone already knows, before a single byte is read; null = go on. */
+fun checkUploadSize(sizeBytes: Long, kind: String): UploadCheck.Refused? = when {
+    sizeBytes < 0L -> null // unknown size: counted while reading
+    sizeBytes == 0L -> UploadCheck.Refused("Choose an image file to upload.")
+    kind == "thumbnail" && sizeBytes > ThumbnailLimits.MAX_BYTES -> UploadCheck.Refused("The thumbnail is too large -- the limit is ${ThumbnailLimits.MAX_BYTES / 1024 / 1024} MB.")
+    kind != "thumbnail" && sizeBytes > MAX_ASSET_BYTES -> UploadCheck.Refused("The image is too large -- the limit is ${MAX_ASSET_BYTES / 1024 / 1024} MB per file.")
+    else -> null
+}
+
 
 fun formatBytes(n: Long): String = when {
     n >= 1024L * 1024 -> String.format(java.util.Locale.US, "%.1f MB", n / 1024.0 / 1024.0)
