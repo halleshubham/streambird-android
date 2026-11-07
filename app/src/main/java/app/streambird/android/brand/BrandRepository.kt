@@ -18,7 +18,8 @@ import app.streambird.android.data.createBrandKit
 import app.streambird.android.data.deleteAsset
 import app.streambird.android.data.deleteBrandKit
 import app.streambird.android.data.updateBrandKit
-import app.streambird.android.data.uploadAsset
+import app.streambird.android.data.StreamingFileBody
+import app.streambird.android.data.uploadAssetStreaming
 import app.streambird.android.ads.FrameWindowState
 import app.streambird.android.ads.windowOfBytes
 import app.streambird.android.media.GifLogoPlan
@@ -181,32 +182,35 @@ class BrandRepository @Inject constructor(
         refresh()
     }
 
-    /** Reads the picked image (<= 4 MB), checks it like the backend would, uploads it (kind logo, wallpaper, ad or thumbnail; GIF only for logo and ad; a thumbnail is a JPG/PNG <= 2 MB, >= 640 px wide). */
+    /**
+     * Checks the picked image like the backend would (brand images <= 8 MB and 8192 px; a thumbnail is a JPG/PNG <= 2 MB, >= 640 px wide; GIF only for
+     * logo and ad) and uploads it. The file is NOT loaded: its size comes from the provider, only its first 512 KB are read to find format and size, and the
+     * upload streams it from the Uri in 64 KB steps ([StreamingFileBody]) over the upload client with stall-based timeouts (60 s write, 120 s answer).
+     */
     suspend fun uploadPicked(uri: Uri, kind: String = "logo"): UploadedAsset = withContext(Dispatchers.IO) {
         val cr = context.contentResolver
-        val bytes = (cr.openInputStream(uri) ?: throw UploadRefused("Cannot open the chosen image.")).use { readLimited(it, MAX_ASSET_BYTES + 1) }
-        val check = if (kind == "thumbnail") checkThumbnailUpload(bytes) else checkAssetUpload(bytes, allowGif = kind != "wallpaper")
-        val info = when (val c = check) {
-            is UploadCheck.Refused -> throw UploadRefused(c.message)
-            is UploadCheck.Ok -> c.info
+        val open = { cr.openInputStream(uri) }
+        val ready = when (val p = prepareUpload(open, declaredSize(cr, uri), kind)) {
+            is PreparedUpload.Refused -> throw UploadRefused(p.message)
+            is PreparedUpload.Ready -> p
         }
+        val info = ready.info
         val display = runCatching {
             cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
         }.getOrNull()
         val fileName = (display ?: kind).let { if (it.contains('.')) it else "$it.${info.format.ext}" }
-        val up = api.uploadAsset(bytes, info.format.mime, fileName, kind = kind, name = display?.substringBeforeLast('.')?.take(120))
+        val body = StreamingFileBody(info.format.mime, ready.size) { open() ?: throw IOException("Cannot open the chosen image.") }
+        val up = api.uploadAssetStreaming(body, fileName, kind = kind, name = display?.substringBeforeLast('.')?.take(120))
         refresh()
         up
     }
 
-    private fun readLimited(input: java.io.InputStream, max: Int): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
-        val buf = ByteArray(16 * 1024)
-        while (out.size() < max) {
-            val n = input.read(buf, 0, minOf(buf.size, max - out.size()))
-            if (n < 0) break
-            out.write(buf, 0, n)
-        }
-        return out.toByteArray()
+    /** Size in bytes from the content provider (asset descriptor first, then the OpenableColumns.SIZE column); -1 when it does not say. */
+    private fun declaredSize(cr: android.content.ContentResolver, uri: Uri): Long {
+        val fd = runCatching { cr.openAssetFileDescriptor(uri, "r")?.use { it.length } }.getOrNull()
+        if (fd != null && fd >= 0) return fd
+        return runCatching {
+            cr.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else -1L }
+        }.getOrNull() ?: -1L
     }
 }

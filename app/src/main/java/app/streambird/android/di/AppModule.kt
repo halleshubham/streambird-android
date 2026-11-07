@@ -40,6 +40,7 @@ object AppModule {
         .addInterceptor(OriginInterceptor { settings.baseUrl })
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS) // API calls are small; big uploads use ApiClient.uploadHttp (60 s write / 120 s answer)
         .build()
 
     @Provides @Singleton

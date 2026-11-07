@@ -81,7 +81,15 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
 fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Unit) {
     val codecs = remember { CodecProbe.summary() }
     val hasHwH264 = remember { CodecProbe.h264Encoders().any { it.hardware } }
-    OutlinedTextField(value = s.title, onValueChange = { v -> vm.update { it.copy(title = v) } }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    // The title follows the brand kit's default title until the host types; "From brand kit <name>" says so. A typed title always wins.
+    val brandSt by vm.brandState.collectAsStateWithLifecycle()
+    val kitNow = vm.kitInUse(s, brandSt)
+    val titleNote = app.streambird.android.brand.KitText.titleNote(app.streambird.android.brand.KitText.TitleState(s.title, s.titleEdited, s.titleFromKit), kitNow)
+    OutlinedTextField(
+        value = s.title, onValueChange = vm::setTitle, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+        supportingText = titleNote?.let { n -> { Text(n) } },
+    )
+    app.streambird.android.brand.KitText.descriptionNote(kitNow)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 
     Text("Visibility (YouTube)", style = MaterialTheme.typography.titleSmall)
     Segmented(listOf("public", "unlisted", "private"), s.visibility, { it.replaceFirstChar { c -> c.uppercase() } }, { v -> vm.update { it.copy(visibility = v) } })

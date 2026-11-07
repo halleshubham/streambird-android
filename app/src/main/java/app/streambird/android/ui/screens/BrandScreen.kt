@@ -157,7 +157,7 @@ fun BrandScreen(connections: List<PlatformConnection>, onBack: () -> Unit, onEdi
                         onClick = { uploadKind = "ad"; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         enabled = st.storageEnabled && !busy && app.streambird.android.ads.adsAccess(st.plan) == app.streambird.android.ads.AdsAccess.EDITABLE, modifier = Modifier.fillMaxWidth(),
                     ) { Text("Upload an ad picture or GIF") }
-                    Text("PNG, JPG or WebP (GIF for logos), up to 4 MB and 8192 px.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("PNG, JPG or WebP (GIF for logos and ads), up to 8 MB and 8192 px.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

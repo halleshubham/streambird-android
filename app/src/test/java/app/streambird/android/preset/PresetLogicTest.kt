@@ -129,4 +129,16 @@ class PresetLogicTest {
         assertEquals(listOf("c", "b", "a", "d"), orderForHome(listOf(a, b, c, d)).map { it.id })
         assertTrue(orderForHome(emptyList()).isEmpty())
     }
+
+    // ---- the name proposed in "Save as preset" ----
+
+    @Test fun `a proposed preset name is the ticked channels, never blank, unique among the saved ones`() {
+        assertEquals("YouTube + Facebook", suggestPresetName(listOf("c1", "c2"), conns, emptyList()))
+        assertEquals("My preset", suggestPresetName(emptyList(), conns, emptyList()))
+        assertEquals("My preset", suggestPresetName(listOf("gone"), conns, emptyList()))
+        assertEquals("YouTube 2", suggestPresetName(listOf("c1"), conns, listOf("youtube", "Other")))
+        assertEquals("YouTube 3", suggestPresetName(listOf("c1"), conns, listOf("YouTube", "YouTube 2")))
+        assertEquals("YouTube", suggestPresetName(listOf("c1", "c1"), conns, emptyList()))
+        assertTrue(suggestPresetName(listOf("c1", "c2", "c3"), conns, emptyList()).length <= Preset.MAX_NAME)
+    }
 }

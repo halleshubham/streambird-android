@@ -25,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +67,8 @@ fun HomeScreen(
     val brand by vm.brandState.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     var deleting by remember { mutableStateOf<Preset?>(null) }
+    // Coming back to Home (after saving or editing a preset, or when the first load failed) shows what the server really has, also presets made on the website.
+    LaunchedEffect(Unit) { if (ps.loaded) vm.refreshPresets() }
 
     val kitName: (String) -> String? = { id -> brand.kits.firstOrNull { it.id == id }?.name }
     val cards: List<Preset> = if (ps.available && ps.items.isNotEmpty()) ps.items else listOf(vm.implicitPreset())
@@ -111,7 +114,12 @@ fun HomeScreen(
                 }
             }
         }
+        ps.loadError?.let { Notice(it, Amber); OutlinedButton(onClick = vm::refreshPresets, modifier = Modifier.fillMaxWidth()) { Text("Try loading presets again") } }
         ps.error?.let { Notice(it, Amber) }
+        ps.notice?.let { n ->
+            Notice(n, app.streambird.android.ui.theme.Ok)
+            LaunchedEffect(n) { kotlinx.coroutines.delay(4000); vm.presets.clearNotice() }
+        }
     }
 
     deleting?.let { p ->

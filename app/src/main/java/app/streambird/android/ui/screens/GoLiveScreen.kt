@@ -161,6 +161,7 @@ fun GoLiveScreen(vm: StudioViewModel, openCustomize: Boolean, onClose: () -> Uni
                 fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth().clickable { editTitle = true },
             )
+            s.titleFromKit?.let { Text("From brand kit $it", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelMedium) }
             s.activePreset?.let { Text("Preset: ${it.name}", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelMedium) }
             s.presetNote?.let { Text(it, color = Amber, style = MaterialTheme.typography.bodySmall) }
             s.limitNote?.let { Text(it, color = Amber, style = MaterialTheme.typography.bodySmall) }
@@ -201,14 +202,16 @@ fun GoLiveScreen(vm: StudioViewModel, openCustomize: Boolean, onClose: () -> Uni
         }
     }
 
-    if (editTitle) TitleDialog(s.title, onDone = { t -> vm.update { it.copy(title = t.take(200)) }; editTitle = false }, onCancel = { editTitle = false })
+    if (editTitle) TitleDialog(s.title, onDone = { t -> vm.setTitle(t); editTitle = false }, onCancel = { editTitle = false })
 
     if (sheet) {
         val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(onDismissRequest = { sheet = false }, sheetState = state) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 PageHeading("Customize", "Setup, brand, ticker and ads for this stream.")
-                if (ps.available) PresetSection(vm, s.activePreset, ps.busy, ps.error)
+                // A presets list that failed to load (offline at start-up) is tried again whenever the sheet opens.
+                androidx.compose.runtime.LaunchedEffect(Unit) { if (!ps.loaded || ps.loadError != null) vm.refreshPresets() }
+                if (ps.available) PresetSection(vm, s.activePreset, ps)
                 SetupFields(vm, s, onBrand = { sheet = false; camera.stop(); onBrand() })
                 Button(onClick = { sheet = false }, modifier = Modifier.fillMaxWidth()) { Text("Done") }
             }
@@ -216,21 +219,32 @@ fun GoLiveScreen(vm: StudioViewModel, openCustomize: Boolean, onClose: () -> Uni
     }
 }
 
+/**
+ * "Save as preset" (new) / "Preset" (open one) block of the Customize sheet. Shown whenever the server HAS the presets feature (a failed list load does
+ * not hide it). The name field starts with a proposal (the ticked channels) so Save is usable at once; a blank name says why Save is off; a success
+ * shows "Preset saved" / "Preset updated" right here, a failure its reason (the server's own words, e.g. "You can keep up to 20 presets...").
+ */
 @Composable
-private fun PresetSection(vm: StudioViewModel, active: app.streambird.android.data.Preset?, busy: Boolean, error: String?) {
-    var name by remember(active?.id) { mutableStateOf(active?.name.orEmpty()) }
+private fun PresetSection(vm: StudioViewModel, active: app.streambird.android.data.Preset?, ps: app.streambird.android.preset.PresetsState) {
+    var name by remember(active?.id) { mutableStateOf(active?.name ?: vm.suggestPresetName()) }
     var confirmDelete by remember { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(if (active == null) "Save as preset" else "Preset", style = MaterialTheme.typography.titleSmall)
             Text("Remembers channels, quality, shape, brand kit and ticker so next time it is one tap.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            OutlinedTextField(value = name, onValueChange = { name = it.take(app.streambird.android.data.Preset.MAX_NAME) }, label = { Text("Preset name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            OutlinedTextField(
+                value = name, onValueChange = { name = it.take(app.streambird.android.data.Preset.MAX_NAME); vm.presets.clearError(); vm.presets.clearNotice() },
+                label = { Text("Preset name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                supportingText = { Text(if (name.isBlank()) "Give the preset a name to save it." else "${name.length}/${app.streambird.android.data.Preset.MAX_NAME}") },
+            )
+            ps.loadError?.let { Text("$it Saving still works.", color = Amber, style = MaterialTheme.typography.bodySmall) }
+            ps.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            ps.notice?.let { Text(it, color = app.streambird.android.ui.theme.Ok, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = { vm.savePreset(name, overwrite = active != null) }, enabled = !busy && name.isNotBlank(), modifier = Modifier.weight(1f)) {
-                    Text(if (active == null) "Save preset" else "Update preset")
+                Button(onClick = { vm.savePreset(name, overwrite = active != null) }, enabled = !ps.busy && name.isNotBlank(), modifier = Modifier.weight(1f)) {
+                    Text(if (ps.busy) "Saving..." else if (active == null) "Save preset" else "Update preset")
                 }
-                if (active != null) OutlinedButton(onClick = { confirmDelete = true }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("Delete") }
+                if (active != null) OutlinedButton(onClick = { confirmDelete = true }, enabled = !ps.busy, modifier = Modifier.weight(1f)) { Text("Delete") }
             }
         }
     }

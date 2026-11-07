@@ -99,7 +99,7 @@ Sources: `src/assets/assets.controller.ts`, `brand-kits.service.ts`, `assets.ser
 | `DELETE /api/brand-kits/:id` | `204` | Its channels fall back to the account default. |
 | `PUT /api/brand-kits/connections/:connectionId` | `{brandKitId: uuid \| null}` | One kit per connection; `null` = account default. The editor sends one PUT per changed channel. |
 | `GET /api/assets` | `{enabled, quotaBytes, usedBytes, items:[{id,kind,name,contentType,sizeBytes,width,height,createdAt,usedBy[]}]}` | `enabled:false` = object storage not configured on the server; `quotaBytes:0` = Free. |
-| `POST /api/assets` | multipart: `kind=logo`, optional `name`, `file` | PNG/JPG/WebP (GIF for logos), <= 4 MB, <= 8192 px. Refusals: `400` (type/size/dimensions), `403` (Free / not enough storage), `503` (storage not enabled). The app pre-checks the same rules and shows the backend message verbatim. |
+| `POST /api/assets` | multipart: `kind=logo`, optional `name`, `file` | PNG/JPG/WebP (GIF for logos), <= 8 MB per file (4 MB before the cap was raised; a thumbnail kind is still <= 2 MB), <= 8192 px. Refusals: `400` (type/size/dimensions), `403` (Free / not enough storage), `503` (storage not enabled). The app pre-checks the same rules and shows the backend message verbatim. |
 | `DELETE /api/assets/:id` | `204` | `409 "This file is used by the brand kit ..."` is shown as is. |
 | `GET /api/assets/:id/file` | image bytes | Loaded by Coil through the app's OkHttpClient (cookie + Origin). |
 | `PUT /api/streams/:id/thumbnail` | multipart field `file` (JPEG) -> `{hasThumbnail, thumbnailUpdatedAt, platformWarnings?: string[]}` | JPEG/PNG, <= 2 MB, >= 640 px wide (`parseThumbnail`). Throttled 10/min. Called in the background after `POST /streams`. |
@@ -109,7 +109,7 @@ Brand kit choice for a stream (web `useHostStudio.ts` auto-apply): the kit the u
 
 ## Ads (0.3.0)
 
-Source: the web studio's ads.ts / backend `brand-kits.service.ts` + DTOs. Asset kind `ad`: `POST /api/assets` multipart `kind=ad`, `file`, optional `name` (PNG/JPG/WebP/GIF, <= 4 MB, <= 8192 px); `GET /api/assets` lists them (`usedBy` includes ad usage); deleting a used file is `409 "used by the brand kit(s) ..."` (shown verbatim).
+Source: the web studio's ads.ts / backend `brand-kits.service.ts` + DTOs. Asset kind `ad`: `POST /api/assets` multipart `kind=ad`, `file`, optional `name` (PNG/JPG/WebP/GIF, <= 8 MB, <= 8192 px); `GET /api/assets` lists them (`usedBy` includes ad usage); deleting a used file is `409 "used by the brand kit(s) ..."` (shown verbatim).
 
 `GET /api/brand-kits` (and the POST/PATCH responses): every kit has `ads: [{placement: "lower_third"|"side_third"|"full_screen", assetId, enabled, mode: "continuous"|"interval", showSec, everySec}]` ordered lower_third, side_third, full_screen; continuous ads have `showSec`/`everySec` = null. `everySec` is the HIDDEN time between showings (not the period).
 
@@ -123,7 +123,7 @@ Kit response/body fields: landscape `logoAssetId`, `wallpaperAssetId`, `ads`; po
 
 ## Presets (0.5.0-presets)
 
-Saved go-live setups. The app tolerates the endpoints being absent (404): the presets section is hidden and one implicit "Quick start" card is shown.
+Saved go-live setups. The app tolerates the endpoints being absent (404, 405, 501 = no presets feature): the presets section is hidden and one implicit "Quick start" card is shown. Any other failure (offline, 5xx, a page that is not JSON) never hides it (1.0.9).
 
 | Call | Body / response | Notes |
 | --- | --- | --- |
@@ -171,3 +171,16 @@ Source: web PR "L-shape + thumbnail" (`brand-kits.service.ts`, `brand-kit.dto.ts
 | Kit field `thumbnailAssetId` | On `GET` / `POST` / `PATCH /api/brand-kits`. `PATCH`: omitted = unchanged, `null` = clear (the app sends it only when it changed). The asset must be the account's own `image/jpeg` or `image/png`, <= 2 MB, >= 640 px wide, otherwise `400` ("The thumbnail must be a JPG or PNG image." / "... is too large -- the limit is 2 MB." / "... is too small -- it must be at least 640px wide ..."). One per kit, shared by both orientations. An older server omits it on GET (the app reads null) and may answer `400` to it. |
 | Asset kind `thumbnail` | `POST /api/assets` multipart `kind=thumbnail` (plus `file`, optional `name`). The app pre-checks JPG/PNG, 2 MB, 640 px. A file used by a kit cannot be deleted (`409 "This file is used by the brand kit ..."`) and `usedBy` includes the kit. |
 | `POST /api/streams` `thumbnailBrandKitId` | Optional uuid. Omitted = automatic (the destination's kit, else the account default kit); a kit id = that kit; `null` = none. The app sends it ONLY when the user explicitly chose a kit that has a `thumbnailAssetId` (so only servers that know the field see it); otherwise it is omitted. A thumbnail picked on the phone is still uploaded with `PUT /api/streams/:id/thumbnail` after the stream exists and replaces whatever the kit put there. |
+
+## Error envelope (checked against the real server, 1.0.9)
+
+Every error goes through the server's `AllExceptionsFilter`: `{"statusCode":400,"message":<what Nest produced>,"timestamp":"..."}` where `<what Nest produced>` is an OBJECT `{"message": "text" | ["text", ...], "error": "Bad Request", "statusCode": 400}` for thrown HTTP exceptions (a ValidationPipe failure has the ARRAY, e.g. `["config.each value in destinationIds must be a UUID"]`), or a plain string for unexpected errors (`"Internal server error"`). `ApiClient.errorMessage` reads strings and arrays at any depth, joins arrays with ", ", and falls back to "Request failed (<status>)". `ApiException.body` keeps the first 300 raw characters for the diagnostics log only.
+
+## Presets, as verified against the server (1.0.9)
+`destinationIds` and `brandKitId` must be v4 UUIDs (`@IsUUID('4')`); `quality` is `sd|hd|fhd|qhd`; `orientation` `landscape|portrait`; unknown keys at any level are a 400 (`forbidNonWhitelisted`); an account keeps at most 20 presets (409 "You can keep up to 20 presets. Delete one to save another."); a destination or kit that is not the account's is 422; `PATCH` replaces `config` wholesale; `DELETE` is 204; `POST /presets/:id/use` also returns `effectiveConfig` and `warnings` (ignored by the app). `GET` is a bare array ordered by `lastUsedAt` desc (nulls last). Only 404 / 405 / 501 on `GET /presets` mean "no presets feature".
+
+## Brand image size (1.0.9)
+Per file 8 MB for `kind` logo, wallpaper and ad (was 4 MB; the server's `MAX_ASSET_BYTES`), 2 MB for `kind=thumbnail` and `PUT /streams/:id/thumbnail`, 8192 px. The app streams the multipart file part with an exact `Content-Length`; its upload client waits 60 s per stalled write and 120 s for the answer.
+
+## Brand kit default title and description (1.0.9)
+`GET/POST/PATCH /api/brand-kits` carry `title` (<= 100) and `description` (<= 5000), `string | null`, trimmed by the server; PATCH omitted = unchanged, `null` or blank = cleared. The app sends them on PATCH only when changed and on POST only when non-blank, and treats absent fields (older server) as null. Meaning: defaults for streams that use the kit; `POST /streams` with a non-blank `title`/`description` keeps the stream's own, a blank/omitted one takes the resolved kit's. The stream answer may include `titleFromKit` / `descriptionFromKit` (booleans); the app parses them leniently (any JSON, anything else = unknown) and only logs them. The app never sends `description` on `POST /streams` and sends the resolved title (typed, else the kit's default, else "Mobile stream").

@@ -138,6 +138,20 @@ fun presetSummary(cfg: PresetConfig, connections: List<PlatformConnection>, kitN
 
 const val SEP = " · "
 
+/**
+ * The name proposed in the "Save as preset" field so the Save button is usable at once: the ticked channels ("YouTube + Facebook"), else "My preset";
+ * made unique among [existing] names by a number ("YouTube 2"), at most [Preset.MAX_NAME] characters.
+ */
+fun suggestPresetName(selected: Collection<String>, connections: List<PlatformConnection>, existing: Collection<String>): String {
+    val names = selected.mapNotNull { id -> connections.firstOrNull { it.id == id } }.map { platformDisplayName(it.platform) }.distinct()
+    val base = (if (names.isEmpty()) "My preset" else names.take(3).joinToString(" + ")).take(Preset.MAX_NAME - 4)
+    val taken = existing.map { it.trim().lowercase() }.toSet()
+    if (base.lowercase() !in taken) return base
+    var n = 2
+    while ("$base $n".lowercase() in taken) n++
+    return "$base $n"
+}
+
 const val IMPLICIT_NAME = "Quick start"
 
 /**

@@ -48,12 +48,61 @@ class PresetControllerTest {
         assertTrue(c.state.value.loaded); assertFalse(c.state.value.available); assertTrue(c.state.value.items.isEmpty())
     }
 
-    @Test fun `network error or garbage with nothing loaded hides it too`() = runTest {
+
+    @Test fun `offline, a captive page or a 5xx at start-up never hide the presets section, they say the load failed`() = runTest {
+        val logs = mutableListOf<String>()
         val f = Fake().apply { failList = IOException("offline") }
-        val c = PresetController(f)
-        c.refresh(); assertFalse(c.state.value.available)
-        f.failList = ApiException(-1, "unexpected answer"); c.refresh(); assertFalse(c.state.value.available)
-        f.failList = ApiException(500, "boom"); c.refresh(); assertFalse(c.state.value.available)
+        val c = PresetController(f) { logs += it }
+        c.refresh()
+        assertTrue(c.state.value.available); assertTrue(c.state.value.loaded); assertTrue(c.state.value.loadError!!.contains("Cannot reach the server"))
+        f.failList = ApiException(-1, "unexpected answer"); c.refresh(); assertTrue(c.state.value.available); assertNotNull(c.state.value.loadError)
+        f.failList = ApiException(500, "boom", "{\"statusCode\":500}"); c.refresh(); assertTrue(c.state.value.available)
+        assertTrue(c.state.value.loadError!!.contains("boom"))
+        assertTrue(logs.any { it.contains("HTTP 500") && it.contains("statusCode") })
+        f.failList = null; f.rows = mutableListOf(a); c.refresh()
+        assertNull(c.state.value.loadError); assertEquals(1, c.state.value.items.size)
+    }
+
+    @Test fun `404, 405 and 501 mean the server has no presets`() = runTest {
+        for (code in listOf(404, 405, 501)) {
+            val c = PresetController(Fake().apply { failList = ApiException(code, "x") })
+            c.refresh()
+            assertFalse("status $code", c.state.value.available)
+        }
+        assertFalse(isFeatureMissing(500)); assertFalse(isFeatureMissing(401)); assertFalse(isFeatureMissing(-1))
+    }
+
+    @Test fun `saving confirms with a notice and the list is re-read from the server`() = runTest {
+        val f = Fake().apply { rows = mutableListOf(a) }
+        val c = PresetController(f); c.refresh()
+        f.rows.add(Preset("web", "From the website", PresetConfig(), null)) // created elsewhere meanwhile
+        val made = c.save(null, "Mine", PresetConfig(quality = "sd"))
+        assertNotNull(made)
+        assertEquals("Preset saved", c.state.value.notice)
+        assertEquals(setOf("a", "web", made!!.id), c.state.value.items.map { it.id }.toSet())
+        c.save(made.id, "Mine 2", PresetConfig()); assertEquals("Preset updated", c.state.value.notice)
+        c.clearNotice(); assertNull(c.state.value.notice)
+    }
+
+    @Test fun `the first failure of a write is logged with status and body, an unexpected exception cannot crash`() = runTest {
+        val logs = mutableListOf<String>()
+        val f = Fake().apply { failWrite = ApiException(400, "bad", "{\"message\":{\"message\":[\"x\"]}}") }
+        val c = PresetController(f) { logs += it }
+        c.refresh()
+        assertNull(c.save(null, "x", PresetConfig()))
+        assertTrue(logs.any { it.startsWith("presets: create failed HTTP 400 bad body=") })
+        f.failWrite = IllegalStateException("kaboom")
+        assertNull(c.save(null, "x", PresetConfig()))
+        assertTrue(c.state.value.error!!.contains("IllegalStateException")); assertFalse(c.state.value.busy)
+    }
+
+    @Test fun `a 404 on create hides the section only when nothing is known, a 404 on update drops that preset`() = runTest {
+        val f = Fake().apply { rows = mutableListOf(a) }
+        val c = PresetController(f); c.refresh()
+        f.failWrite = ApiException(404, "Preset not found")
+        assertNull(c.save("a", "A", PresetConfig()))
+        assertTrue(c.state.value.error!!.contains("no longer exists")); assertTrue(c.state.value.items.isEmpty()); assertTrue(c.state.value.available)
+        assertNull(c.save(null, "new", PresetConfig())); assertFalse("feature missing and nothing known", c.state.value.available)
     }
 
     @Test fun `a network error after a good load keeps the cards, a later 404 removes them`() = runTest {
@@ -97,7 +146,7 @@ class PresetControllerTest {
         val f = Fake().apply { rows = mutableListOf(a) }
         val c = PresetController(f); c.refresh()
         f.failWrite = ApiException(400, "name too long")
-        assertNull(c.save(null, "x", PresetConfig())); assertEquals("name too long", c.state.value.error)
+        assertNull(c.save(null, "x", PresetConfig())); assertEquals("Could not save the preset: name too long", c.state.value.error)
         f.failWrite = IOException("offline")
         assertNull(c.save(null, "x", PresetConfig())); assertTrue(c.state.value.error!!.contains("Cannot reach"))
         assertTrue(c.state.value.available); assertEquals(1, c.state.value.items.size); assertFalse(c.state.value.busy)
@@ -108,7 +157,7 @@ class PresetControllerTest {
         val c = PresetController(f); c.refresh()
         assertTrue(c.delete("a")); assertEquals(listOf("b"), c.state.value.items.map { it.id })
         f.failWrite = ApiException(500, "boom")
-        assertFalse(c.delete("b")); assertEquals(1, c.state.value.items.size); assertEquals("boom", c.state.value.error)
+        assertFalse(c.delete("b")); assertEquals(1, c.state.value.items.size); assertEquals("Could not delete the preset: boom", c.state.value.error)
     }
 
     @Test fun `using a preset moves it to the front and never throws`() = runTest {
