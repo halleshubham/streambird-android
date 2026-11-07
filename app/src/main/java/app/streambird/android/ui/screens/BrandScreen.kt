@@ -12,7 +12,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -31,7 +35,9 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.streambird.android.brand.KitDeleteText
 import app.streambird.android.brand.formatBytes
+import app.streambird.android.data.BrandKit
 import app.streambird.android.data.AssetItem
 import app.streambird.android.data.PlatformConnection
 import app.streambird.android.ui.BrandViewModel
@@ -47,6 +53,7 @@ fun BrandScreen(connections: List<PlatformConnection>, onBack: () -> Unit, onEdi
     val busy by vm.busy.collectAsStateWithLifecycle()
     val msg by vm.msg.collectAsStateWithLifecycle()
     var deleteAsset by remember { mutableStateOf<AssetItem?>(null) }
+    var deleteKit by remember { mutableStateOf<BrandKit?>(null) }
     LaunchedEffect(Unit) { vm.refresh() }
     var uploadKind by remember { mutableStateOf("logo") }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) vm.upload(uri, uploadKind) { } }
@@ -103,6 +110,9 @@ fun BrandScreen(connections: List<PlatformConnection>, onBack: () -> Unit, onEdi
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         if (selected != kit.id) OutlinedButton(onClick = { vm.select(kit.id) }) { Text("Use") }
                                         OutlinedButton(onClick = { onEdit(kit.id) }) { Text("Edit") }
+                                        IconButton(onClick = { deleteKit = kit }, modifier = Modifier.size(48.dp)) {
+                                            Icon(Icons.Outlined.Delete, contentDescription = KitDeleteText.iconDescription(kit.name), tint = MaterialTheme.colorScheme.error)
+                                        }
                                     }
                                 }
                             }
@@ -152,6 +162,16 @@ fun BrandScreen(connections: List<PlatformConnection>, onBack: () -> Unit, onEdi
             }
         }
         Spacer16()
+    }
+
+    deleteKit?.let { k ->
+        AlertDialog(
+            onDismissRequest = { deleteKit = null },
+            title = { Text(KitDeleteText.title(k.name)) },
+            text = { Text(KitDeleteText.BODY) },
+            confirmButton = { TextButton(onClick = { deleteKit = null; vm.deleteKit(k.id, k.name) }) { Text(KitDeleteText.CONFIRM, color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { deleteKit = null }) { Text(KitDeleteText.CANCEL) } },
+        )
     }
 
     deleteAsset?.let { a ->

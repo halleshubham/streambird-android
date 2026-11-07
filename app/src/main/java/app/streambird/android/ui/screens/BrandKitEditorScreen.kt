@@ -39,6 +39,7 @@ import app.streambird.android.ads.AdEditSlot
 import app.streambird.android.ads.AdPlacement
 import app.streambird.android.brand.BrandOrientation
 import app.streambird.android.brand.BrandSlot
+import app.streambird.android.brand.KitDeleteText
 import app.streambird.android.ads.AdsAccess
 import app.streambird.android.ads.adsAccess
 import app.streambird.android.ads.adsEdited
@@ -259,9 +260,9 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
 
     if (confirmDelete && original != null) AlertDialog(
         onDismissRequest = { confirmDelete = false },
-        title = { Text("Delete \"${original.name}\"?") },
-        text = { Text("Its channels go back to the account default. The files stay in your library.") },
-        confirmButton = { TextButton(onClick = { confirmDelete = false; vm.deleteKit(original.id) { onBack() } }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
-        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+        title = { Text(KitDeleteText.title(original.name)) },
+        text = { Text(KitDeleteText.BODY) },
+        confirmButton = { TextButton(onClick = { confirmDelete = false; vm.deleteKit(original.id, original.name) { onBack() } }) { Text(KitDeleteText.CONFIRM, color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(KitDeleteText.CANCEL) } },
     )
 }
