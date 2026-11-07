@@ -18,6 +18,9 @@ import app.streambird.android.ads.AdShrinkInput
 import app.streambird.android.ads.sceneRectFor
 import app.streambird.android.ads.AdSchedule
 import app.streambird.android.ads.AdSlot
+import app.streambird.android.ads.NormRect
+import app.streambird.android.ads.windowOfBitmap
+import app.streambird.android.ads.windowOnCanvas
 import app.streambird.android.ads.FREE_PLAN_AD_SCHEDULE
 import app.streambird.android.ads.POWERED_BY_TEXT
 import app.streambird.android.ads.POWERED_PILL_ARGB
@@ -64,6 +67,8 @@ class AdLayerGl(
         var wasVisible = false
         var rect = app.streambird.android.ads.AdRect(0.0, 0.0, 0.0, 0.0)
         var keyBar = -1
+        /** l_shape only: the clear window of the graphic (0..1 of the picture); null = none found (the graphic is then a plain full-screen overlay). */
+        @Volatile var window: NormRect? = null
         // animated GIF
         @Volatile var gifBytes: ByteArray? = null
         var gifW = 0; var gifH = 0
@@ -72,9 +77,9 @@ class AdLayerGl(
         var animBmp: Bitmap? = null; var animCanvas: Canvas? = null; var lastUploadMs = 0L; var animTexReady = false
     }
 
-    private val rts = AD_DRAW_ORDER.map { Rt(it) }
+    private val rts = AdPlacement.entries.map { Rt(it) }          // index = ordinal; draw order is AD_DRAW_ORDER
     private val slots = rts.map { AdSlot(it.placement, false, AdSchedule.Continuous) }
-    private val targets = DoubleArray(3)
+    private val targets = DoubleArray(AdPlacement.entries.size)
     private val decodeExec by lazy { Executors.newSingleThreadExecutor { r -> Thread(r, "sb-ad-decode").apply { isDaemon = true } } }
 
     // Free plan
@@ -107,6 +112,11 @@ class AdLayerGl(
 
     fun setManual(p: AdPlacement, m: AdManual?) { rts[p.ordinal].manual = m }
 
+    private companion object {
+        /** The placements whose visible picture can take room from the scene (the lower and left third; the frame when it has a window). */
+        val SHRINKING = listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.L_SHAPE)
+    }
+
     // ---- preparation (any thread, before frames flow) ----
 
     /** Decodes the pictures (bounded by their area) and, on the Free plan, loads the StreamBird banner and renders the mark. */
@@ -132,6 +142,11 @@ class AdLayerGl(
                 val plan = planGif(a.bytes, info.width, info.height, aw, ah, Build.VERSION.SDK_INT)
                 if (plan.animate) { rt.gifBytes = a.bytes; rt.gifW = plan.targetW; rt.gifH = plan.targetH }
                 else plan.reason?.let { onNote("${a.placement.label} ad: shown as a still picture, $it.") }
+            }
+            if (a.placement == AdPlacement.L_SHAPE) {
+                // Where the live picture goes: the clear window of the frame graphic (GIF: its first frame). None found -> plain full-screen overlay.
+                rt.window = runCatching { windowOfBitmap(bmp) }.getOrNull()
+                if (rt.window == null) onNote("L-shaped frame ad: no clear window found in this graphic. It is drawn as a full-screen overlay and the picture is not resized.")
             }
             rt.bitmap = bmp
         }
@@ -181,7 +196,8 @@ class AdLayerGl(
         }
         for (i in rts.indices) {
             val r = rts[i]; val s = slots[i]
-            s.enabled = r.enabled && (r.bitmap != null || r.tex != 0); s.schedule = r.schedule; s.manual = r.manual
+            // The L-shaped frame always resizes the picture, so it cannot run while "Shrink picture while ads show" is off.
+            s.enabled = r.enabled && (r.bitmap != null || r.tex != 0) && (s.placement != AdPlacement.L_SHAPE || shrinkPicture); s.schedule = r.schedule; s.manual = r.manual
             if (s.enabled && r.gifBytes != null && !r.gifRequested && secondsUntilVisible(elapsed, r.schedule) < 3.0) requestAnim(r)
         }
         resolveAdAlphas(elapsed, slots, targets)
@@ -213,13 +229,17 @@ class AdLayerGl(
         } else {
             var any = false
             shrinkIn.clear()
-            for (p in listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD)) {
+            for (p in SHRINKING) {
                 val r = rts[p.ordinal]
                 val a = if (r.alpha > 0.002) r.alpha else 0.0
                 if (a > 0.0) {
-                    any = true
                     val w = picW(r); val h = picH(r)
-                    shrinkIn[p] = AdShrinkInput(a, fitAd(p, w, h, adRect(p, outW, outH, steppedTickerBar)))
+                    val fitted = fitAd(p, w, h, adRect(p, outW, outH, steppedTickerBar))
+                    // The frame only resizes the picture when its window is known; without one it is just an overlay.
+                    val win = if (p == AdPlacement.L_SHAPE) r.window?.let { windowOnCanvas(fitted, it) } else null
+                    if (p == AdPlacement.L_SHAPE && win == null) continue
+                    any = true
+                    shrinkIn[p] = AdShrinkInput(a, fitted, win)
                 }
             }
             if (!any) return fullFrame
@@ -227,30 +247,55 @@ class AdLayerGl(
         return sceneRectFor(outW, outH, shrinkIn, steppedTickerBar)
     }
 
-    /** Draws the ads (or the Free banner) as stepped by [update]. */
-    fun draw(tickerBar: Int) {
-        if (released || !hasAnything) return
-        val now = SystemClock.elapsedRealtime()
+    /** True while an L-shaped frame with a window is on screen (and the picture-shrink switch is on): its graphic is the base layer under the scene. */
+    private fun frameOnBase(): Boolean { val r = rts[AdPlacement.L_SHAPE.ordinal]; return shrinkPicture && !free && r.window != null && r.alpha > 0.002 }
+
+    /**
+     * Draws the L-shaped frame graphic as the BASE layer. The compositor calls it right after clearing the frame and BEFORE the scene, so the
+     * camera and logo are drawn on top, inside the window ([sceneRect]). Does nothing when no frame with a window is showing.
+     */
+    fun drawBase() {
+        if (released || !frameOnBase()) return
+        val r = rts[AdPlacement.L_SHAPE.ordinal]
+        beginDraw()
+        uploadIfNeeded(r); updateAnim(r, SystemClock.elapsedRealtime()); drawTex(r.tex, r.texW, r.texH, r, AdPlacement.L_SHAPE, steppedTickerBar, r.alpha)
+        endDraw()
+    }
+
+    private fun beginDraw() {
         ensureProgram()
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glUniform1i(uTex, 0)
+    }
+
+    private fun endDraw() {
+        GLES20.glDisableVertexAttribArray(aPos); GLES20.glDisableVertexAttribArray(aTex)
+        GLES20.glUseProgram(0)
+        GLES20.glDisable(GLES20.GL_BLEND)
+        GLES20.glViewport(0, 0, outW, outH)
+    }
+
+    /** Draws the ads (or the Free banner) as stepped by [update]. */
+    fun draw(tickerBar: Int) {
+        if (released || !hasAnything) return
+        val now = SystemClock.elapsedRealtime()
+        beginDraw()
         if (free) {
             drawFree(tickerBar)
         } else {
+            val base = frameOnBase()
             for (p in AD_DRAW_ORDER) {
+                if (p == AdPlacement.L_SHAPE && base) continue   // already drawn under the scene by drawBase()
                 val r = rts[p.ordinal]
                 if (r.alpha > 0.002) { uploadIfNeeded(r); updateAnim(r, now); drawTex(r.tex, r.texW, r.texH, r, p, tickerBar, r.alpha) }
             }
         }
         // The Free "Powered by StreamBird" mark is ALWAYS on top.
         if (free) drawPowered(tickerBar)
-        GLES20.glDisableVertexAttribArray(aPos); GLES20.glDisableVertexAttribArray(aTex)
-        GLES20.glUseProgram(0)
-        GLES20.glDisable(GLES20.GL_BLEND)
-        GLES20.glViewport(0, 0, outW, outH)
+        endDraw()
     }
 
     private fun drawFree(tickerBar: Int) {

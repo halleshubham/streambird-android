@@ -1,6 +1,17 @@
 package app.streambird.android.ui.screens
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import app.streambird.android.ads.FRAME_NEEDS_SHRINK
+import app.streambird.android.ads.FrameWindowState
+import app.streambird.android.ads.frameWindowText
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -112,6 +123,31 @@ private fun AdPlacement.slot() = when (this) {
     AdPlacement.LOWER_THIRD -> BrandSlot.LOWER_THIRD
     AdPlacement.SIDE_THIRD -> BrandSlot.SIDE_THIRD
     AdPlacement.FULL_SCREEN -> BrandSlot.FULL_SCREEN
+    AdPlacement.L_SHAPE -> BrandSlot.L_SHAPE
+}
+
+/**
+ * The picture of an L-shaped frame with the detected window outlined, and the verdict as a line of text. A missing window is a NON-BLOCKING warning
+ * (the ad still saves; on air it is drawn as a full-screen overlay). The picture is fetched once per file ([frameWindow] caches).
+ */
+@Composable
+fun FrameWindowPreview(assetId: String, item: AssetItem?, loader: ImageLoader, assetUrl: (String) -> String, frameWindow: suspend (String) -> FrameWindowState) {
+    val state by produceState<FrameWindowState>(FrameWindowState.Checking, assetId) { value = FrameWindowState.Checking; value = frameWindow(assetId) }
+    val aspect = item?.takeIf { it.width > 0 && it.height > 0 }?.let { it.width.toFloat() / it.height } ?: (16f / 9f)
+    val outline = MaterialTheme.colorScheme.primary
+    Box(Modifier.widthIn(max = 220.dp).fillMaxWidth().aspectRatio(aspect)) {
+        AssetImage(assetUrl(assetId), loader, Modifier.fillMaxWidth().aspectRatio(aspect))
+        (state as? FrameWindowState.Found)?.let { f ->
+            Canvas(Modifier.fillMaxWidth().aspectRatio(aspect)) {
+                drawRect(
+                    outline, Offset((f.window.x * size.width).toFloat(), (f.window.y * size.height).toFloat()),
+                    Size((f.window.w * size.width).toFloat(), (f.window.h * size.height).toFloat()), style = Stroke(2.dp.toPx()),
+                )
+            }
+        }
+    }
+    val text = frameWindowText(state)
+    if (text != null) Text(text, style = MaterialTheme.typography.bodySmall, color = if (state is FrameWindowState.Found) MaterialTheme.colorScheme.onSurfaceVariant else Amber)
 }
 
 /**
@@ -132,6 +168,8 @@ fun KitAdsSection(
     onUpload: (AdPlacement) -> Unit,
     onRemoveAds: () -> Unit,
     busy: Boolean,
+    shrink: Boolean = true,
+    frameWindow: suspend (String) -> FrameWindowState = { FrameWindowState.Checking },
 ) {
     Section("Ads (${orientation.label})") {
         when (access) {
@@ -156,7 +194,7 @@ fun KitAdsSection(
                 if (savedAds.isNotEmpty()) OutlinedButton(onClick = onRemoveAds, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Remove ${orientation.label} ads", color = MaterialTheme.colorScheme.error) }
             }
             AdsAccess.EDITABLE -> {
-                Text("One ad per placement, a picture or an animated GIF, shown all the time or now and then.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("One ad per placement (lower third, left third, full screen, L-shaped frame), a picture or an animated GIF, shown all the time or now and then.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 fun change(p: AdPlacement, f: (AdEditSlot) -> AdEditSlot) = onSlots(slots.map { if (it.placement == p) f(it) else it })
                 slots.forEach { s ->
                     SlotCard(
@@ -166,6 +204,10 @@ fun KitAdsSection(
                         onRemove = { change(s.placement) { it.copy(assetId = null) } },
                         headerEnd = { if (s.assetId != null) Switch(checked = s.enabled, onCheckedChange = { v -> change(s.placement) { it.copy(enabled = v) } }) },
                         extra = {
+                            if (s.placement == AdPlacement.L_SHAPE && s.assetId != null) {
+                                FrameWindowPreview(s.assetId, library.firstOrNull { it.id == s.assetId }, loader, assetUrl, frameWindow)
+                                if (!shrink) Text(FRAME_NEEDS_SHRINK, style = MaterialTheme.typography.bodySmall, color = Amber)
+                            }
                             if (s.assetId != null) {
                                 ScheduleEditor(s.schedule, { sch -> change(s.placement) { it.copy(schedule = sch) } })
                                 if (s.schedule is AdSchedule.Interval) Text(describeSchedule(s.schedule), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

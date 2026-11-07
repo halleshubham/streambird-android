@@ -59,6 +59,7 @@ private sealed interface UploadTarget {
     data class Logo(val o: BrandOrientation) : UploadTarget
     data class Wallpaper(val o: BrandOrientation) : UploadTarget
     data class Ad(val o: BrandOrientation, val p: AdPlacement) : UploadTarget
+    object Thumbnail : UploadTarget
 }
 
 /**
@@ -86,6 +87,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
     var size by remember(key) { mutableStateOf((original?.logoSize ?: 90).toFloat()) }
     var style by remember(key) { mutableStateOf(original?.lowerThirdStyle ?: "accent") }
     var shrink by remember(key) { mutableStateOf(original?.adsShrinkPicture ?: true) }
+    var thumbId by remember(key) { mutableStateOf(original?.thumbnailAssetId) }
     var isDefault by remember(key) { mutableStateOf(original?.isDefault ?: false) }
     var channels by remember(key) { mutableStateOf(original?.connectionIds?.toSet() ?: emptySet()) }
     var adSlots by remember(key) { mutableStateOf(slotsFromKit(original?.ads.orEmpty())) }
@@ -97,6 +99,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
         when (t) {
             is UploadTarget.Logo -> vm.upload(uri, "logo") { id -> if (t.o == BrandOrientation.LANDSCAPE) logoId = id else logoIdP = id }
             is UploadTarget.Wallpaper -> vm.upload(uri, "wallpaper") { id -> if (t.o == BrandOrientation.LANDSCAPE) wallId = id else wallIdP = id }
+            is UploadTarget.Thumbnail -> vm.upload(uri, "thumbnail") { id -> thumbId = id }
             is UploadTarget.Ad -> vm.upload(uri, "ad") { id ->
                 val f = { l: List<AdEditSlot> -> l.map { if (it.placement == t.p) it.copy(assetId = id) else it } }
                 if (t.o == BrandOrientation.LANDSCAPE) adSlots = f(adSlots) else adSlotsP = f(adSlotsP)
@@ -151,7 +154,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                     modifier = mod,
                     extra = {
                         if (portrait && logoIdP == null && logoId != null) Text("Using the 16:9 logo.", style = MaterialTheme.typography.bodySmall)
-                        if (st.library?.items?.firstOrNull { it.id == curLogo }?.isGif == true) Text("Animated GIF: shown animated here; the broadcast uses its first frame.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        GifLogoNote(vm, st.library?.items?.firstOrNull { it.id == (curLogo ?: if (portrait) logoId else null) }, size.toInt())
                     },
                 )
             }
@@ -161,6 +164,16 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { logoPreview(); logoCard(Modifier.fillMaxWidth()) }
             }
+        }
+
+        Section("Stream thumbnail") {
+            SlotCard(
+                orientation, BrandSlot.THUMBNAIL, thumbId, st.library?.thumbnails.orEmpty(), vm.repo.imageLoader, vm.repo::assetUrl, st.storageEnabled, busy,
+                onChoose = { thumbId = it },
+                onUpload = { pick(UploadTarget.Thumbnail) },
+                onRemove = { thumbId = null },
+                extra = { Text("Shared by the 16:9 and 9:16 sets. Streams created without a thumbnail of their own get it on YouTube and Facebook.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            )
         }
 
         Section("Wallpaper (" + orientation.label + ")") {
@@ -219,7 +232,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
 
         Section("Shrink picture while ads show") {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("Lower and left third ads get their own space instead of covering the picture. Full screen ads always cover it.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Lower and left third ads get their own space instead of covering the picture. Full screen ads always cover it. L-shaped ads always resize the picture.", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Switch(checked = shrink, onCheckedChange = { shrink = it })
             }
         }
@@ -235,7 +248,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                 val d = BrandKitPayload.draftOf(o)
                 vm.save(o, if (portrait) d.copy(adsPortrait = emptyList()) else d.copy(ads = emptyList()), o.connectionIds.toSet()) { }
             } },
-            busy = busy,
+            busy = busy, shrink = shrink, frameWindow = vm.repo::frameWindow,
         )
         (adsError ?: adsErrorOther)?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 
@@ -248,7 +261,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                     original,
                     KitDraft(
                         name, logoId, position, size.toInt(), style, isDefault, ads, wallpaperAssetId = wallId,
-                        logoAssetIdPortrait = logoIdP, wallpaperAssetIdPortrait = wallIdP, adsPortrait = adsP, adsShrinkPicture = shrink,
+                        logoAssetIdPortrait = logoIdP, wallpaperAssetIdPortrait = wallIdP, adsPortrait = adsP, adsShrinkPicture = shrink, thumbnailAssetId = thumbId,
                     ),
                     channels,
                 ) { onBack() }
@@ -265,4 +278,14 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
         confirmButton = { TextButton(onClick = { confirmDelete = false; vm.deleteKit(original.id, original.name) { onBack() } }) { Text(KitDeleteText.CONFIRM, color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(KitDeleteText.CANCEL) } },
     )
+}
+
+/** Under the logo card: what the broadcast does with an animated GIF logo (animates; a long GIF plays an evenly spaced subset; or why it stays a still). */
+@Composable
+private fun GifLogoNote(vm: BrandViewModel, item: app.streambird.android.data.AssetItem?, logoSize: Int) {
+    if (item?.isGif != true) return
+    val plan by androidx.compose.runtime.produceState<app.streambird.android.media.GifLogoPlan?>(null, item.id, logoSize) { value = vm.repo.gifLogoPlan(item.id, logoSize) }
+    val text = plan?.let { app.streambird.android.media.describeGifLogo(it) } ?: return
+    val cannot = plan is app.streambird.android.media.GifLogoPlan.Still
+    Text(text, style = MaterialTheme.typography.bodySmall, color = if (cannot) app.streambird.android.ui.theme.Amber else MaterialTheme.colorScheme.onSurfaceVariant)
 }

@@ -12,23 +12,31 @@ import kotlin.math.roundToInt
  *   lower_third  x=0, y=H-tickerBar-round(H/3), w=W, h=round(H/3)      (moves UP by the ticker bar height while the ticker shows)
  *   side_third   x=0, y=0, w=round(W/3), h=H                           (the LEFT third)
  *   full_screen  x=0, y=0, w=W, h=H
+ *   l_shape      x=0, y=0, w=W, h=H                                    (a FULL-FRAME graphic with a clear window; the live picture goes into the window)
  * The picture is scaled to fit INSIDE its area (contain, no crop, up or down); lower_third bottom-centre, the others centred.
  * Schedule (seconds since going live): continuous = always; interval {showSec, everySec}: cycle = everySec + showSec, t = elapsed mod cycle,
- * hidden while t < everySec, then shown for showSec with 300 ms fades (f = min(0.3, showSec/2)). full_screen cross-fades the other two away.
- * Draw order: camera, logo, ticker, then lower_third, side_third, full_screen, then the Free "Powered by StreamBird" mark LAST.
+ * hidden while t < everySec, then shown for showSec with 300 ms fades (f = min(0.3, showSec/2)). full_screen cross-fades the others away;
+ * l_shape (second in priority) is reduced by full_screen and then cross-fades lower_third and side_third away.
+ * Draw order: l_shape graphic FIRST (a base layer under the scene, when its window was found), camera, logo, ticker, then lower_third, side_third,
+ * (l_shape as a full-screen overlay when it has no window), full_screen, then the Free "Powered by StreamBird" mark LAST.
  */
 enum class AdPlacement(val wire: String, val label: String) {
     LOWER_THIRD("lower_third", "Lower third"),
     SIDE_THIRD("side_third", "Left third"),
-    FULL_SCREEN("full_screen", "Full screen");
+    FULL_SCREEN("full_screen", "Full screen"),
+    /** The server lists placements in this order (lower_third, side_third, full_screen, l_shape): keep it, the ordinal indexes the alpha array. */
+    L_SHAPE("l_shape", "L-shaped frame");
 
     companion object {
         fun fromWire(s: String?): AdPlacement? = entries.firstOrNull { it.wire == s }
     }
 }
 
-/** Draw order, first = bottom. */
-val AD_DRAW_ORDER: List<AdPlacement> = AdPlacement.entries
+/** Overlay draw order, first = bottom. l_shape is a BASE layer (drawn under the scene) while it has a window; without one it is an overlay at this position. */
+val AD_DRAW_ORDER: List<AdPlacement> = listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.L_SHAPE, AdPlacement.FULL_SCREEN)
+
+/** The most ads a kit can hold per orientation (one per placement). */
+val MAX_KIT_ADS: Int = AdPlacement.entries.size
 
 const val AD_FADE_SEC = 0.3
 const val AD_SHOW_SEC_MIN = 1
@@ -53,7 +61,7 @@ fun adRect(placement: AdPlacement, w: Int, h: Int, tickerBarHeight: Int = 0): Ad
         AdRect(0.0, (h - max(0, tickerBarHeight) - th).toDouble(), w.toDouble(), th.toDouble())
     }
     AdPlacement.SIDE_THIRD -> AdRect(0.0, 0.0, Math.round(w / 3.0).toDouble(), h.toDouble())
-    AdPlacement.FULL_SCREEN -> AdRect(0.0, 0.0, w.toDouble(), h.toDouble())
+    AdPlacement.FULL_SCREEN, AdPlacement.L_SHAPE -> AdRect(0.0, 0.0, w.toDouble(), h.toDouble())
 }
 
 /** Where a picture of imgW x imgH is drawn inside [area]: contain, bottom-centre for lower_third, centred otherwise. Zero size for broken input. */
@@ -103,15 +111,27 @@ fun adTargetAlpha(elapsedSec: Double, slot: AdSlot): Double {
     return max(0.0, scheduleAlpha(elapsedSec, slot.schedule))
 }
 
-/** Target opacity per placement (index = ordinal) after priority: full_screen fades the other two away while it is visible. Writes into [out] (size 3). */
-fun resolveAdAlphas(elapsedSec: Double, slots: List<AdSlot>, out: DoubleArray = DoubleArray(3)): DoubleArray {
+/**
+ * Target opacity per placement (index = ordinal) after priority. full_screen fades the others away while it is visible; the L-shaped frame is
+ * second: l_shape *= (1 - full_screen), then lower_third and side_third *= (1 - full_screen) * (1 - l_shape). Writes into [out] (size 4).
+ */
+fun resolveAdAlphas(elapsedSec: Double, slots: List<AdSlot>, out: DoubleArray = DoubleArray(AdPlacement.entries.size)): DoubleArray {
     out.fill(0.0)
     for (s in slots) out[s.placement.ordinal] = adTargetAlpha(elapsedSec, s)
     val cover = out[AdPlacement.FULL_SCREEN.ordinal]
-    out[AdPlacement.LOWER_THIRD.ordinal] *= 1 - cover
-    out[AdPlacement.SIDE_THIRD.ordinal] *= 1 - cover
+    out[AdPlacement.L_SHAPE.ordinal] *= 1 - cover
+    val frame = out[AdPlacement.L_SHAPE.ordinal]
+    out[AdPlacement.LOWER_THIRD.ordinal] *= (1 - cover) * (1 - frame)
+    out[AdPlacement.SIDE_THIRD.ordinal] *= (1 - cover) * (1 - frame)
     return out
 }
+
+/** The window of an L-shaped frame graphic, as 0..1 fractions of the picture (x, y = top-left). */
+data class NormRect(val x: Double, val y: Double, val w: Double, val h: Double)
+
+/** The window (fractions of the picture) on the canvas, given where the picture is drawn ([fitted] = fitAd result). */
+fun windowOnCanvas(fitted: AdRect, win: NormRect): AdRect =
+    AdRect(fitted.x + win.x * fitted.w, fitted.y + win.y * fitted.h, win.w * fitted.w, win.h * fitted.h)
 
 /** Moves [current] toward [target] by at most dtSec / 0.3 s: manual Show/Hide fades like the schedule does. */
 fun stepAlpha(current: Double, target: Double, dtSec: Double): Double {

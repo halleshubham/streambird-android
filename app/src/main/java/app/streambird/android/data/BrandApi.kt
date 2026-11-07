@@ -31,6 +31,8 @@ data class KitDraft(
     /** Same semantics as [ads], for the 9:16 set. */
     val adsPortrait: List<KitAd>? = null,
     val adsShrinkPicture: Boolean = true,
+    /** The kit's stream thumbnail (shared by both sets); null = none. Sent on PATCH only when it changed (explicit null clears), on POST only when set. */
+    val thumbnailAssetId: String? = null,
 )
 
 object BrandKitPayload {
@@ -44,14 +46,16 @@ object BrandKitPayload {
     fun draftOf(k: BrandKit) = KitDraft(
         k.name, k.logoAssetId, k.logoPosition, k.logoSize, k.lowerThirdStyle, k.isDefault,
         wallpaperAssetId = k.wallpaperAssetId, logoAssetIdPortrait = k.logoAssetIdPortrait,
-        wallpaperAssetIdPortrait = k.wallpaperAssetIdPortrait, adsShrinkPicture = k.adsShrinkPicture,
+        wallpaperAssetIdPortrait = k.wallpaperAssetIdPortrait, adsShrinkPicture = k.adsShrinkPicture, thumbnailAssetId = k.thumbnailAssetId,
     )
 
     /**
      * PATCH /brand-kits/:id body. Landscape logo / wallpaper are always sent (a cleared one is an explicit JSON null), `wallpaperDim` is sent back
      * unchanged. The fields that only exist on servers with the orientation release (`logoAssetIdPortrait`, `wallpaperAssetIdPortrait`,
-     * `adsShrinkPicture`, `adsPortrait`) are sent ONLY when they changed, so editing a kit never trips an older server that does not know them.
-     * Ads: replace-all per set, omitted = unchanged, [] = none. `isDefault` is only sent when turning it on.
+     * `adsShrinkPicture`, `adsPortrait`, `thumbnailAssetId`) are sent ONLY when they changed, so editing a kit never trips an older server that does
+     * not know them. `thumbnailAssetId`: omitted = unchanged, explicit null = clear.
+     * Ads: replace-all per set, omitted = unchanged, [] = none. Each set carries ALL its placements (lower_third, side_third, full_screen, l_shape):
+     * an app that sent only three would drop the frame. `isDefault` is only sent when turning it on.
      */
     fun patch(original: BrandKit, d: KitDraft): JsonObject = buildJsonObject {
         put("name", d.name.trim())
@@ -64,6 +68,7 @@ object BrandKitPayload {
         if (d.logoAssetIdPortrait != original.logoAssetIdPortrait) put("logoAssetIdPortrait", d.logoAssetIdPortrait?.let { JsonPrimitive(it) } ?: JsonNull)
         if (d.wallpaperAssetIdPortrait != original.wallpaperAssetIdPortrait) put("wallpaperAssetIdPortrait", d.wallpaperAssetIdPortrait?.let { JsonPrimitive(it) } ?: JsonNull)
         if (d.adsShrinkPicture != original.adsShrinkPicture) put("adsShrinkPicture", d.adsShrinkPicture)
+        if (d.thumbnailAssetId != original.thumbnailAssetId) put("thumbnailAssetId", d.thumbnailAssetId?.let { JsonPrimitive(it) } ?: JsonNull)
         if (d.isDefault && !original.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
         d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
@@ -77,6 +82,7 @@ object BrandKitPayload {
         d.logoAssetIdPortrait?.let { put("logoAssetIdPortrait", it) }
         d.wallpaperAssetIdPortrait?.let { put("wallpaperAssetIdPortrait", it) }
         if (!d.adsShrinkPicture) put("adsShrinkPicture", false)
+        d.thumbnailAssetId?.let { put("thumbnailAssetId", it) }
         put("logoPosition", d.logoPosition)
         put("logoSize", clampSize(d.logoSize))
         put("lowerThirdStyle", d.lowerThirdStyle)

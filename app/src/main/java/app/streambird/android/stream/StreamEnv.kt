@@ -12,6 +12,8 @@ import app.streambird.android.media.CodecProbe
 import app.streambird.android.media.DeviceReading
 import app.streambird.android.media.DeviceTelemetry
 import app.streambird.android.media.EnginePort
+import app.streambird.android.media.LogoAnimationLoader
+import app.streambird.android.media.LogoAnimationResult
 import app.streambird.android.media.EngineListener
 import app.streambird.android.media.NetworkWatcher
 import app.streambird.android.media.StreamEngine
@@ -31,6 +33,8 @@ interface StreamEnv {
     fun logHeader(): List<Pair<String, String>>
     fun testLogo(): Bitmap?
     fun decodeLogo(bytes: ByteArray): Bitmap?
+    /** Blocking, CPU heavy: the frames of an animated GIF logo for the broadcast. Never throws; a [LogoAnimationResult.Still] keeps the first frame. */
+    fun decodeLogoAnimation(bytes: ByteArray, logoSizePx: Int): LogoAnimationResult = LogoAnimationResult.Still(null)
     /** Blocking: decode, scale and compress the picked image to a JPEG under 2 MB. */
     fun prepareThumbnail(uri: String, portrait: Boolean): ByteArray
 }
@@ -70,6 +74,8 @@ class AndroidStreamEnv(private val context: Context) : StreamEnv {
         val k = 2048f / m
         return Bitmap.createScaledBitmap(bmp, (bmp.width * k).toInt().coerceAtLeast(1), (bmp.height * k).toInt().coerceAtLeast(1), true).also { bmp.recycle() }
     }
+
+    override fun decodeLogoAnimation(bytes: ByteArray, logoSizePx: Int): LogoAnimationResult = LogoAnimationLoader.load(bytes, logoSizePx)
 
     override fun prepareThumbnail(uri: String, portrait: Boolean): ByteArray = ThumbnailPreparer.prepare(context, Uri.parse(uri), portrait).bytes
 

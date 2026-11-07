@@ -123,6 +123,7 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
     )
     TickerSetupSection(s.tickerText, s.tickerSize) { t, z -> vm.update { it.copy(tickerText = t, tickerSize = z) } }
     ThumbnailPickerSection(s.thumbnailUri) { u -> vm.update { it.copy(thumbnailUri = u) } }
+    KitThumbnailNote(useKit = s.logoChoice == LogoChoice.BRAND && s.brandAllowed && s.limits?.watermark != true, destinationIds = s.selected, ownPicked = s.thumbnailUri != null)
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Text("Front camera", Modifier.weight(1f)); Switch(s.frontCamera, { v -> vm.update { it.copy(frontCamera = v) } })

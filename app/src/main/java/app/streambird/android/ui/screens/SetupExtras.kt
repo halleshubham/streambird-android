@@ -143,6 +143,16 @@ fun StaleStreamsCard(streams: List<app.streambird.android.data.StreamListItem>, 
     }
 }
 
+/** One line under the thumbnail picker: "Thumbnail: from brand kit <name>" when the kit in use (chosen or automatic) has a thumbnail and the user picked none. */
+@Composable
+fun KitThumbnailNote(useKit: Boolean, destinationIds: Set<String>, ownPicked: Boolean) {
+    if (!useKit) return
+    val vm: BrandViewModel = hiltViewModel()
+    val st by vm.state.collectAsStateWithLifecycle()
+    val note = app.streambird.android.brand.KitThumbnail.note(vm.repo.effectiveKit(destinationIds, st), ownPicked) ?: return
+    Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
 /** Setup: ads of the kit in use (automatic) with per-stream changes; Free shows the banner explanation. */
 @Composable
 fun AdsSetupBlock(

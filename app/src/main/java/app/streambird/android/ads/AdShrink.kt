@@ -10,6 +10,7 @@ import kotlin.math.min
 //   lower_third: free area = y 0 .. top of the DRAWN ad picture (fitAd result, already above the ticker)
 //   side_third:  free area = the right two thirds, x round(W/3) .. W, full height
 //   both: the intersection. full_screen reserves nothing.
+// L-shaped frame: the scene eases from where the other ads left it to the window ([lShapeSceneRect]), in step with the frame's own fade.
 // Progress: the ad's current opacity through [shrinkEase] (smoothstep), so the picture eases in step with the 300 ms fade.
 
 /** Smoothstep of an ad's opacity: 0 -> 0, 1 -> 1, gentle at both ends. */
@@ -28,8 +29,22 @@ fun adReserve(placement: AdPlacement, w: Int, h: Int, tickerBarHeight: Int = 0, 
         SceneInsets(0.0, max(0.0, h - top))
     }
     AdPlacement.SIDE_THIRD -> SceneInsets(adRect(AdPlacement.SIDE_THIRD, w, h).w, 0.0)
-    AdPlacement.FULL_SCREEN -> SceneInsets(0.0, 0.0)
+    AdPlacement.FULL_SCREEN, AdPlacement.L_SHAPE -> SceneInsets(0.0, 0.0) // the frame has its own rule: [lShapeSceneRect]
 }
+
+/**
+ * Where the scene goes inside an L-shaped frame's window (canvas pixels): the W x H scene scaled to fit, aspect kept, centred in the window
+ * (it can be smaller than the window when the shapes differ; the frame graphic shows around it). Never larger than the canvas.
+ */
+fun lShapeSceneRect(w: Int, h: Int, win: AdRect): AdRect {
+    if (!(win.w > 0) || !(win.h > 0)) return AdRect(0.0, 0.0, w.toDouble(), h.toDouble())
+    val scale = min(1.0, min(win.w / w, win.h / h))
+    val sw = w * scale
+    val sh = h * scale
+    return AdRect(win.x + (win.w - sw) / 2, win.y + (win.h - sh) / 2, sw, sh)
+}
+
+private fun lerp(a: Double, b: Double, t: Double) = a + (b - a) * t
 
 /** Contain-fits the W x H scene into what is left after the insets, centred both ways. Never larger than the canvas. */
 fun sceneRect(w: Int, h: Int, insets: SceneInsets): AdRect {
@@ -42,8 +57,11 @@ fun sceneRect(w: Int, h: Int, insets: SceneInsets): AdRect {
     return AdRect(areaX + (areaW - sw) / 2, (areaH - sh) / 2, sw, sh)
 }
 
-/** [alpha] = the ad's current opacity 0..1 (after priority); [fitted] = where its picture is drawn, null = the placement's whole area. */
-data class AdShrinkInput(val alpha: Double, val fitted: AdRect? = null)
+/**
+ * [alpha] = the ad's current opacity 0..1 (after priority); [fitted] = where its picture is drawn, null = the placement's whole area.
+ * [window] (l_shape only) = the frame's window in canvas pixels; without it the frame does not shrink the scene.
+ */
+data class AdShrinkInput(val alpha: Double, val fitted: AdRect? = null, val window: AdRect? = null)
 
 /** Where the scene is drawn while the given ads show (missing = not showing). The whole canvas when nothing shrinks it. */
 fun sceneRectFor(w: Int, h: Int, ads: Map<AdPlacement, AdShrinkInput>, tickerBarHeight: Int = 0): AdRect {
@@ -57,5 +75,11 @@ fun sceneRectFor(w: Int, h: Int, ads: Map<AdPlacement, AdShrinkInput>, tickerBar
         left = max(left, full.left * k)
         bottom = max(bottom, full.bottom * k)
     }
-    return if (left == 0.0 && bottom == 0.0) AdRect(0.0, 0.0, w.toDouble(), h.toDouble()) else sceneRect(w, h, SceneInsets(left, bottom))
+    val base = if (left == 0.0 && bottom == 0.0) AdRect(0.0, 0.0, w.toDouble(), h.toDouble()) else sceneRect(w, h, SceneInsets(left, bottom))
+    val frame = ads[AdPlacement.L_SHAPE]
+    if (frame == null || !(frame.alpha > 0) || frame.window == null) return base
+    // The frame eases the scene from wherever the other ads left it to the window, in step with its own fade.
+    val target = lShapeSceneRect(w, h, frame.window)
+    val k = shrinkEase(frame.alpha)
+    return AdRect(lerp(base.x, target.x, k), lerp(base.y, target.y, k), lerp(base.w, target.w, k), lerp(base.h, target.h, k))
 }

@@ -115,22 +115,63 @@ class AdsTest {
 
     @Test fun `full screen hides the other two while visible, cross-fading at its edges`() {
         val slots = listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.SIDE_THIRD, cont), slot(AdPlacement.FULL_SCREEN, show10every30))
-        assertEquals(listOf(1.0, 1.0, 0.0), resolveAdAlphas(10.0, slots).toList())
-        assertEquals(listOf(0.0, 0.0, 1.0), resolveAdAlphas(35.0, slots).toList())
+        assertEquals(listOf(1.0, 1.0, 0.0, 0.0), resolveAdAlphas(10.0, slots).toList())
+        assertEquals(listOf(0.0, 0.0, 1.0, 0.0), resolveAdAlphas(35.0, slots).toList())
         val mid = resolveAdAlphas(30.15, slots); near(0.5, mid[2]); near(0.5, mid[0]); near(0.5, mid[1])
-        assertEquals(listOf(1.0, 1.0, 0.0), resolveAdAlphas(45.0, slots).toList())
-        assertEquals(listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.FULL_SCREEN), AD_DRAW_ORDER)
+        assertEquals(listOf(1.0, 1.0, 0.0, 0.0), resolveAdAlphas(45.0, slots).toList())
+        // the server lists placements lower_third, side_third, full_screen, l_shape; the overlay draw order puts the frame below full_screen
+        assertEquals(listOf("lower_third", "side_third", "full_screen", "l_shape"), AdPlacement.entries.map { it.wire })
+        assertEquals(listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.L_SHAPE, AdPlacement.FULL_SCREEN), AD_DRAW_ORDER)
+    }
+
+    @Test fun `L-shaped frame priority - reduced by full screen, suppresses lower and left third`() {
+        val L = AdPlacement.L_SHAPE.ordinal; val low = AdPlacement.LOWER_THIRD.ordinal; val side = AdPlacement.SIDE_THIRD.ordinal; val full = AdPlacement.FULL_SCREEN.ordinal
+        // frame alone: it shows and takes the lower/left third away
+        val a = resolveAdAlphas(0.0, listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.SIDE_THIRD, cont), slot(AdPlacement.L_SHAPE, cont)))
+        assertEquals(1.0, a[L], 0.0); assertEquals(0.0, a[low], 0.0); assertEquals(0.0, a[side], 0.0); assertEquals(0.0, a[full], 0.0)
+        // no frame: the thirds are untouched
+        val b = resolveAdAlphas(0.0, listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.SIDE_THIRD, cont)))
+        assertEquals(listOf(1.0, 1.0, 0.0, 0.0), b.toList())
+        // full screen covers the frame: l_shape *= (1 - full), thirds *= (1 - full) * (1 - l_shape)
+        val c = resolveAdAlphas(30.15, listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.L_SHAPE, cont), slot(AdPlacement.FULL_SCREEN, show10every30)))
+        near(0.5, c[full]); near(0.5, c[L]); near(0.5 * 0.5, c[low])        // (1 - 0.5) * (1 - 0.5)
+        val d = resolveAdAlphas(35.0, listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.L_SHAPE, cont), slot(AdPlacement.FULL_SCREEN, show10every30)))
+        assertEquals(listOf(0.0, 0.0, 1.0, 0.0), d.toList())
+        // a frame that is switched off or hidden does not suppress anything
+        val e = resolveAdAlphas(0.0, listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.L_SHAPE, cont, enabled = false)))
+        assertEquals(listOf(1.0, 0.0, 0.0, 0.0), e.toList())
+        val f = resolveAdAlphas(0.0, listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.L_SHAPE, cont, manual = AdManual.HIDDEN)))
+        assertEquals(listOf(1.0, 0.0, 0.0, 0.0), f.toList())
+        // an interval frame (hidden first) lets the lower third show until it appears, then fades it away with its own fade
+        val sl = listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.L_SHAPE, show10every30))
+        assertEquals(1.0, resolveAdAlphas(5.0, sl)[low], 0.0)
+        near(0.5, resolveAdAlphas(30.15, sl)[low]); assertEquals(0.0, resolveAdAlphas(35.0, sl)[low], 0.0)
+    }
+
+    @Test fun `L-shaped frame area is the whole frame and the picture is contain-fitted and centred`() {
+        for ((w, h) in sizes) {
+            val a = adRect(AdPlacement.L_SHAPE, w, h, tickerBarHeight = 50)
+            assertEquals(AdRect(0.0, 0.0, w.toDouble(), h.toDouble()), a)                    // the ticker never moves it
+            val f = fitAd(AdPlacement.L_SHAPE, 1920, 1080, a)
+            near(minOf(w / 1920.0, h / 1080.0) * 1920, f.w); near((w - f.w) / 2, f.x); near((h - f.h) / 2, f.y)
+        }
+    }
+
+    @Test fun `windowOnCanvas maps the picture window onto the drawn picture`() {
+        val fitted = AdRect(100.0, 50.0, 800.0, 450.0)
+        val w = windowOnCanvas(fitted, NormRect(0.2, 0.0, 0.8, 0.8))
+        near(260.0, w.x); near(50.0, w.y); near(640.0, w.w); near(360.0, w.h)
     }
 
     @Test fun `missing or off is 0, manual beats the schedule but not the switch`() {
-        assertEquals(listOf(0.0, 0.0, 0.0), resolveAdAlphas(0.0, emptyList()).toList())
+        assertEquals(listOf(0.0, 0.0, 0.0, 0.0), resolveAdAlphas(0.0, emptyList()).toList())
         assertEquals(0.0, adTargetAlpha(0.0, slot(AdPlacement.LOWER_THIRD, show10every30)), 0.0)
         assertEquals(1.0, adTargetAlpha(0.0, slot(AdPlacement.LOWER_THIRD, show10every30, manual = AdManual.SHOWN)), 0.0)
         assertEquals(0.0, adTargetAlpha(35.0, slot(AdPlacement.LOWER_THIRD, show10every30, manual = AdManual.HIDDEN)), 0.0)
         assertEquals(1.0, adTargetAlpha(35.0, slot(AdPlacement.LOWER_THIRD, cont, manual = null)), 0.0)
         assertEquals(0.0, adTargetAlpha(35.0, slot(AdPlacement.LOWER_THIRD, cont, enabled = false, manual = AdManual.SHOWN)), 0.0)
         val a = resolveAdAlphas(0.0, listOf(slot(AdPlacement.LOWER_THIRD, cont), slot(AdPlacement.FULL_SCREEN, show10every30, manual = AdManual.SHOWN)))
-        assertEquals(listOf(0.0, 0.0, 1.0), a.toList())
+        assertEquals(listOf(0.0, 0.0, 1.0, 0.0), a.toList())
     }
 
     @Test fun `stepAlpha eases manual changes over 300 ms`() {

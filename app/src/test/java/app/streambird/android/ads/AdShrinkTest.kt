@@ -107,4 +107,56 @@ class AdShrinkTest {
             near(w.toDouble() / h, r.w / r.h, 1e-9)
         }
     }
+
+    // ---- L-shaped frame (web ads.ts lShapeSceneRect / sceneRectFor with `window`) ----
+
+    @Test fun `L-shaped frame puts the scene into the window, aspect kept and centred`() {
+        // the sample ad: window x 256..1280, y 0..576 of a 1280 x 720 picture = 16:9, so the scene fills it exactly
+        assertRect(256.0, 0.0, 1024.0, 576.0, lShapeSceneRect(1280, 720, AdRect(256.0, 0.0, 1024.0, 576.0)))
+        // a window of another shape: the scene is contained and centred in it (portrait canvas, tall-ish window)
+        assertRect(180.0, 128.0, 360.0, 640.0, lShapeSceneRect(720, 1280, AdRect(72.0, 128.0, 576.0, 640.0)))
+        // never larger than the canvas, whatever the window
+        assertRect(0.0, 0.0, 1280.0, 720.0, lShapeSceneRect(1280, 720, AdRect(-100.0, -100.0, 5000.0, 5000.0)).let { AdRect(0.0, 0.0, it.w, it.h) })
+        // a broken window leaves the whole canvas
+        assertRect(0.0, 0.0, 1280.0, 720.0, lShapeSceneRect(1280, 720, AdRect(10.0, 10.0, 0.0, 50.0)))
+    }
+
+    @Test fun `L-shaped frame eases the scene to the window with the smoothstep of its opacity`() {
+        val win = windowOnCanvas(AdRect(0.0, 0.0, 1280.0, 720.0), NormRect(0.2, 0.0, 0.8, 0.8))   // 256, 0, 1024, 576
+        fun at(a: Double) = sceneRectFor(1280, 720, mapOf(AdPlacement.L_SHAPE to AdShrinkInput(a, AdRect(0.0, 0.0, 1280.0, 720.0), win)))
+        assertRect(0.0, 0.0, 1280.0, 720.0, at(0.0))
+        assertRect(256.0, 0.0, 1024.0, 576.0, at(1.0))
+        // half opacity: smoothstep(0.5) = 0.5, halfway between the full canvas and the window
+        assertRect(128.0, 0.0, 1152.0, 648.0, at(0.5))
+        // a quarter: smoothstep(0.25) = 0.15625
+        val k = 0.15625
+        assertRect(256.0 * k, 0.0, 1280 + (1024 - 1280) * k, 720 + (576 - 720) * k, at(0.25))
+    }
+
+    @Test fun `L-shaped frame without a window does not shrink the scene`() {
+        assertRect(0.0, 0.0, 1280.0, 720.0, sceneRectFor(1280, 720, mapOf(AdPlacement.L_SHAPE to AdShrinkInput(1.0, AdRect(0.0, 0.0, 1280.0, 720.0), null))))
+        assertEquals(SceneInsets(0.0, 0.0), adReserve(AdPlacement.L_SHAPE, 1280, 720))
+    }
+
+    @Test fun `L-shaped frame wins over a lower third at full opacity and eases from the thirds' scene otherwise`() {
+        val win = AdRect(256.0, 0.0, 1024.0, 576.0)
+        val both = mapOf(
+            AdPlacement.LOWER_THIRD to AdShrinkInput(1.0), AdPlacement.L_SHAPE to AdShrinkInput(1.0, AdRect(0.0, 0.0, 1280.0, 720.0), win),
+        )
+        assertRect(256.0, 0.0, 1024.0, 576.0, sceneRectFor(1280, 720, both))
+        // the frame at 0.5 starts from where the lower third left the scene (a 480 x 480... 1280*(480/720) wide, centred) and moves halfway to the window
+        val base = sceneRectFor(1280, 720, mapOf(AdPlacement.LOWER_THIRD to AdShrinkInput(1.0)))
+        val half = sceneRectFor(1280, 720, both + (AdPlacement.L_SHAPE to AdShrinkInput(0.5, AdRect(0.0, 0.0, 1280.0, 720.0), win)))
+        assertRect((base.x + 256.0) / 2, (base.y + 0.0) / 2, (base.w + 1024.0) / 2, (base.h + 576.0) / 2, half)
+    }
+
+    @Test fun `L-shaped scene stays inside the canvas for every size and opacity`() {
+        for ((w, h) in listOf(960 to 540, 1280 to 720, 1920 to 1080, 540 to 960, 720 to 1280, 1080 to 1920)) for (a in listOf(0.01, 0.3, 0.7, 1.0)) {
+            val fitted = fitAd(AdPlacement.L_SHAPE, 1920, 1080, adRect(AdPlacement.L_SHAPE, w, h))
+            val win = windowOnCanvas(fitted, NormRect(0.2, 0.05, 0.75, 0.7))
+            val r = sceneRectFor(w, h, mapOf(AdPlacement.L_SHAPE to AdShrinkInput(a, fitted, win)))
+            assertTrue("$w x $h a $a: $r", r.x >= -1e-9 && r.y >= -1e-9 && r.x + r.w <= w + 1e-6 && r.y + r.h <= h + 1e-6 && r.w > 0 && r.h > 0)
+            near(w.toDouble() / h, r.w / r.h, 1e-9)
+        }
+    }
 }
