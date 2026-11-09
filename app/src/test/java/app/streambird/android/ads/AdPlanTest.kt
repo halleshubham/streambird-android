@@ -80,9 +80,9 @@ class AdPlanTest {
     @Test fun `independent load failures are named`() {
         assertNull(describeAdFailures(emptyList()))
         val one = describeAdFailures(listOf(AdLoadFailure(AdPlacement.SIDE_THIRD, "File not found.")))!!
-        assertTrue(one.contains("this ad") && one.contains("Left third") && one.contains("File not found.") && one.contains("other ads and the logo are not affected"))
+        assertTrue(one.contains("Left third ad") && one.contains("File not found") && one.contains("other ads and the logo are not affected"))
         val two = describeAdFailures(listOf(AdLoadFailure(AdPlacement.LOWER_THIRD, "timeout"), AdLoadFailure(AdPlacement.FULL_SCREEN, "404")))!!
-        assertTrue(two.contains("these ads") && two.contains("Lower third") && two.contains("Full screen"))
+        assertTrue(two.contains("Lower third") && two.contains("Full screen") && two.contains("timeout") && two.contains("404"))
     }
 
     @Test fun `phone picture caps match the web`() {

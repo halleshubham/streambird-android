@@ -161,12 +161,25 @@ fun AdsSetupBlock(
     onChange: (Map<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdOverride>) -> Unit,
     orientation: app.streambird.android.media.StreamOrientation,
     shrink: Boolean?, onShrink: (Boolean?) -> Unit,
+    /** The logo choice: the kit's ads (like its logo and title) are only used with "Brand kit logo"; [logoLabel] is named when they are off because of it. */
+    logoIsBrand: Boolean = useKit, logoLabel: String = "",
+    brandAllowed: Boolean = true,
 ) {
     val vm: BrandViewModel = hiltViewModel()
     val st by vm.state.collectAsStateWithLifecycle()
-    androidx.compose.runtime.LaunchedEffect(useKit) { if (useKit && !st.loaded && !st.loading) vm.refresh() }
+    // Every time this block opens the kits are fetched again (a kit edited on the website or another phone since the app started must show its current ads).
+    androidx.compose.runtime.LaunchedEffect(useKit) { if (useKit && !st.loading) vm.refresh() }
     val kit = if (useKit && !freePlan) vm.repo.effectiveKit(destinationIds, st) else null
+    val shape = app.streambird.android.brand.BrandOrientation.fromWire(orientation.wire)
     // The kit's set for THIS stream's shape (portrait ads do not fall back to the landscape ones).
-    val ads = kit?.let { app.streambird.android.brand.kitSetFor(it, app.streambird.android.brand.BrandOrientation.fromWire(orientation.wire)).ads }.orEmpty()
-    AdsSetupSection(freePlan, ads, overrides, onChange, shrink = shrink, kitShrink = kit?.adsShrinkPicture ?: true, onShrink = onShrink)
+    val ads = kit?.let { app.streambird.android.brand.kitSetFor(it, shape).ads }.orEmpty()
+    val frameAsset = ads.firstOrNull { it.placement == app.streambird.android.ads.AdPlacement.L_SHAPE.wire }?.assetId
+    val frameState by androidx.compose.runtime.produceState<app.streambird.android.ads.FrameWindowState?>(null, frameAsset) { value = frameAsset?.let { vm.repo.frameWindow(it) } }
+    val notice = if (freePlan || !brandAllowed) null
+        else app.streambird.android.ads.kitAdsSetupNotice(logoIsBrand, logoLabel, st.loading, st.loaded, st.error, st.blocked, kit, shape)
+    AdsSetupSection(
+        freePlan, ads, overrides, onChange, shrink = shrink, kitShrink = kit?.adsShrinkPicture ?: true, onShrink = onShrink,
+        notice = notice,
+        frameHasWindow = when (val f = frameState) { is app.streambird.android.ads.FrameWindowState.Found -> true; app.streambird.android.ads.FrameWindowState.NoWindow -> false; else -> null },
+    )
 }

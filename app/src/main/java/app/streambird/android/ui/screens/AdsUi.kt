@@ -19,12 +19,15 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.os.SystemClock
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -35,7 +38,14 @@ import app.streambird.android.ads.AdEditSlot
 import app.streambird.android.ads.AdManual
 import app.streambird.android.ads.AdOverride
 import app.streambird.android.ads.AdPlacement
+import app.streambird.android.ads.AD_CLOCK_NOTE
 import app.streambird.android.ads.AdSchedule
+import app.streambird.android.ads.AdSlot
+import app.streambird.android.ads.AdSource
+import app.streambird.android.ads.KitAdsNotice
+import app.streambird.android.ads.adElapsedSec
+import app.streambird.android.ads.adStatusText
+import app.streambird.android.ads.formatCountdown
 import app.streambird.android.ads.AdsAccess
 import app.streambird.android.ads.PhoneAd
 import app.streambird.android.ads.SecUnit
@@ -52,6 +62,7 @@ import app.streambird.android.stream.LiveAd
 import app.streambird.android.ui.theme.Amber
 import coil.ImageLoader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -99,6 +110,10 @@ fun AdsSetupSection(
     shrink: Boolean? = null,
     kitShrink: Boolean = true,
     onShrink: (Boolean?) -> Unit = {},
+    /** Why the rows look as they do (kit loading / not loaded / no ads for this shape / kit ads switched off by the logo choice). */
+    notice: KitAdsNotice? = null,
+    /** The kit's L-shaped graphic: true = a clear window was found, false = none, null = not known (yet). */
+    frameHasWindow: Boolean? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Ads", style = MaterialTheme.typography.titleSmall)
@@ -130,6 +145,7 @@ fun AdsSetupSection(
             }
         }
         message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        notice?.let { Text(it.text, style = MaterialTheme.typography.bodySmall, color = if (it.warn) Amber else MaterialTheme.colorScheme.onSurfaceVariant) }
         ShrinkSwitch(shrink ?: kitShrink, { v -> onShrink(if (v == kitShrink) null else v) })
         AdPlacement.entries.forEach { p ->
             val kit = kitAds.firstOrNull { it.placement == p.wire }
@@ -143,11 +159,11 @@ fun AdsSetupSection(
                         Column(Modifier.weight(1f)) {
                             Text(p.label, style = MaterialTheme.typography.titleSmall)
                             Text(
-                                when {
-                                    o?.phone != null -> "Picture from this phone (this stream only): ${describeSchedule(sched)}"
-                                    kit != null -> "From your brand kit: ${describeSchedule(sched)}"
-                                    else -> "No ad"
-                                },
+                                if (!hasAd) "No ad"
+                                else adStatusText(
+                                    null, AdSlot(p, enabled, sched), if (o?.phone != null) AdSource.PHONE else AdSource.KIT,
+                                    shrinkOn = shrink ?: kitShrink, hasWindow = if (p == AdPlacement.L_SHAPE && o?.phone == null) frameHasWindow else null,
+                                ),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -161,6 +177,9 @@ fun AdsSetupSection(
                     }
                 }
             }
+        }
+        if (AdPlacement.entries.any { p -> (overrides[p]?.schedule ?: kitAds.firstOrNull { it.placement == p.wire }?.let { app.streambird.android.ads.scheduleOf(it) }) is AdSchedule.Interval }) {
+            Text(AD_CLOCK_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         scheduleFor?.let { p ->
             val cur = overrides[p]?.schedule ?: kitAds.firstOrNull { it.placement == p.wire }?.let { app.streambird.android.ads.scheduleOf(it) } ?: AdSchedule.Continuous
@@ -194,23 +213,35 @@ fun ShrinkSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
     }
 }
 
-/** Live screen: Show now / Hide / Follow schedule for each ad running on this stream. */
+/**
+ * Live screen: for each ad of this stream one line saying what it is doing right now (updated every second, counted from the go-live clock),
+ * and Show now / Hide / Follow schedule. [clockStartMs] = SystemClock.elapsedRealtime() at go-live (0 = not started).
+ */
 @Composable
-fun AdsLiveSheet(ads: List<LiveAd>, shrink: Boolean, onShrink: (Boolean) -> Unit, onSet: (AdPlacement, AdManual?) -> Unit, onDismiss: () -> Unit) {
+fun AdsLiveSheet(ads: List<LiveAd>, shrink: Boolean, clockStartMs: Long, onShrink: (Boolean) -> Unit, onSet: (AdPlacement, AdManual?) -> Unit, onDismiss: () -> Unit) {
+    // One cheap tick per second while the sheet is open (a state read, a few strings); the compositor keeps its own per-frame clock.
+    var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); now = SystemClock.elapsedRealtime() } }
+    val elapsed = adElapsedSec(now, clockStartMs)
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Ads", style = MaterialTheme.typography.titleMedium)
+            Text(AD_CLOCK_NOTE + " On the air for ${formatCountdown(elapsed.toLong())}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ShrinkSwitch(shrink, onShrink)
             ads.forEach { a ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(a.placement.label, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        adStatusText(elapsed, AdSlot(a.placement, a.enabled, a.schedule, a.manual), a.source, shrinkOn = shrink, hasWindow = a.hasWindow, problem = a.problem),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     if (a.placement == AdPlacement.L_SHAPE && !shrink) Text(app.streambird.android.ads.FRAME_NEEDS_SHRINK, style = MaterialTheme.typography.bodySmall, color = Amber)
-                    Segmented(listOf("show", "hide", "auto"), when (a.manual) { AdManual.SHOWN -> "show"; AdManual.HIDDEN -> "hide"; null -> "auto" }, { when (it) { "show" -> "Show now"; "hide" -> "Hide"; else -> "Follow schedule" } }, { v ->
+                    if (a.problem == null) Segmented(listOf("show", "hide", "auto"), when (a.manual) { AdManual.SHOWN -> "show"; AdManual.HIDDEN -> "hide"; null -> "auto" }, { when (it) { "show" -> "Show now"; "hide" -> "Hide"; else -> "Follow schedule" } }, { v ->
                         onSet(a.placement, when (v) { "show" -> AdManual.SHOWN; "hide" -> AdManual.HIDDEN; else -> null })
                     })
                 }
             }
-            Text("Changes here are for this stream only and are never saved.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Show now keeps an ad on the picture until you pick Follow schedule. Changes here are for this stream only and are never saved.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(Modifier.height(16.dp)) {}
         }
     }
