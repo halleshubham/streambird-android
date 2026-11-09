@@ -1,5 +1,8 @@
 package app.streambird.android.ads
 
+import app.streambird.android.brand.BrandOrientation
+import app.streambird.android.brand.kitSetFor
+import app.streambird.android.data.ApiException
 import app.streambird.android.data.BrandKit
 import app.streambird.android.data.EffectiveLimits
 import app.streambird.android.data.KitAd
@@ -86,13 +89,40 @@ fun mergeStreamAds(kitAds: List<KitAd>?, overrides: Map<AdPlacement, AdOverride>
 
 // ---- independent loading ----
 
-class AdLoadFailure(val placement: AdPlacement, val reason: String)
+/** [kitName] = the brand kit the ad came from (null for a phone picture). */
+class AdLoadFailure(val placement: AdPlacement, val reason: String, val kitName: String? = null)
+
+/** "Could not load the L-shaped frame of kit 'Acme' (File not found)." / "... the Left third ad (...)". */
+fun describeAdFailure(f: AdLoadFailure): String {
+    val what = if (f.placement == AdPlacement.L_SHAPE) f.placement.label else "${f.placement.label} ad"
+    val of = f.kitName?.let { " of kit '$it'" }.orEmpty()
+    return "Could not load the $what$of (${f.reason.take(80).trimEnd('.')})."
+}
 
 /** One message naming every ad that could not be loaded (the others still run), or null when all loaded. */
 fun describeAdFailures(failures: List<AdLoadFailure>): String? {
     if (failures.isEmpty()) return null
-    val names = failures.joinToString("; ") { "${it.placement.label} (${it.reason.take(80)})" }
-    return "Could not load ${if (failures.size == 1) "this ad" else "these ads"}: $names. The other ads and the logo are not affected."
+    return failures.joinToString(" ") { describeAdFailure(it) } + " The other ads and the logo are not affected."
+}
+
+/** The kit list itself could not be fetched at go-live: no kit ad can be placed. */
+fun describeKitFetchFailure(reason: String): String =
+    "Could not load the brand kit's ads (${reason.take(80).trimEnd('.')}). The kit's ads are not on this stream; the logo and picture are not affected."
+
+/** A kit with ads for the other shape only: the host would see no ads and not know why. null = nothing to say. */
+fun kitAdsMissingNote(kit: BrandKit?, o: BrandOrientation): String? {
+    kit ?: return null
+    if (kitSetFor(kit, o).ads.isNotEmpty()) return null
+    val other = if (o == BrandOrientation.PORTRAIT) BrandOrientation.LANDSCAPE else BrandOrientation.PORTRAIT
+    if (kitSetFor(kit, other).ads.isEmpty()) return null
+    return "The brand kit '${kit.name}' has no ads for ${o.label} streams, only for ${other.label}. Add them under Brand kits."
+}
+
+/** A failed ad download is tried once more only when the cause can be temporary (network, server error, rate limit), never for 404 / too large. */
+fun isTransientAdError(t: Throwable): Boolean = when (t) {
+    is ApiException -> t.status >= 500 || t.status == 429 || t.status == 408
+    is java.io.IOException -> true
+    else -> false
 }
 
 /** Pictures picked on the phone: same caps as the web (12 MB, 8192 px longest side). Returns the refusal or null. */
@@ -158,6 +188,29 @@ fun stillSampleSize(imgW: Int, imgH: Int, areaW: Int, areaH: Int): Int {
     var s = 1
     while (imgW / (s * 2) >= areaW && imgH / (s * 2) >= areaH) s *= 2
     return s
+}
+
+// ---- what the Setup / Customize ads block tells about the kit itself ----
+
+/** A line above the ad rows: [warn] = amber (something prevents the kit's ads), else plain information. */
+data class KitAdsNotice(val text: String, val warn: Boolean)
+
+/**
+ * Why the ad rows show what they show. [kit] = the kit that would apply (explicit choice or automatic) or null.
+ * Order: the logo choice switched kit use off; the kit list could not be loaded; still loading; no kit applies; the kit has no ads for this shape; else the kit's name.
+ */
+fun kitAdsSetupNotice(
+    logoIsBrand: Boolean, logoLabel: String,
+    loading: Boolean, loaded: Boolean, error: String?, blocked: Boolean,
+    kit: BrandKit?, orientation: BrandOrientation,
+): KitAdsNotice? {
+    if (!logoIsBrand) return KitAdsNotice("The brand kit's ads are not used because the logo is set to \"$logoLabel\". Choose \"Brand kit logo\" to use them.", true)
+    if (blocked) return null
+    if (kit == null && error != null) return KitAdsNotice("Could not load your brand kits ($error). The kit's ads are not listed here; they are fetched again when the stream starts.", true)
+    if (kit == null && (loading || !loaded)) return KitAdsNotice("Loading the brand kit...", false)
+    if (kit == null) return KitAdsNotice("No brand kit applies to the ticked channels (none chosen and no default kit), so there are no kit ads.", true)
+    kitAdsMissingNote(kit, orientation)?.let { return KitAdsNotice(it, true) }
+    return KitAdsNotice("Brand kit: ${kit.name}", false)
 }
 
 /** Used by the Setup/Editor UIs to show which kit ads exist without the editor. */

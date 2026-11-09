@@ -56,6 +56,7 @@ class AdLayerGl(
     private val outH: Int,
     private val onEvent: (String) -> Unit,
     private val onNote: (String) -> Unit,
+    private val onProblem: (AdPlacement, app.streambird.android.ads.AdProblem) -> Unit = { _, _ -> },
 ) {
     private class Rt(val placement: AdPlacement) {
         @Volatile var bitmap: Bitmap? = null          // prepared still / first frame, consumed by the GL upload
@@ -132,11 +133,11 @@ class AdLayerGl(
             val rt = rts[a.placement.ordinal]
             val area = adRect(a.placement, outW, outH, 0)
             val info = sniffImage(a.bytes)
-            if (info == null) { onNote("${a.placement.label} ad: the picture could not be read."); continue }
+            if (info == null) { onNote("${a.placement.label} ad: the picture could not be read."); onProblem(a.placement, app.streambird.android.ads.AdProblem.UNREADABLE); continue }
             val aw = area.w.toInt(); val ah = area.h.toInt()
             val opts = BitmapFactory.Options().apply { inSampleSize = stillSampleSize(info.width, info.height, aw, ah) }
             val bmp = runCatching { BitmapFactory.decodeByteArray(a.bytes, 0, a.bytes.size, opts) }.getOrNull()
-            if (bmp == null) { onNote("${a.placement.label} ad: the picture could not be decoded."); continue }
+            if (bmp == null) { onNote("${a.placement.label} ad: the picture could not be decoded."); onProblem(a.placement, app.streambird.android.ads.AdProblem.UNREADABLE); continue }
             rt.schedule = a.schedule; rt.enabled = a.enabled
             if (info.format == app.streambird.android.brand.ImageFormat.GIF) {
                 val plan = planGif(a.bytes, info.width, info.height, aw, ah, Build.VERSION.SDK_INT)
@@ -146,7 +147,10 @@ class AdLayerGl(
             if (a.placement == AdPlacement.L_SHAPE) {
                 // Where the live picture goes: the clear window of the frame graphic (GIF: its first frame). None found -> plain full-screen overlay.
                 rt.window = runCatching { windowOfBitmap(bmp) }.getOrNull()
-                if (rt.window == null) onNote("L-shaped frame ad: no clear window found in this graphic. It is drawn as a full-screen overlay and the picture is not resized.")
+                if (rt.window == null) {
+                    onNote("L-shaped frame ad: no clear window found in this graphic. It is drawn as a full-screen overlay and the picture is not resized.")
+                    onProblem(a.placement, app.streambird.android.ads.AdProblem.NO_WINDOW)
+                }
             }
             rt.bitmap = bmp
         }

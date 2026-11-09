@@ -82,6 +82,8 @@ interface EngineListener {
     fun onCameraFatal(text: String) {}
     /** A note about an ad (e.g. an animated GIF that is shown as a still). */
     fun onAdNote(text: String) {}
+    /** An ad that was handed over cannot be shown as intended (unreadable picture, frame without a window): the Live sheet says so for that ad. */
+    fun onAdProblem(placement: app.streambird.android.ads.AdPlacement, kind: app.streambird.android.ads.AdProblem) {}
 }
 
 /**
@@ -193,7 +195,7 @@ class StreamEngine(
         val comp = FrameCompositor(source.capturerObserver, h, cfg.outWidth, cfg.outHeight, cfg.logo, unmirror = cfg.frontCamera)
         comp.ticker = cfg.ticker
         cfg.ads?.takeIf { it.freePlan || it.inputs.isNotEmpty() }?.let { ac ->
-            val layer = AdLayerGl(cfg.outWidth, cfg.outHeight, { t -> listener.onEvent(t) }, { t -> listener.onEvent(t); listener.onAdNote(t) })
+            val layer = AdLayerGl(cfg.outWidth, cfg.outHeight, { t -> listener.onEvent(t) }, { t -> listener.onEvent(t); listener.onAdNote(t) }, { p, k -> listener.onAdProblem(p, k) })
             layer.shrinkPicture = ac.shrinkPicture
             layer.prepare(context, ac.inputs, ac.freePlan)
             comp.ads = layer

@@ -184,7 +184,7 @@ fun GoLiveScreen(vm: StudioViewModel, openCustomize: Boolean, onClose: () -> Uni
             }
 
             androidx.compose.material3.Button(
-                onClick = goLive, enabled = s.selected.isNotEmpty() && s.title.length <= 200,
+                onClick = goLive, enabled = s.selected.isNotEmpty() && s.limits != null && s.title.length <= 200,
                 shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth().heightIn(min = 58.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = LiveRed, contentColor = Color.White, disabledContainerColor = LiveRed.copy(alpha = 0.35f), disabledContentColor = Color.White.copy(alpha = 0.7f)),
             ) { Text(if (s.selected.isEmpty()) "Pick a destination" else "Go live", fontSize = 18.sp, fontWeight = FontWeight.Bold) }

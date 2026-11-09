@@ -199,7 +199,7 @@ fun LiveScreen(controller: StreamController) {
         }
     }
 
-    if (showAds) AdsLiveSheet(ui.adSlots, ui.adsShrink, controller::setAdsShrink, controller::setAdManual) { showAds = false }
+    if (showAds) AdsLiveSheet(ui.adSlots, ui.adsShrink, ui.adClockStartMs, controller::setAdsShrink, controller::setAdManual) { showAds = false }
 
     if (confirmEnd) AlertDialog(
         onDismissRequest = { confirmEnd = false },

@@ -68,7 +68,7 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
         PageHeading("Stream setup", "Pick a title and quality, then go live.")
         SetupFields(vm, s, onBrand)
 
-        Button(onClick = goLive, enabled = s.selected.isNotEmpty() && s.title.length <= 200, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = goLive, enabled = s.selected.isNotEmpty() && s.limits != null && s.title.length <= 200, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Filled.Sensors, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
             Text("Go live")
         }
@@ -128,6 +128,7 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
         freePlan = s.limits?.watermark == true, useKit = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, destinationIds = s.selected,
         overrides = s.adOverrides, onChange = { o -> vm.update { it.copy(adOverrides = o) } },
         orientation = s.orientation, shrink = s.adsShrink, onShrink = { v -> vm.update { it.copy(adsShrink = v) } },
+        logoIsBrand = s.logoChoice == LogoChoice.BRAND, logoLabel = s.logoChoice.label, brandAllowed = s.brandAllowed,
     )
     TickerSetupSection(s.tickerText, s.tickerSize) { t, z -> vm.update { it.copy(tickerText = t, tickerSize = z) } }
     ThumbnailPickerSection(s.thumbnailUri) { u -> vm.update { it.copy(thumbnailUri = u) } }

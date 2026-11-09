@@ -168,7 +168,7 @@ class ApiClient(
                 if (src.buffer.size > MAX_ASSET_DOWNLOAD) Triple(-1, "", null) else Triple(200, "", src.buffer.readByteArray())
             }
         }
-        if (r.first == -1) throw ApiException(-1, "The logo file is too large to use.")
+        if (r.first == -1) throw ApiException(-1, "This picture file is too large to use.")
         if (r.first != 200) throw ApiException(r.first, errorMessage(r.first, r.second))
         return r.third!!
     }
