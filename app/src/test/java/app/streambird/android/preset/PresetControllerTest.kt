@@ -179,4 +179,31 @@ class PresetControllerTest {
         c.markUsed("a")
         assertEquals("hd", c.state.value.items.single().config.quality)
     }
+
+    @Test fun `an older server that rejects visibility gets the preset without it, with a plain sentence`() = runTest {
+        val sent = mutableListOf<PresetConfig>()
+        val port = object : PresetsPort {
+            override suspend fun list() = emptyList<Preset>()
+            override suspend fun create(name: String, config: PresetConfig): Preset {
+                sent += config
+                if (config.visibility != null) throw ApiException(400, "property visibility should not exist")
+                return Preset("n", name, config)
+            }
+            override suspend fun update(id: String, name: String?, config: PresetConfig?) = error("unused")
+            override suspend fun delete(id: String) {}
+            override suspend fun use(id: String) = error("unused")
+        }
+        val c = PresetController(port)
+        assertNotNull(c.save(null, "X", PresetConfig(quality = "hd", visibility = "private")))
+        assertEquals(listOf("private", null), sent.map { it.visibility })
+        assertTrue(c.state.value.notice!!.startsWith("Preset saved") && NO_VISIBILITY_NOTE in c.state.value.notice!!)
+        assertNull(c.state.value.error)
+    }
+
+    @Test fun `other 400s still fail with the server words`() = runTest {
+        val f = Fake().apply { failWrite = ApiException(400, "name must be shorter") }
+        val c = PresetController(f)
+        assertNull(c.save(null, "X", PresetConfig(visibility = "public")))
+        assertTrue(c.state.value.error!!.contains("name must be shorter"))
+    }
 }

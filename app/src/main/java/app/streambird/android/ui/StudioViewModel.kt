@@ -15,7 +15,7 @@ import app.streambird.android.media.canSelectMore
 import app.streambird.android.preset.PresetController
 import app.streambird.android.preset.SetupChoices
 import app.streambird.android.preset.SetupLimits
-import app.streambird.android.preset.applyPresetConfig
+import app.streambird.android.preset.applyPresetForGoLive
 import app.streambird.android.preset.choicesToConfig
 import app.streambird.android.preset.implicitDefaultPreset
 import app.streambird.android.stream.GoLiveRequest
@@ -200,7 +200,7 @@ class StudioViewModel @Inject constructor(
     fun kitName(destinations: Collection<String>, state: app.streambird.android.brand.BrandState, @Suppress("UNUSED_PARAMETER") selectedKitId: String?): String? =
         brand.effectiveKit(destinations, state)?.name
 
-    private fun choices(s: StudioUi) = SetupChoices(s.selected, s.tier, s.orientation, brand.selectedKitId.value, s.tickerText)
+    private fun choices(s: StudioUi) = SetupChoices(s.selected, s.tier, s.orientation, brand.selectedKitId.value, s.tickerText, s.visibility)
 
     private fun limits(s: StudioUi): SetupLimits {
         val b = brand.state.value
@@ -219,16 +219,16 @@ class StudioViewModel @Inject constructor(
         return implicitDefaultPreset(choices(s), s.connections, s.limits?.maxDestinations ?: 1, s.brandAllowed)
     }
 
-    /** Makes [p] the current setup (destinations, quality, shape, brand kit, ticker). [p] = null starts a new, empty-named preset from the implicit default. */
+    /** Makes [p] the current setup (destinations, quality, shape, brand kit, ticker, visibility; a preset without one = public). [p] = null starts a new, empty-named preset from the implicit default. */
     fun openPreset(p: app.streambird.android.data.Preset?) {
         val preset = p ?: implicitPreset()
         val s = _ui.value
-        val applied = applyPresetConfig(preset.config, choices(s), limits(s))
+        val applied = applyPresetForGoLive(preset.config, choices(s), limits(s))
         brand.select(applied.choices.brandKitId)
         _ui.update {
             it.copy(
                 selected = applied.choices.selected, tier = applied.choices.tier, orientation = applied.choices.orientation,
-                tickerText = applied.choices.tickerText, limitNote = null,
+                tickerText = applied.choices.tickerText, visibility = applied.choices.visibility, limitNote = null,
                 logoChoice = if (it.brandAllowed) LogoChoice.BRAND else it.logoChoice,
                 activePreset = preset.takeUnless { x -> x.isImplicit || p == null },
                 presetNote = applied.notes.joinToString(" ").ifEmpty { null },

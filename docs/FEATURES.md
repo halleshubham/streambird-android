@@ -238,3 +238,23 @@ Setup / Customize rows (before going live) and Live sheet rows (updated every se
 `AdStatusTest` (countdown/duration formats, continuous, interval hidden / shown / next cycle, fades, text agrees with `scheduleAlpha` at every second of 800, manual, off, frame without Shrink, no window, Free, failure, before go-live, invalid interval, kit-level notices, retry rule, failure sentences); `StreamControllerTest` (frame-only portrait kit applied with source and schedule, automatic = destination's kit then default and explicit wins, kit list failure with retry and phone ad still loads, retry once on 503 and none on 404 with the frame named by its kit, kit with the other shape only, engine problem reporting); `AdPlanTest` message update.
 ### 23d. Not verified (no device)
 The Compose layout of the new lines, the once-per-second tick of the Live sheet, the real behaviour of the GL layer, and that a 6-8 MB ad downloads in a reasonable time on a slow mobile connection (downloads are parallel and retried once; the Go live waits for them, as before).
+
+## 24. Version 1.0.11: presets store the YouTube visibility (Public / Unlisted / Private)
+
+Founder question: "Is going live with a preset public by default?" Findings: presets stored no visibility. The phone's one-tap preset Go live used the Setup state's visibility, which defaults to Public, while the web preset Go live and the web Go live card default to YouTube Unlisted (server `visibility ?? 'unlisted'`).
+
+### 24a. What changed
+* `PresetConfig.visibility` (`public|unlisted|private`, optional, read leniently, sent only when set). Setup -> preset (`choicesToConfig`) stores the visibility chosen in Setup/Customize; preset -> setup (`applyPresetConfig`) applies it and keeps the current value when the preset has none.
+* One-tap Go live from a card (`applyPresetForGoLive`): the preset's visibility; a preset with NO stored visibility (all presets made before 1.0.11, and the implicit Quick start card) goes **Public**. Founder decision: this is what the phone did before. The web server's default for such presets is YouTube Unlisted; the phone is deliberately different, and the card says so by showing "Public" in its summary.
+* Card summary: `YouTube + Facebook · Acme brand · Unlisted · Ticker off · 720p` (the visibility sits after the brand part; "Public" when none is stored).
+* Customize: the preset block (Save as preset / Update preset) has a visible Public / Unlisted / Private choice titled "Visibility: <value>" with the hint "Only YouTube uses this; Facebook and Twitch ignore it." It is the same state as the Setup control (shown once: inside the preset block when the server has presets, else in Setup). Save / Update store it.
+* By-hand Setup flow: the default is still Public (unchanged); the control now names the chosen value.
+* Older server: a 400 "property visibility should not exist" -> the preset is saved again without it, with a plain sentence.
+* The per-start override of `POST /presets/:id/start` is not used by the phone.
+
+### 24b. Tests
+`PresetsApiTest` (lenient parsing: case, null, empty, unknown; sent only when set; key set), `PresetControllerTest` (retry without visibility on an older server; other 400s unchanged), `PresetLogicTest` (summary text incl. Public fallback, setup <-> preset round trip, one-tap fallback public / stored unlisted and private, Quick start public whatever Setup holds, by-hand default). The go-live request carries `StudioUi.visibility`, which is exactly what `applyPresetForGoLive` sets when a card is opened.
+
+### 24c. Not verified (no device)
+The Compose layout of the new control in the Customize sheet and the real YouTube privacy of a stream started from a card.
+

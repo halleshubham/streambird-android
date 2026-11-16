@@ -28,21 +28,21 @@ class PresetLogicTest {
 
     @Test fun `summary has destinations, brand, ticker and quality`() {
         val cfg = PresetConfig("portrait", listOf("c1", "c2"), "k1", "hd", true, "News")
-        assertEquals("YouTube + Facebook${dot}Acme brand${dot}Ticker on${dot}720p", presetSummary(cfg, conns, kits::get, true))
+        assertEquals("YouTube + Facebook${dot}Acme brand${dot}Public${dot}Ticker on${dot}720p", presetSummary(cfg, conns, kits::get, true))
     }
 
     @Test fun `summary variations`() {
-        assertEquals("YouTube${dot}Auto brand${dot}Ticker off${dot}1080p${dot}16:9", presetSummary(PresetConfig("landscape", listOf("c1"), null, "fhd", false), conns, kits::get, true))
-        assertEquals("YouTube${dot}Brand kit brand${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("c1"), brandKitId = "gone"), conns, kits::get, true))
-        assertEquals("YouTube${dot}Ticker off${dot}540p", presetSummary(PresetConfig(destinationIds = listOf("c1"), quality = "sd"), conns, kits::get, false))
-        assertEquals("No destination${dot}Auto brand${dot}Ticker off", presetSummary(PresetConfig(), conns, kits::get, true))
+        assertEquals("YouTube${dot}Auto brand${dot}Public${dot}Ticker off${dot}1080p${dot}16:9", presetSummary(PresetConfig("landscape", listOf("c1"), null, "fhd", false), conns, kits::get, true))
+        assertEquals("YouTube${dot}Brand kit brand${dot}Public${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("c1"), brandKitId = "gone"), conns, kits::get, true))
+        assertEquals("YouTube${dot}Public${dot}Ticker off${dot}540p", presetSummary(PresetConfig(destinationIds = listOf("c1"), quality = "sd"), conns, kits::get, false))
+        assertEquals("No destination${dot}Auto brand${dot}Public${dot}Ticker off", presetSummary(PresetConfig(), conns, kits::get, true))
         // a disconnected channel is skipped
-        assertEquals("Facebook${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("zzz", "c2")), conns, kits::get, false))
+        assertEquals("Facebook${dot}Public${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("zzz", "c2")), conns, kits::get, false))
     }
 
     @Test fun `two channels of one platform are told apart by label`() {
         val a = PlatformConnection("a", "youtube", label = "Main"); val b = PlatformConnection("b", "youtube", label = "Second")
-        assertEquals("YouTube (Main) + YouTube (Second)${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("a", "b")), listOf(a, b), kits::get, false))
+        assertEquals("YouTube (Main) + YouTube (Second)${dot}Public${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("a", "b")), listOf(a, b), kits::get, false))
         assertEquals("YouTube", connectionName(yt, conns))
     }
 
@@ -101,7 +101,7 @@ class PresetLogicTest {
 
     @Test fun `saving writes the current setup`() {
         val c = choicesToConfig(cur(linkedSetOf("c2", "c1"), StreamTier.P1080, StreamOrientation.LANDSCAPE, "k1", " Hi\nthere "))
-        assertEquals(PresetConfig("landscape", listOf("c2", "c1"), "k1", "fhd", true, "Hi there"), c)
+        assertEquals(PresetConfig("landscape", listOf("c2", "c1"), "k1", "fhd", true, "Hi there", "public"), c)
         val off = choicesToConfig(cur(setOf("c1")))
         assertEquals(false, off.tickerEnabled); assertNull(off.tickerText); assertNull(off.brandKitId)
     }
@@ -140,5 +140,53 @@ class PresetLogicTest {
         assertEquals("YouTube 3", suggestPresetName(listOf("c1"), conns, listOf("YouTube", "YouTube 2")))
         assertEquals("YouTube", suggestPresetName(listOf("c1", "c1"), conns, emptyList()))
         assertTrue(suggestPresetName(listOf("c1", "c2", "c3"), conns, emptyList()).length <= Preset.MAX_NAME)
+    }
+
+    // ---- visibility ----
+
+    private fun vis(cfg: PresetConfig, current: SetupChoices = cur(setOf("c1"))) = applyPresetForGoLive(cfg, current, lim()).choices.visibility
+
+    @Test fun `visibility parses leniently`() {
+        assertEquals("unlisted", visibilityFromWire(" Unlisted ")); assertNull(visibilityFromWire("members")); assertNull(visibilityFromWire(null)); assertNull(visibilityFromWire(""))
+    }
+
+    @Test fun `summary shows the visibility, public when none is stored`() {
+        assertEquals("YouTube${dot}Auto brand${dot}Unlisted${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("c1"), visibility = "unlisted"), conns, kits::get, true))
+        assertEquals("YouTube${dot}Private${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("c1"), visibility = "private"), conns, kits::get, false))
+        assertEquals("YouTube${dot}Public${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("c1")), conns, kits::get, false))
+    }
+
+    @Test fun `setup to preset stores the setup visibility and preset to setup applies it`() {
+        VISIBILITIES.forEach { v ->
+            val cfg = choicesToConfig(cur(setOf("c1")).copy(visibility = v))
+            assertEquals(v, cfg.visibility)
+            assertEquals(v, applyPresetConfig(cfg, cur(setOf("c1")).copy(visibility = if (v == "private") "public" else "private"), lim()).choices.visibility)
+        }
+    }
+
+    @Test fun `applyPresetConfig keeps the current visibility when the preset has none`() {
+        assertEquals("private", applyPresetConfig(PresetConfig(quality = "hd"), cur().copy(visibility = "private"), lim()).choices.visibility)
+    }
+
+    @Test fun `one-tap go live uses the stored visibility, public when none`() {
+        assertEquals("unlisted", vis(PresetConfig(destinationIds = listOf("c1"), visibility = "unlisted")))
+        assertEquals("private", vis(PresetConfig(destinationIds = listOf("c1"), visibility = "private")))
+        assertEquals("public", vis(PresetConfig(destinationIds = listOf("c1"), visibility = "weird")))
+        // no stored value: the fallback, not whatever the Setup was left on
+        assertEquals("public", vis(PresetConfig(destinationIds = listOf("c1")), cur(setOf("c1")).copy(visibility = "private")))
+        assertEquals("public", vis(PresetConfig()))
+        assertEquals("public", DEFAULT_PRESET_VISIBILITY)
+    }
+
+    @Test fun `the Quick start card is public and says so, whatever the setup holds`() {
+        val p = implicitDefaultPreset(cur(setOf("c1")).copy(visibility = "private"), conns, 3, true)
+        assertEquals("public", p.config.visibility)
+        assertEquals("public", vis(p.config))
+        assertTrue(presetSummary(p.config, conns, kits::get, true).contains("${dot}Public${dot}"))
+    }
+
+    @Test fun `by-hand setup default is public and a preset save stores the chosen one`() {
+        assertEquals("public", cur().visibility)
+        assertEquals("private", choicesToConfig(cur(setOf("c1")).copy(visibility = "private")).visibility)
     }
 }

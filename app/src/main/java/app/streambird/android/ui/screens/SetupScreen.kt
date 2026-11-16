@@ -78,7 +78,7 @@ fun SetupScreen(vm: StudioViewModel, onBack: () -> Unit, onBrand: () -> Unit = {
 
 /** Every setup control (title ... experiments). Used by the Setup screen and by the camera-first screen's "Customize" sheet. */
 @Composable
-fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Unit) {
+fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Unit, showVisibility: Boolean = true) {
     val codecs = remember { CodecProbe.summary() }
     val hasHwH264 = remember { CodecProbe.h264Encoders().any { it.hardware } }
     // The title follows the brand kit's default title until the host types; "From brand kit <name>" says so. A typed title always wins.
@@ -91,8 +91,7 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
     )
     app.streambird.android.brand.KitText.descriptionNote(kitNow)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 
-    Text("Visibility (YouTube)", style = MaterialTheme.typography.titleSmall)
-    Segmented(listOf("public", "unlisted", "private"), s.visibility, { it.replaceFirstChar { c -> c.uppercase() } }, { v -> vm.update { it.copy(visibility = v) } })
+    if (showVisibility) VisibilityPicker(vm, s.visibility)
 
     Text("Shape (fixed once the stream is created)", style = MaterialTheme.typography.titleSmall)
     Segmented(StreamOrientation.entries, s.orientation, { it.label }, { o -> vm.update { it.copy(orientation = o) } })
@@ -148,4 +147,12 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
     Text(codecs, style = MaterialTheme.typography.bodySmall)
     if (!hasHwH264) Notice("No hardware H.264 encoder was found. Streaming will likely fail or be very heavy on this phone.", Amber)
     if (s.limits?.watermark == true) Text("On this account's plan streams carry a 'Powered by StreamBird' mark.", style = MaterialTheme.typography.bodySmall)
+}
+
+/** Public / Unlisted / Private for this stream and for the preset saved from it. The title names the chosen value so it is never a guess. */
+@Composable
+fun ColumnScope.VisibilityPicker(vm: StudioViewModel, visibility: String) {
+    Text("Visibility: ${app.streambird.android.preset.visibilityLabel(visibility)}", style = MaterialTheme.typography.titleSmall)
+    Segmented(app.streambird.android.preset.VISIBILITIES, visibility, { app.streambird.android.preset.visibilityLabel(it) }, { v -> vm.update { it.copy(visibility = v) } })
+    Text(app.streambird.android.preset.VISIBILITY_HINT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }

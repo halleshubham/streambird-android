@@ -49,6 +49,14 @@ data class PresetsState(
     val loadError: String? = null,
 )
 
+const val NO_VISIBILITY_NOTE = ". This server does not store the visibility in presets yet; presets go live as set on this phone (public unless you choose otherwise)."
+
+/** A 400 that names the `visibility` key as unknown (a server from before the preset visibility release). */
+fun isVisibilityUnsupported(e: ApiException): Boolean {
+    val m = (e.message + " " + e.body).lowercase()
+    return e.status == 400 && "visibility" in m && "should not exist" in m
+}
+
 /** A status that means "this server has no presets endpoint" (an older server), as opposed to trouble with a server that has it. */
 fun isFeatureMissing(status: Int) = status == 404 || status == 405 || status == 501
 
@@ -86,16 +94,23 @@ class PresetController(
      */
     suspend fun save(id: String?, name: String, config: PresetConfig): Preset? {
         val clean = name.trim()
+        var visibilityDropped = false
         if (clean.isEmpty()) { _state.update { it.copy(error = "Give the preset a name.", notice = null) }; return null }
         val saved = guarded(if (id == null) "create" else "update") {
+            suspend fun write(c: PresetConfig) = if (id == null) port.create(clean, c) else port.update(id, clean, c)
             val saved = try {
-                if (id == null) port.create(clean, config) else port.update(id, clean, config)
+                try {
+                    write(config)
+                } catch (e: ApiException) {
+                    // A server from before preset visibility rejects the unknown key: save without it and say so.
+                    if (config.visibility != null && isVisibilityUnsupported(e)) { log("presets: server has no preset visibility, saved without it"); visibilityDropped = true; write(config.copy(visibility = null)) } else throw e
+                }
             } catch (e: ApiException) {
                 if (id != null && e.status == 404) _state.update { s -> s.copy(items = s.items.filter { it.id != id }) } // gone elsewhere: stop offering it
                 throw e
             }
             _state.update { s ->
-                s.copy(items = orderForHome(s.items.filter { it.id != saved.id } + saved), notice = if (id == null) "Preset saved" else "Preset updated", loadError = null)
+                s.copy(items = orderForHome(s.items.filter { it.id != saved.id } + saved), notice = (if (id == null) "Preset saved" else "Preset updated") + (if (visibilityDropped) NO_VISIBILITY_NOTE else ""), loadError = null)
             }
             saved
         }
