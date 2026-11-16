@@ -18,7 +18,28 @@ data class SetupChoices(
     val brandKitId: String?,
     /** Blank = ticker off. */
     val tickerText: String,
+    /** YouTube visibility of the stream: "public" | "unlisted" | "private". */
+    val visibility: String = PUBLIC,
 )
+
+const val PUBLIC = "public"
+const val UNLISTED = "unlisted"
+const val PRIVATE = "private"
+val VISIBILITIES = listOf(PUBLIC, UNLISTED, PRIVATE)
+
+/** What a phone preset without a stored visibility goes live with (founder decision: today's behaviour). The web server defaults presets to YouTube unlisted. */
+const val DEFAULT_PRESET_VISIBILITY = PUBLIC
+
+/** Tolerant: any case; null, blank or an unknown word -> null (not stored). */
+fun visibilityFromWire(s: String?): String? = s?.trim()?.lowercase()?.takeIf { it in VISIBILITIES }
+
+fun visibilityLabel(v: String) = v.replaceFirstChar { it.uppercase() }
+
+/** The visibility a one-tap Go live from this preset uses: the stored one, else [DEFAULT_PRESET_VISIBILITY] (not the Setup's value). */
+fun visibilityForPreset(cfg: PresetConfig): String = visibilityFromWire(cfg.visibility) ?: DEFAULT_PRESET_VISIBILITY
+
+const val VISIBILITY_HINT = "Only YouTube uses this; Facebook and Twitch ignore it."
+
 
 /** What the account can do right now (GET /plans/me + connections + brand kits). [knownKitIds] null = kits not loaded (yet) or not available. */
 data class SetupLimits(
@@ -58,6 +79,7 @@ fun choicesToConfig(c: SetupChoices): PresetConfig {
         quality = tierToWire(c.tier),
         tickerEnabled = text.isNotEmpty(),
         tickerText = text.ifEmpty { null },
+        visibility = visibilityFromWire(c.visibility) ?: DEFAULT_PRESET_VISIBILITY,
     )
 }
 
@@ -99,7 +121,17 @@ fun applyPresetConfig(cfg: PresetConfig, current: SetupChoices, limits: SetupLim
         false -> ""
         null -> if (cfg.tickerText != null) Ticker.sanitize(cfg.tickerText) else current.tickerText
     }
-    return AppliedPreset(SetupChoices(selected, tier, orientation, kit, ticker), notes)
+    val visibility = visibilityFromWire(cfg.visibility) ?: current.visibility
+    return AppliedPreset(SetupChoices(selected, tier, orientation, kit, ticker, visibility), notes)
+}
+
+/**
+ * Opening a preset for the camera-first screen (one-tap Go live): like [applyPresetConfig], but a preset without a stored visibility goes live
+ * [DEFAULT_PRESET_VISIBILITY], not with whatever the Setup had (which defaults to public).
+ */
+fun applyPresetForGoLive(cfg: PresetConfig, current: SetupChoices, limits: SetupLimits): AppliedPreset {
+    val a = applyPresetConfig(cfg, current, limits)
+    return a.copy(choices = a.choices.copy(visibility = visibilityForPreset(cfg)))
 }
 
 /** Name used on chips and in summaries: the platform name, or "Platform - label" when two connections share a platform. */
@@ -123,6 +155,7 @@ fun setupLine(brandName: String?, tier: StreamTier, tickerOn: Boolean): String =
 /**
  * "YouTube + Facebook · Acme brand · Ticker on · 720p" (the one-line summary of a card). Destinations the account no longer has are skipped.
  * [kitName] resolves a kit id (null = unknown kit); a preset without a kit says "Auto brand"; no brand part at all when [brandAllowed] is false.
+ * The visibility is the one a one-tap Go live uses (a preset without one says Public).
  * 16:9 is mentioned only for landscape (portrait is the app's usual shape).
  */
 fun presetSummary(cfg: PresetConfig, connections: List<PlatformConnection>, kitName: (String) -> String?, brandAllowed: Boolean): String {
@@ -130,6 +163,7 @@ fun presetSummary(cfg: PresetConfig, connections: List<PlatformConnection>, kitN
     val parts = mutableListOf<String>()
     parts += if (dests.isEmpty()) "No destination" else dests.joinToString(" + ")
     if (brandAllowed) parts += cfg.brandKitId?.let { id -> (kitName(id) ?: "Brand kit").let { "$it brand" } } ?: "Auto brand"
+    parts += visibilityLabel(visibilityForPreset(cfg))
     parts += if (cfg.tickerEnabled == true) "Ticker on" else "Ticker off"
     tierFromWire(cfg.quality)?.let { parts += it.label }
     if (orientationFromWire(cfg.orientation)?.isLandscape == true) parts += "16:9"
@@ -162,7 +196,8 @@ fun implicitDefaultPreset(current: SetupChoices, connections: List<PlatformConne
     val known = connections.map { it.id }.toSet()
     val ticked = current.selected.filter { it in known }
     val dests = ticked.ifEmpty { connections.map { it.id } }.take(maxDestinations.coerceAtLeast(1))
-    val c = choicesToConfig(current.copy(selected = dests.toCollection(LinkedHashSet()), brandKitId = if (brandAllowed) current.brandKitId else null))
+    // The implicit card always uses the fallback (public), whatever the Setup holds, and says so in its summary.
+    val c = choicesToConfig(current.copy(selected = dests.toCollection(LinkedHashSet()), brandKitId = if (brandAllowed) current.brandKitId else null, visibility = DEFAULT_PRESET_VISIBILITY))
     return Preset(id = "", name = IMPLICIT_NAME, config = c, lastUsedAt = null)
 }
 

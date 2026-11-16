@@ -80,7 +80,8 @@ class PresetsServerReplayTest {
         if (cfg == null) { if (requireAll) errs += "config must be an object" }
         else if (cfg !is JsonObject) errs += "config must be an object"
         else {
-            (cfg.keys - setOf("orientation", "destinationIds", "brandKitId", "quality", "tickerEnabled", "tickerText")).forEach { errs += "config.property $it should not exist" }
+            (cfg.keys - setOf("orientation", "destinationIds", "brandKitId", "quality", "tickerEnabled", "tickerText", "visibility")).forEach { errs += "config.property $it should not exist" }
+            cfg["visibility"]?.let { if (it !is JsonPrimitive || it.content !in setOf("public", "unlisted", "private")) errs += "config.visibility must be one of the following values: public, unlisted, private" }
             cfg["orientation"]?.let { if (it !is JsonPrimitive || it.content !in setOf("landscape", "portrait")) errs += "config.orientation must be one of the following values: landscape, portrait" }
             cfg["quality"]?.let { if (it !is JsonPrimitive || it.content !in setOf("sd", "hd", "fhd", "qhd")) errs += "config.quality must be one of the following values: sd, hd, fhd, qhd" }
             cfg["tickerEnabled"]?.let { if (it !is JsonPrimitive || it.isString) errs += "config.tickerEnabled must be a boolean value" }

@@ -94,8 +94,9 @@ class PresetsApiTest {
     }
 
     @Test fun `the full config uses exactly the allowed keys and caps the ticker at 200`() {
-        val cfg = presetConfigJson(PresetConfig("landscape", listOf("a"), "k", "hd", true, "x".repeat(300)))
-        assertEquals(setOf("orientation", "destinationIds", "brandKitId", "quality", "tickerEnabled", "tickerText"), cfg.keys)
+        val cfg = presetConfigJson(PresetConfig("landscape", listOf("a"), "k", "hd", true, "x".repeat(300), "unlisted"))
+        assertEquals(setOf("orientation", "destinationIds", "brandKitId", "quality", "tickerEnabled", "tickerText", "visibility"), cfg.keys)
+        assertEquals("unlisted", cfg["visibility"]!!.jsonPrimitive.content)
         assertEquals(200, cfg["tickerText"]!!.jsonPrimitive.content.length)
         assertEquals(JsonObject(emptyMap()), presetConfigJson(PresetConfig()))
         assertEquals(JsonArray(emptyList()), presetConfigJson(PresetConfig(destinationIds = emptyList()))["destinationIds"])
@@ -126,5 +127,21 @@ class PresetsApiTest {
     @Test fun `validation error message is shown as the server sent it`() = runBlocking {
         server.enqueue(json("""{"statusCode":400,"message":["config.property foo should not exist"],"error":"Bad Request"}""", 400))
         try { api.createPreset("x", PresetConfig()); fail() } catch (e: ApiException) { assertEquals(400, e.status); assertTrue(e.message.contains("should not exist")) }
+    }
+
+    @Test fun `visibility is read leniently`() = runBlocking {
+        server.enqueue(json("""[{"id":"a","config":{"visibility":"Unlisted"}},{"id":"b","config":{"visibility":"private"}},{"id":"c","config":{"visibility":"members"}},{"id":"d","config":{"visibility":null}},{"id":"e","config":{}},{"id":"f","config":{"visibility":""}}]"""))
+        assertEquals(listOf("unlisted", "private", null, null, null, null), api.listPresets().map { it.config.visibility })
+    }
+
+    @Test fun `visibility is sent only when set and never as null`() = runBlocking {
+        server.enqueue(json("""{"id":"n","name":"X","config":{"visibility":"PRIVATE"}}"""))
+        val made = api.createPreset("X", PresetConfig(quality = "hd", visibility = "private"))
+        assertEquals("private", made.config.visibility)
+        val cfg = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject["config"]!!.jsonObject
+        assertEquals("private", cfg["visibility"]!!.jsonPrimitive.content)
+        server.enqueue(json("""{"id":"n","name":"X","config":{}}"""))
+        api.updatePreset("n", null, PresetConfig(quality = "hd"))
+        assertFalse("visibility" in Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject["config"]!!.jsonObject.keys)
     }
 }

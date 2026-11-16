@@ -211,8 +211,8 @@ fun GoLiveScreen(vm: StudioViewModel, openCustomize: Boolean, onClose: () -> Uni
                 PageHeading("Customize", "Setup, brand, ticker and ads for this stream.")
                 // A presets list that failed to load (offline at start-up) is tried again whenever the sheet opens.
                 androidx.compose.runtime.LaunchedEffect(Unit) { if (!ps.loaded || ps.loadError != null) vm.refreshPresets() }
-                if (ps.available) PresetSection(vm, s.activePreset, ps)
-                SetupFields(vm, s, onBrand = { sheet = false; camera.stop(); onBrand() })
+                if (ps.available) PresetSection(vm, s.activePreset, ps, s.visibility)
+                SetupFields(vm, s, onBrand = { sheet = false; camera.stop(); onBrand() }, showVisibility = !ps.available)
                 Button(onClick = { sheet = false }, modifier = Modifier.fillMaxWidth()) { Text("Done") }
             }
         }
@@ -225,18 +225,19 @@ fun GoLiveScreen(vm: StudioViewModel, openCustomize: Boolean, onClose: () -> Uni
  * shows "Preset saved" / "Preset updated" right here, a failure its reason (the server's own words, e.g. "You can keep up to 20 presets...").
  */
 @Composable
-private fun PresetSection(vm: StudioViewModel, active: app.streambird.android.data.Preset?, ps: app.streambird.android.preset.PresetsState) {
+private fun PresetSection(vm: StudioViewModel, active: app.streambird.android.data.Preset?, ps: app.streambird.android.preset.PresetsState, visibility: String) {
     var name by remember(active?.id) { mutableStateOf(active?.name ?: vm.suggestPresetName()) }
     var confirmDelete by remember { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(if (active == null) "Save as preset" else "Preset", style = MaterialTheme.typography.titleSmall)
-            Text("Remembers channels, quality, shape, brand kit and ticker so next time it is one tap.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Remembers channels, quality, shape, brand kit, ticker and visibility so next time it is one tap.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(
                 value = name, onValueChange = { name = it.take(app.streambird.android.data.Preset.MAX_NAME); vm.presets.clearError(); vm.presets.clearNotice() },
                 label = { Text("Preset name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 supportingText = { Text(if (name.isBlank()) "Give the preset a name to save it." else "${name.length}/${app.streambird.android.data.Preset.MAX_NAME}") },
             )
+            VisibilityPicker(vm, visibility)
             ps.loadError?.let { Text("$it Saving still works.", color = Amber, style = MaterialTheme.typography.bodySmall) }
             ps.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             ps.notice?.let { Text(it, color = app.streambird.android.ui.theme.Ok, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold) }

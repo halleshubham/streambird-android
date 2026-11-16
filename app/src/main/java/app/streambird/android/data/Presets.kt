@@ -13,7 +13,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * What a preset remembers (backend `config`). Every field is optional both ways: a field the server did not send is null here,
- * and a null field is not sent (the server rejects unknown keys, so [presetConfigJson] writes exactly these six and nothing else).
+ * and a null field is not sent (the server rejects unknown keys, so [presetConfigJson] writes exactly these seven and nothing else).
  */
 @Serializable
 data class PresetConfig(
@@ -27,6 +27,8 @@ data class PresetConfig(
     val quality: String? = null,
     val tickerEnabled: Boolean? = null,
     val tickerText: String? = null,
+    /** YouTube visibility: "public" | "unlisted" | "private". null = not stored (older presets / servers); the phone then goes live PUBLIC (the web server default for presets is unlisted). Sent only when set. */
+    val visibility: String? = null,
 )
 
 /** One saved preset (GET /api/presets row). `lastUsedAt` is an ISO-8601 instant or null when never used. */
@@ -54,7 +56,11 @@ fun presetConfigJson(c: PresetConfig): JsonObject = buildJsonObject {
     c.quality?.let { put("quality", it) }
     c.tickerEnabled?.let { put("tickerEnabled", it) }
     c.tickerText?.let { put("tickerText", it.take(Preset.MAX_TICKER)) }
+    c.visibility?.let { put("visibility", it) }
 }
+
+/** Reads `visibility` leniently: any case, anything but the three known values (or a missing/null field) is "not stored" (null). */
+fun Preset.normalized(): Preset = copy(config = config.copy(visibility = app.streambird.android.preset.visibilityFromWire(config.visibility)))
 
 /** POST /api/presets body. */
 fun presetCreateJson(name: String, c: PresetConfig): JsonObject = buildJsonObject {
@@ -74,7 +80,7 @@ fun decodePresets(text: String): List<Preset> {
     if (root !is JsonArray && root !is JsonObject) throw kotlinx.serialization.SerializationException("not a preset list")
     val arr = root as? JsonArray ?: ((root as? JsonObject)?.get("items") as? JsonArray) ?: return emptyList()
     return arr.mapNotNull { el ->
-        runCatching { ApiJson.decodeFromJsonElement(Preset.serializer(), el) }.getOrNull()?.takeIf { it.id.isNotBlank() }
+        runCatching { ApiJson.decodeFromJsonElement(Preset.serializer(), el) }.getOrNull()?.normalized()?.takeIf { it.id.isNotBlank() }
     }
 }
 
@@ -83,12 +89,12 @@ private fun json(body: JsonObject) = body.toString().toRequestBody("application/
 suspend fun ApiClient.listPresets(): List<Preset> = call(get("/presets")) { decodePresets(it) }
 
 suspend fun ApiClient.createPreset(name: String, c: PresetConfig): Preset =
-    call(post("/presets", json(presetCreateJson(name, c)))) { ApiJson.decodeFromString(it) }
+    call(post("/presets", json(presetCreateJson(name, c)))) { ApiJson.decodeFromString<Preset>(it).normalized() }
 
 suspend fun ApiClient.updatePreset(id: String, name: String?, c: PresetConfig?): Preset =
-    call(Request.Builder().url(url("/presets/$id")).patch(json(presetPatchJson(name, c))).build()) { ApiJson.decodeFromString(it) }
+    call(Request.Builder().url(url("/presets/$id")).patch(json(presetPatchJson(name, c))).build()) { ApiJson.decodeFromString<Preset>(it).normalized() }
 
 suspend fun ApiClient.deletePreset(id: String) = call(Request.Builder().url(url("/presets/$id")).delete().build()) { }
 
 /** Marks the preset as just used (sets lastUsedAt) and returns it. */
-suspend fun ApiClient.usePreset(id: String): Preset = call(post("/presets/$id/use")) { ApiJson.decodeFromString(it) }
+suspend fun ApiClient.usePreset(id: String): Preset = call(post("/presets/$id/use")) { ApiJson.decodeFromString<Preset>(it).normalized() }
