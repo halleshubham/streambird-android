@@ -107,6 +107,8 @@ data class GoLiveRequest(
     val freePlan: Boolean = false,
     /** Per-stream "shrink picture while ads show": null = as the kit says (default on). */
     val adsShrinkOverride: Boolean? = null,
+    /** Date and time of THIS stream, replacing the brand kit's. null = as the kit in use says (off without a kit). Presets store nothing for it. */
+    val clockOverride: app.streambird.android.clock.ClockSettings? = null,
 )
 
 /**
@@ -130,6 +132,8 @@ data class LiveAd(
 data class LoadedAds(
     val inputs: List<AdInput>, val failures: List<AdLoadFailure>, val kitShrink: Boolean,
     val notes: List<String> = emptyList(), val sources: Map<AdPlacement, AdSource> = emptyMap(), val kitName: String? = null,
+    /** The date and time settings of the kit that was resolved (null = no kit was resolved). */
+    val kitClock: app.streambird.android.clock.ClockSettings? = null,
 )
 
 enum class LivePhase { IDLE, STARTING, LIVE, ENDING, ENDED, FAILED }
@@ -168,6 +172,8 @@ data class LiveUi(
     val adsShrink: Boolean = true,
     /** SystemClock.elapsedRealtime() when the ad schedule clock started (the real go-live); 0 = not started. The Live sheet counts from it. */
     val adClockStartMs: Long = 0,
+    /** Date and time on the picture now (the stream's override, else the kit's); [app.streambird.android.clock.ClockSettings.enabled] says whether it shows. */
+    val clock: app.streambird.android.clock.ClockSettings = app.streambird.android.clock.ClockSettings(),
 ) {
     val active get() = phase == LivePhase.STARTING || phase == LivePhase.LIVE || phase == LivePhase.ENDING
 }
@@ -266,13 +272,16 @@ class StreamController @Inject constructor(
             val loaded = loadAds(req)
             val (adInputs, adFailures, kitShrink) = loaded
             val shrink = req.adsShrinkOverride ?: kitShrink
+            // Date and time: this stream's own settings, else the resolved kit's, else off.
+            val clock = req.clockOverride?.normalized() ?: loaded.kitClock ?: app.streambird.android.clock.ClockSettings()
             currentCoroutineContext().ensureActive()
             // Every ad of the stream is listed on the Live sheet, also the ones that could not be loaded (with the reason), so nothing is silently missing.
             val liveAds = (adInputs.map { a -> LiveAd(a.placement, source = loaded.sources[a.placement] ?: AdSource.KIT, enabled = a.enabled, schedule = a.schedule) } +
                 adFailures.map { f -> LiveAd(f.placement, source = loaded.sources[f.placement] ?: AdSource.KIT, problem = f.reason.take(80).trimEnd('.')) })
                 .sortedBy { it.placement.ordinal }
             val note = (loaded.notes + listOfNotNull(describeAdFailures(adFailures))).joinToString("\n").ifEmpty { null }
-            startUpdate(g) { it.copy(adSlots = liveAds, adsNote = note, freePlan = req.freePlan, adsShrink = shrink) }
+            startUpdate(g) { it.copy(adSlots = liveAds, adsNote = note, freePlan = req.freePlan, adsShrink = shrink, clock = clock) }
+            event("clock: ${app.streambird.android.clock.Clock.describe(clock)} (${if (req.clockOverride != null) "this stream" else if (loaded.kitClock != null) "kit '${loaded.kitName}'" else "no kit"})", withRow = true)
             adFailures.forEach { event("ad ${it.placement.wire} failed to load: ${it.reason}", withRow = true) }
             loaded.notes.forEach { event("ads: $it", withRow = true) }
             event("ads: ${if (req.freePlan) "free plan" else if (!req.useKitAds) "no brand kit in use" else "kit '${loaded.kitName ?: "none"}' ${req.orientation.wire} set"}, ${adInputs.size} loaded, ${adFailures.size} failed", withRow = true)
@@ -285,6 +294,7 @@ class StreamController @Inject constructor(
                     "camera" to if (req.frontCamera) "front" else "back",
                     "h264_high_profile" to req.h264HighProfile.toString(),
                     "force_keyframes_2s" to req.forceKeyFrames.toString(),
+                    "clock" to app.streambird.android.clock.Clock.describe(clock),
                     "ticker" to if (req.tickerText.isBlank()) "off" else "on size=${req.tickerSize.label} len=${req.tickerText.length}",
                     "logo" to "${req.logoChoice} $logoNote",
                     "ads" to if (req.freePlan) "free plan: StreamBird banner + mark" else adInputs.joinToString(", ") { "${it.placement.wire} ${if (it.enabled) "on" else "off"} ${describeSchedule(it.schedule)}" }.ifEmpty { "none" },
@@ -297,7 +307,7 @@ class StreamController @Inject constructor(
             tickerSpec = TickerSpec.next(null, req.tickerText, req.tickerSize, android.os.SystemClock.elapsedRealtime())
             startUpdate(g) { it.copy(tickerText = tickerSpec?.text.orEmpty(), tickerSize = req.tickerSize) }
             event("ticker ${if (tickerSpec != null) "on size=${req.tickerSize.label} len=${tickerSpec!!.text.length}" else "off"}", withRow = false)
-            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec, AdsConfig(adInputs, req.freePlan, shrink)))
+            eng.start(EngineConfig(req.tier, req.orientation, req.priority, req.frontCamera, req.h264HighProfile, req.forceKeyFrames, logo, ice, whipUrl, tickerSpec, AdsConfig(adInputs, req.freePlan, shrink), clock.takeIf { it.enabled }))
             currentCoroutineContext().ensureActive()
 
             startedAtMs = System.currentTimeMillis()
@@ -525,6 +535,14 @@ class StreamController @Inject constructor(
         event("ads shrink picture " + if (on) "on" else "off", withRow = true)
     }
 
+    /** Live change of the date and time overlay for this stream (never saved to the kit); [c] enabled = shown. */
+    fun setClock(c: app.streambird.android.clock.ClockSettings) {
+        val n = c.normalized()
+        engine?.setClock(n.takeIf { it.enabled })
+        _ui.update { it.copy(clock = n) }
+        event("clock " + app.streambird.android.clock.Clock.describe(n), withRow = true)
+    }
+
     fun dismissAdsNote() = _ui.update { it.copy(adsNote = null) }
 
     /** Live ticker edit: text and size apply to the running picture without restarting anything. */
@@ -621,6 +639,7 @@ class StreamController @Inject constructor(
         val failures = ArrayList<AdLoadFailure>(); val notes = ArrayList<String>()
         var kitShrink = true
         var kitName: String? = null
+        var kitClock: app.streambird.android.clock.ClockSettings? = null
         // The kit (fresh from the server, same choice as the logo) supplies the ads unless the stream runs without a kit.
         var kitAds: List<app.streambird.android.data.KitAd>? = null
         if (req.useKitAds) {
@@ -632,6 +651,7 @@ class StreamController @Inject constructor(
                 kitAds = kit?.let { kitSetFor(it, shape).ads }
                 kitShrink = kit?.adsShrinkPicture ?: true
                 kitName = kit?.name
+                kitClock = kit?.let { app.streambird.android.clock.ClockSettings.fromKit(it) }
                 kitAdsMissingNote(kit, shape)?.let { notes.add(it) }
             } catch (e: CancellationException) { throw e } catch (t: Throwable) {
                 notes.add(describeKitFetchFailure((t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName))
@@ -654,7 +674,7 @@ class StreamController @Inject constructor(
         }
         val inputs = results.mapNotNull { it.first }
         failures.addAll(results.mapNotNull { it.second })
-        return LoadedAds(inputs, failures, kitShrink, notes, merged.associate { it.placement to it.source }, kitName)
+        return LoadedAds(inputs, failures, kitShrink, notes, merged.associate { it.placement to it.source }, kitName, kitClock)
     }
 
     // ---- logo ----

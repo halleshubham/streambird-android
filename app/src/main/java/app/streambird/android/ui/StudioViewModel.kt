@@ -62,6 +62,8 @@ data class StudioUi(
     val adOverrides: Map<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdOverride> = emptyMap(),
     /** Per-stream "shrink picture while ads show": null = as the kit says. */
     val adsShrink: Boolean? = null,
+    /** Date and time of this stream when the host changed it (replaces the brand kit's); null = as the kit in use says. Not part of presets. */
+    val clock: app.streambird.android.clock.ClockSettings? = null,
     val staleStreams: List<app.streambird.android.data.StreamListItem> = emptyList(),
     val staleNote: String? = null,
     /** The saved preset the camera-first screen was opened with (null = the implicit default card or a new, unsaved preset). */
@@ -278,7 +280,7 @@ class StudioViewModel @Inject constructor(
                 logoChoice = if (s.logoChoice == LogoChoice.BRAND && !s.brandAllowed) LogoChoice.NONE else s.logoChoice,
                 tickerText = app.streambird.android.media.Ticker.sanitize(s.tickerText), tickerSize = s.tickerSize,
                 brandKitId = brand.selectedKitId.value,
-                adOverrides = s.adOverrides, adsShrinkOverride = s.adsShrink, useKitAds = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, freePlan = s.limits?.watermark == true, thumbnailUri = s.thumbnailUri,
+                adOverrides = s.adOverrides, adsShrinkOverride = s.adsShrink, clockOverride = s.clock, useKitAds = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, freePlan = s.limits?.watermark == true, thumbnailUri = s.thumbnailUri,
                 thumbnailKitId = app.streambird.android.brand.KitThumbnail.requestKitId(
                     brand.selectedKitId.value, brand.state.value.kits, usingKit = s.logoChoice == LogoChoice.BRAND && s.brandAllowed, ownPicked = s.thumbnailUri != null,
                 ),

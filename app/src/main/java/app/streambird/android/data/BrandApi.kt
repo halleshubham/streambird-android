@@ -37,6 +37,8 @@ data class KitDraft(
     /** Default stream title of the kit (max 100) and description (max 5000): PATCH sends each only when it changed (blank = clear, explicit null), POST only when set. */
     val title: String? = null,
     val description: String? = null,
+    /** The on-air date and time (1.0.12). PATCH sends each field only when it changed, POST only the ones that differ from the defaults. */
+    val clock: app.streambird.android.clock.ClockSettings = app.streambird.android.clock.ClockSettings(),
 )
 
 object BrandKitPayload {
@@ -51,6 +53,7 @@ object BrandKitPayload {
         k.name, k.logoAssetId, k.logoPosition, k.logoSize, k.lowerThirdStyle, k.isDefault,
         wallpaperAssetId = k.wallpaperAssetId, logoAssetIdPortrait = k.logoAssetIdPortrait,
         wallpaperAssetIdPortrait = k.wallpaperAssetIdPortrait, adsShrinkPicture = k.adsShrinkPicture, thumbnailAssetId = k.thumbnailAssetId, title = k.title, description = k.description,
+        clock = app.streambird.android.clock.ClockSettings.fromKit(k),
     )
 
     /**
@@ -75,6 +78,7 @@ object BrandKitPayload {
         if (d.thumbnailAssetId != original.thumbnailAssetId) put("thumbnailAssetId", d.thumbnailAssetId?.let { JsonPrimitive(it) } ?: JsonNull)
         textChange(this, "title", app.streambird.android.brand.KitText.titleChange(original.title, d.title))
         textChange(this, "description", app.streambird.android.brand.KitText.descriptionChange(original.description, d.description))
+        clockPatch(this, app.streambird.android.clock.ClockSettings.fromKit(original), d.clock.normalized())
         if (d.isDefault && !original.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
         d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
@@ -91,12 +95,27 @@ object BrandKitPayload {
         d.thumbnailAssetId?.let { put("thumbnailAssetId", it) }
         app.streambird.android.brand.KitText.cleanTitle(d.title)?.let { put("title", it) }
         app.streambird.android.brand.KitText.cleanDescription(d.description)?.let { put("description", it) }
+        clockPatch(this, app.streambird.android.clock.ClockSettings(), d.clock.normalized())
         put("logoPosition", d.logoPosition)
         put("logoSize", clampSize(d.logoSize))
         put("lowerThirdStyle", d.lowerThirdStyle)
         if (d.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
         d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
+    }
+
+    /**
+     * The clock fields that differ between [was] and [now]: on PATCH [was] is the kit as loaded (so an untouched clock sends NOTHING and an older server
+     * never sees a field it rejects), on POST it is the defaults (so only what was set is sent). A timezone change back to the phone's own is an explicit null.
+     */
+    fun clockPatch(b: kotlinx.serialization.json.JsonObjectBuilder, was: app.streambird.android.clock.ClockSettings, now: app.streambird.android.clock.ClockSettings) {
+        if (now.enabled != was.enabled) b.put("clockEnabled", now.enabled)
+        if (now.position != was.position) b.put("clockPosition", now.position.wire)
+        if (now.hours != was.hours) b.put("clockFormat", now.hours.wire)
+        if (now.showDate != was.showDate) b.put("clockShowDate", now.showDate)
+        if (now.showSeconds != was.showSeconds) b.put("clockShowSeconds", now.showSeconds)
+        if (now.timezone != was.timezone) b.put("clockTimezone", now.timezone?.let { JsonPrimitive(it) } ?: JsonNull)
+        if (now.size != was.size) b.put("clockSize", now.size.wire)
     }
 
     private fun textChange(b: kotlinx.serialization.json.JsonObjectBuilder, key: String, c: app.streambird.android.brand.KitText.Change) {

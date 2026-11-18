@@ -11,6 +11,8 @@ object KitCompat {
     const val NO_KIT_THUMBNAIL = "This server does not support kit thumbnails yet. Remove it or try again later."
     const val NO_KIT_TEXT = "This server does not support a default title and description for brand kits yet. Clear them or try again later."
 
+    const val NO_KIT_CLOCK = "This server does not support the date and time overlay yet. Leave it as it was or try again later."
+
     /** The replacement message for a failed save, or null to keep the server's own. Only a 400 that names the new field is rewritten. */
     fun saveError(status: Int, message: String, draft: KitDraft): String? {
         if (status != 400) return null
@@ -20,6 +22,8 @@ object KitCompat {
         if (draft.thumbnailAssetId != null && "thumbnailassetid" in m) return NO_KIT_THUMBNAIL
         val sentText = KitText.cleanTitle(draft.title) != null || KitText.cleanDescription(draft.description) != null
         if (sentText && "should not exist" in m && ("title" in m || "description" in m)) return NO_KIT_TEXT
+        // Only clock fields we sent can be named in a "should not exist" message (a clock left untouched is not sent at all).
+        if ("should not exist" in m && "clock" in m) return NO_KIT_CLOCK
         return null
     }
 }

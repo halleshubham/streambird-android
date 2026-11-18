@@ -47,6 +47,8 @@ class StreamControllerTest {
         override suspend fun republish() { republishes.incrementAndGet() }
         override fun simulateDrop() {}
         override fun setTicker(spec: TickerSpec?) {}
+        val clocks = CopyOnWriteArrayList<app.streambird.android.clock.ClockSettings?>()
+        override fun setClock(c: app.streambird.android.clock.ClockSettings?) { clocks.add(c) }
         override fun setPicturePriority(p: PicturePriority) {}
         val clockStarts = AtomicInteger(); val manuals = CopyOnWriteArrayList<Pair<app.streambird.android.ads.AdPlacement, app.streambird.android.ads.AdManual?>>()
         var lastConfig: EngineConfig? = null
@@ -281,6 +283,55 @@ class StreamControllerTest {
         controller.start(req.copy(useKitAds = true, adsShrinkOverride = false))
         waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
         assertFalse(engineQueue[0].lastConfig!!.ads!!.shrinkPicture); assertFalse(controller.ui.value.adsShrink)
+    }
+
+    // ---- 1.0.12: date and time ----
+
+    private val kitClockJson = """"clockEnabled":true,"clockPosition":"bottom_left","clockFormat":"24h","clockShowDate":false,"clockShowSeconds":true,"clockTimezone":"Asia/Kolkata","clockSize":"large""""
+    private fun kitWithClock(extra: String) = """{"id":"k1","name":"Kit","logoAssetId":null,"logoPosition":"left","logoSize":90,"wallpaperAssetId":null,"wallpaperDim":0,"lowerThirdStyle":"accent","isDefault":true,"connectionIds":[],"ads":[],"adsPortrait":[]$extra}"""
+
+    @Test fun `the clock is off for a stream without a kit clock and nothing is handed to the engine`() {
+        controller.start(req.copy(useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertNull(engineQueue[0].lastConfig!!.clock)
+        assertFalse(controller.ui.value.clock.enabled)
+    }
+
+    @Test fun `the kit's clock is applied to a stream that uses the kit`() {
+        server.kitsResponse = { 200 to "[" + kitWithClock(",$kitClockJson") + "]" }
+        controller.start(req.copy(useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        val c = engineQueue[0].lastConfig!!.clock!!
+        assertEquals(app.streambird.android.clock.ClockSettings(true, app.streambird.android.clock.ClockPosition.BOTTOM_LEFT, app.streambird.android.clock.ClockHours.H24, false, true, "Asia/Kolkata", app.streambird.android.clock.ClockSize.LARGE), c)
+        assertEquals(c, controller.ui.value.clock)
+    }
+
+    @Test fun `the stream's own clock replaces the kit's, also when it is off`() {
+        server.kitsResponse = { 200 to "[" + kitWithClock(",$kitClockJson") + "]" }
+        controller.start(req.copy(useKitAds = true, clockOverride = app.streambird.android.clock.ClockSettings(enabled = false, position = app.streambird.android.clock.ClockPosition.TOP_LEFT)))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertNull(engineQueue[0].lastConfig!!.clock)
+        assertFalse(controller.ui.value.clock.enabled)
+    }
+
+    @Test fun `an override works without a kit (Free plan or no brand logo)`() {
+        controller.start(req.copy(clockOverride = app.streambird.android.clock.ClockSettings(enabled = true, timezone = " UTC ")))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertEquals("UTC", engineQueue[0].lastConfig!!.clock!!.timezone)
+        assertEquals(0, server.count("GET /api/brand-kits"))
+    }
+
+    @Test fun `the clock can be switched on and off while live, keeping the other settings`() {
+        server.kitsResponse = { 200 to "[" + kitWithClock(",${kitClockJson.replace("\"clockEnabled\":true", "\"clockEnabled\":false")}") + "]" }
+        controller.start(req.copy(useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertNull(engineQueue[0].lastConfig!!.clock)
+        controller.setClock(controller.ui.value.clock.copy(enabled = true))
+        assertTrue(controller.ui.value.clock.enabled)
+        assertEquals(app.streambird.android.clock.ClockPosition.BOTTOM_LEFT, engineQueue[0].clocks.last()!!.position)
+        controller.setClock(controller.ui.value.clock.copy(enabled = false))
+        assertNull(engineQueue[0].clocks.last())
+        assertEquals(app.streambird.android.clock.ClockPosition.BOTTOM_LEFT, controller.ui.value.clock.position) // stays for the next switch-on
     }
 
     // ---- 1.0.10: a stream started from the app picks up the kit's ads (audit) ----
