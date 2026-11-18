@@ -23,22 +23,68 @@ class ClockSettingsTest {
 
     // ---- parsing ----
 
-    @Test fun `an older server's kit has the clock off with the defaults`() {
+    @Test fun `an older server's kit has the clock off and the old look`() {
         val c = ClockSettings.fromKit(kit("{$base}"))
-        assertEquals(ClockSettings(), c)
+        assertEquals(ClockSettings(style = ClockStyle.PILL, alternate = false), c)
         assertFalse(c.enabled); assertEquals(ClockPosition.TOP_RIGHT, c.position); assertEquals(ClockHours.H12, c.hours)
-        assertTrue(c.showDate); assertFalse(c.showSeconds); assertNull(c.timezone); assertEquals(ClockSize.MEDIUM, c.size)
+        assertTrue(c.showDate); assertFalse(c.showSeconds); assertNull(c.timezone); assertEquals(ClockSize.SMALL, c.size)
+    }
+
+    @Test fun `a 1_0_12 server's kit (clock keys but no style keys) keeps the pill on one line`() {
+        val c = ClockSettings.fromKit(kit("""{$base,"clockEnabled":true,"clockSize":"medium"}"""))
+        assertEquals(ClockStyle.PILL, c.style); assertFalse(c.alternate); assertEquals(ClockSize.MEDIUM, c.size)
+    }
+
+    @Test fun `a new server's kit reads its style and alternation`() {
+        val c = ClockSettings.fromKit(kit("""{$base,"clockEnabled":true,"clockStyle":"pill","clockAlternate":true,"clockSize":"small"}"""))
+        assertEquals(ClockStyle.PILL, c.style); assertTrue(c.alternate)
+        val t = ClockSettings.fromKit(kit("""{$base,"clockStyle":"text","clockAlternate":false}"""))
+        assertEquals(ClockStyle.TEXT, t.style); assertFalse(t.alternate)
+    }
+
+    @Test fun `unknown style from a new server is text, a missing alternate is true`() {
+        val c = ClockSettings.fromKit(kit("""{$base,"clockStyle":"neon"}"""))
+        assertEquals(ClockStyle.TEXT, c.style); assertTrue(c.alternate)
+        val d = ClockSettings.fromKit(kit("""{$base,"clockAlternate":false}"""))
+        assertEquals(ClockStyle.TEXT, d.style); assertFalse(d.alternate)
+        val n = ClockSettings.fromKit(kit("""{$base,"clockStyle":null,"clockAlternate":null}"""))
+        assertEquals(ClockStyle.PILL, n.style); assertFalse(n.alternate) // explicit nulls are the same as absent
+    }
+
+    @Test fun `a kit that does not say gets the small size`() {
+        assertEquals(ClockSize.SMALL, ClockSettings.fromKit(kit("""{$base,"clockEnabled":true}""")).size)
+        assertEquals(ClockSize.SMALL, ClockSettings().size)
+    }
+
+    @Test fun `PATCH sends style and alternate only when changed`() {
+        val k = kit("""{$base,"clockEnabled":true,"clockStyle":"text","clockAlternate":true}""")
+        assertEquals(emptySet<String>(), BrandKitPayload.patch(k, draftOf(k)).clockKeys())
+        val b = BrandKitPayload.patch(k, draftOf(k).copy(clock = ClockSettings.fromKit(k).copy(style = ClockStyle.PILL, alternate = false)))
+        assertEquals(setOf("clockStyle", "clockAlternate"), b.clockKeys())
+        assertEquals("pill", b["clockStyle"]!!.jsonPrimitive.content); assertFalse(b["clockAlternate"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test fun `PATCH of an untouched old-server kit sends nothing, even though it reads as pill`() {
+        val k = kit("""{$base,"clockEnabled":true}""")
+        assertEquals(emptySet<String>(), BrandKitPayload.patch(k, draftOf(k)).clockKeys())
+    }
+
+    @Test fun `POST sends style and alternate only when not the defaults`() {
+        val d = BrandKitPayload.create(KitDraft("A", null, "left", 90, "accent", false, clock = ClockSettings(enabled = true, style = ClockStyle.PILL, alternate = false, size = ClockSize.MEDIUM)))
+        assertEquals(setOf("clockEnabled", "clockStyle", "clockAlternate", "clockSize"), d.clockKeys())
+        val plain = BrandKitPayload.create(KitDraft("A", null, "left", 90, "accent", false, clock = ClockSettings(enabled = true)))
+        assertEquals(setOf("clockEnabled"), plain.clockKeys())
     }
 
     @Test fun `a full clock parses`() {
         val c = ClockSettings.fromKit(kit("""{$base,"clockEnabled":true,"clockPosition":"bottom_left","clockFormat":"24h","clockShowDate":false,"clockShowSeconds":true,"clockTimezone":"Asia/Kolkata","clockSize":"large"}"""))
-        assertEquals(ClockSettings(true, ClockPosition.BOTTOM_LEFT, ClockHours.H24, false, true, "Asia/Kolkata", ClockSize.LARGE), c)
+        assertEquals(ClockSettings(true, ClockPosition.BOTTOM_LEFT, ClockHours.H24, false, true, "Asia/Kolkata", ClockSize.LARGE, ClockStyle.PILL, false), c) // no style keys = old server = pill
     }
 
     @Test fun `unknown values and nulls fall back to the defaults`() {
         val c = ClockSettings.fromKit(kit("""{$base,"clockEnabled":true,"clockPosition":"middle","clockFormat":"36h","clockSize":"huge","clockTimezone":null,"clockShowDate":null}"""))
         assertTrue(c.enabled)
-        assertEquals(ClockPosition.TOP_RIGHT, c.position); assertEquals(ClockHours.H12, c.hours); assertEquals(ClockSize.MEDIUM, c.size)
+        assertEquals(ClockPosition.TOP_RIGHT, c.position); assertEquals(ClockHours.H12, c.hours); assertEquals(ClockSize.SMALL, c.size)
         assertNull(c.timezone); assertTrue(c.showDate)
     }
 
@@ -73,9 +119,9 @@ class ClockSettingsTest {
 
     @Test fun `PATCH sends every wire name`() {
         val k = kit("{$base}")
-        val d = draftOf(k).copy(clock = ClockSettings(true, ClockPosition.BOTTOM_RIGHT, ClockHours.H24, false, true, "Europe/Paris", ClockSize.SMALL))
+        val d = draftOf(k).copy(clock = ClockSettings(true, ClockPosition.BOTTOM_RIGHT, ClockHours.H24, false, true, "Europe/Paris", ClockSize.MEDIUM, ClockStyle.TEXT, true))
         val b = BrandKitPayload.patch(k, d)
-        assertEquals(setOf("clockEnabled", "clockPosition", "clockFormat", "clockShowDate", "clockShowSeconds", "clockTimezone", "clockSize"), b.clockKeys())
+        assertEquals(setOf("clockEnabled", "clockPosition", "clockFormat", "clockShowDate", "clockShowSeconds", "clockTimezone", "clockSize", "clockStyle", "clockAlternate"), b.clockKeys())
         assertEquals("bottom_right", b["clockPosition"]!!.jsonPrimitive.content)
         assertEquals("24h", b["clockFormat"]!!.jsonPrimitive.content)
         assertFalse(b["clockShowDate"]!!.jsonPrimitive.boolean)
@@ -110,6 +156,7 @@ class ClockSettingsTest {
         val d = KitDraft("A", null, "left", 90, "accent", false, clock = ClockSettings(enabled = true))
         assertEquals(KitCompat.NO_KIT_CLOCK, KitCompat.saveError(400, "property clockEnabled should not exist", d))
         assertEquals(KitCompat.NO_KIT_CLOCK, KitCompat.saveError(400, "property clockTimezone should not exist, property clockSize should not exist", d))
+        assertEquals(KitCompat.NO_KIT_CLOCK, KitCompat.saveError(400, "property clockStyle should not exist, property clockAlternate should not exist", d))
         assertNull(KitCompat.saveError(500, "property clockEnabled should not exist", d))
         assertNull(KitCompat.saveError(400, "name must be shorter", d))
     }
@@ -139,10 +186,10 @@ class ClockSettingsTest {
 
     @Test fun `description line`() {
         assertEquals("Off", Clock.describe(ClockSettings()))
-        assertEquals("On: top right, 12-hour, with date, medium, this phone's timezone", Clock.describe(ClockSettings(enabled = true)))
+        assertEquals("On: top right, 12-hour, with date, small, compact text, alternating, this phone's timezone", Clock.describe(ClockSettings(enabled = true)))
         assertEquals(
-            "On: bottom left, 24-hour, time only, with seconds, large, Asia/Kolkata",
-            Clock.describe(ClockSettings(true, ClockPosition.BOTTOM_LEFT, ClockHours.H24, false, true, "Asia/Kolkata", ClockSize.LARGE)),
+            "On: bottom left, 24-hour, time only, with seconds, large, pill, Asia/Kolkata",
+            Clock.describe(ClockSettings(true, ClockPosition.BOTTOM_LEFT, ClockHours.H24, false, true, "Asia/Kolkata", ClockSize.LARGE, ClockStyle.PILL, false)),
         )
     }
 
@@ -150,6 +197,8 @@ class ClockSettingsTest {
         ClockPosition.entries.forEach { assertEquals(it, ClockPosition.fromWire(it.wire)) }
         ClockHours.entries.forEach { assertEquals(it, ClockHours.fromWire(it.wire)) }
         ClockSize.entries.forEach { assertEquals(it, ClockSize.fromWire(it.wire)) }
+        ClockStyle.entries.forEach { assertEquals(it, ClockStyle.fromWire(it.wire)) }
         assertEquals(ClockPosition.TOP_RIGHT, ClockPosition.fromWire(null))
+        assertEquals(ClockStyle.TEXT, ClockStyle.fromWire("x")); assertEquals(ClockSize.SMALL, ClockSize.fromWire(null))
     }
 }

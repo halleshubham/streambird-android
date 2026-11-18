@@ -302,7 +302,7 @@ class StreamControllerTest {
         controller.start(req.copy(useKitAds = true))
         waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
         val c = engineQueue[0].lastConfig!!.clock!!
-        assertEquals(app.streambird.android.clock.ClockSettings(true, app.streambird.android.clock.ClockPosition.BOTTOM_LEFT, app.streambird.android.clock.ClockHours.H24, false, true, "Asia/Kolkata", app.streambird.android.clock.ClockSize.LARGE), c)
+        assertEquals(app.streambird.android.clock.ClockSettings(true, app.streambird.android.clock.ClockPosition.BOTTOM_LEFT, app.streambird.android.clock.ClockHours.H24, false, true, "Asia/Kolkata", app.streambird.android.clock.ClockSize.LARGE, app.streambird.android.clock.ClockStyle.PILL, false), c)
         assertEquals(c, controller.ui.value.clock)
     }
 

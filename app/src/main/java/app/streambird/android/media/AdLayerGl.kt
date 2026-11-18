@@ -309,6 +309,18 @@ class AdLayerGl(
         if (freeRt.alpha > 0.002) drawTex(freeTex, freeW, freeH, freeRt, AdPlacement.LOWER_THIRD, tickerBar, freeRt.alpha)
     }
 
+    /** Width of the Free-plan "Powered by" mark once it is on the GPU (0 = not shown / not ready): a cheap per-frame key for "must the clock re-place itself". */
+    val poweredKey: Int get() = if (free && poweredTex != 0) poweredW else 0
+
+    /** Where [drawPowered] puts the mark (origin top-left), for the compact clock to keep clear of it; null when it is not shown. Allocates: call on re-placement only. */
+    fun poweredRect(tickerBar: Int): app.streambird.android.clock.ClockRect? {
+        if (!free || poweredTex == 0) return null
+        val lay = poweredByLayout(outW, outH, poweredW.toDouble(), null, tickerBar)
+        val x = outW - (20 * lay.unit).toInt() - poweredW
+        val bottomGap = if (outH > outW) Math.round(outH * 0.06).toInt() else Math.round(20 * lay.unit).toInt()
+        return app.streambird.android.clock.ClockRect(x, outH - tickerBar - bottomGap - poweredH, poweredW, poweredH)
+    }
+
     private fun drawPowered(tickerBar: Int) {
         val b = poweredBmp
         if (b != null && poweredTex == 0) { poweredTex = upload(b); poweredW = b.width; poweredH = b.height; b.recycle(); poweredBmp = null }

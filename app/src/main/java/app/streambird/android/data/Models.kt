@@ -91,7 +91,11 @@ data class BrandKit(
     val clockShowDate: Boolean = true,
     val clockShowSeconds: Boolean = false,
     val clockTimezone: String? = null,
-    val clockSize: String = "medium",
+    /** Absent = the kit does not say (read as small). */
+    val clockSize: String? = null,
+    /** 1.0.13: `text` | `pill` and the date/time alternation. NULL = key absent = a server older than 1.0.13 (read as pill, both on one line). */
+    val clockStyle: String? = null,
+    val clockAlternate: Boolean? = null,
 )
 
 /** One ad of a brand kit. `everySec` is the HIDDEN time between showings (not the period); continuous ads have null seconds. */

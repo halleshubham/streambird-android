@@ -29,7 +29,10 @@ import app.streambird.android.clock.Clock
 import app.streambird.android.clock.ClockHours
 import app.streambird.android.clock.ClockPosition
 import app.streambird.android.clock.ClockSettings
+import app.streambird.android.clock.ClockPhase
 import app.streambird.android.clock.ClockSize
+import app.streambird.android.clock.ClockStyle
+import app.streambird.android.clock.clockPhase
 import app.streambird.android.clock.ClockZones
 import app.streambird.android.clock.formatClock
 import app.streambird.android.ui.StudioUi
@@ -55,7 +58,17 @@ fun ClockFields(c: ClockSettings, onChange: (ClockSettings) -> Unit, enabledSwit
         Text("Time", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Segmented(ClockHours.entries, c.hours, { it.label }, { onChange(c.copy(hours = it)) })
         SwitchRow("Show the date", c.showDate) { onChange(c.copy(showDate = it)) }
+        if (c.showDate) {
+            SwitchRow("Alternate date and time", c.alternate) { onChange(c.copy(alternate = it)) }
+            Text(
+                if (c.style == ClockStyle.PILL) "The pill always shows the date and the time on one line." else "On: the time and the date take turns in the same spot. Off: both on one line.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         SwitchRow("Show seconds", c.showSeconds) { onChange(c.copy(showSeconds = it)) }
+        Text("Style", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Segmented(ClockStyle.entries, c.style, { it.label }, { onChange(c.copy(style = it)) })
+        Text("Compact text sits under your logo and swaps between the time and the date.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Size", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Segmented(ClockSize.entries, c.size, { it.label }, { onChange(c.copy(size = it)) })
         ZonePicker(c.timezone) { onChange(c.copy(timezone = it)) }
@@ -91,10 +104,18 @@ private fun CornerPicker(selected: ClockPosition, onSelect: (ClockPosition) -> U
 private fun ClockExample(c: ClockSettings) {
     var now by remember { mutableStateOf(Instant.now()) }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = Instant.now() } }
-    val text = formatClock(now, c, Locale.getDefault()).line
+    val t = formatClock(now, c, Locale.getDefault())
+    val text = when {
+        c.style == ClockStyle.PILL -> t.line
+        c.showDate && c.alternate -> if (clockPhase(now.toEpochMilli(), true, true) == ClockPhase.TIME) t.compactTime else (t.shortDate ?: t.compactTime)
+        else -> t.compactLine
+    }
     Text("Now: $text", style = MaterialTheme.typography.bodyMedium)
+    val where = if (c.position.isTop) ", under the logo when it is in the same corner." else ", above the ticker bar."
     Text(
-        "Drawn in a dark rounded box in the ${c.position.label.lowercase()} corner" + if (c.position.isTop) ", under the logo when it is in the same corner." else ", above the ticker bar.",
+        if (c.style == ClockStyle.PILL) "Drawn in a dark rounded box in the ${c.position.label.lowercase()} corner$where"
+        else "Drawn as small white text with a soft shadow, no box, in the ${c.position.label.lowercase()} corner$where" +
+            if (c.showDate && c.alternate) " The time shows for 5 seconds, then the date for 3." else "",
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
