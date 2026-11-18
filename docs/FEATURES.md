@@ -284,3 +284,28 @@ An on-air date and time pill, configured in the brand kit, overridable per strea
 
 ### 25e. Not verified (no device)
 The GL drawing (placement, flip, blending, once-per-second texture update, look of the pill and fonts), the Compose layout of the new rows, the timezone dialog with its 600 entries, and how the position looks next to a real logo on a camera frame. Whether the web studio's exact pill proportions / date-and-time arrangement match (this app follows the contract: dark rounded pill, white text, sizes 2.2 / 3 / 4.2 percent of height).
+
+## 26. Version 1.0.13: compact date and time (text under the logo, alternating)
+
+Founder feedback (a news-channel look): the 1.0.12 pill is too heavy for the main content. The default clock is now small plain white semi-bold text with a soft dark shadow and outline, no box, placed DIRECTLY UNDER THE LOGO and centred on it, where the time and the date take turns in the same small spot. The 1.0.12 pill stays as a style.
+
+### 26a. What the host sees
+* Brand kit editor and Setup / Customize ("Date and time", shared `ClockFields`): new **Style** (Compact text / Pill), a switch **Alternate date and time** (shown only when "Show the date" is on; the pill ignores it and says so), the hint "Compact text sits under your logo and swaps between the time and the date.", and a live "Now: ..." example that follows the style and the current phase (time, or "18 Nov, 2026").
+* Defaults of a NEW kit / stream override: style Compact text, alternate on, size Small.
+* A kit read from a server older than 1.0.13 (neither `clockStyle` nor `clockAlternate` key present) reads as **Pill, not alternating**, so nothing changes visually there (also a kit from the 1.0.12-era server).
+
+### 26b. Behaviour and drawing
+* Alternation (`clockPhase`, `clockTimeAlpha`, `clockDateAlpha`; pure, wall clock): the TIME shows 5 s, then the DATE 3 s, repeating every 8 s of the epoch; ~200 ms cross-fade at each switch (alphas always add up to 1). Date off, or alternation off: always the time (alternation off with the date on = one line "Wed 18 Nov . 02:56 PM").
+* Strings (`formatClock` adds `ClockText.compactTime` and `shortDate`): date "18 Nov, 2026" (day, short month, year); 12-hour time with a two-digit hour "02:56 PM"; 24-hour unchanged. The pill keeps "Wed 18 Nov  2:56 PM".
+* Size (text style): font = 2.0 / 2.8 / 3.8 percent of the SHORT side (Small / Medium / Large), at least 8 px. The pill keeps 2.2 / 3 / 4.2 percent of the height.
+* Placement (`ClockLayout.clockRect(..., style, poweredRect)`, pure): text style in the logo's corner (or any top corner a frame-wide logo would touch) goes directly under the logo, centred on the logo's centre, gap 0.6 x text height, clamped into the 16 px margins; in another corner it aligns to its corner (right-aligned in the right ones). Bottom corners stay above the ticker bar and above the Free-plan "Powered by" mark. The pill placement is unchanged (regression test).
+* GL (`media/ClockBitmap` text mode, `media/ClockQuadGl`, `FrameCompositor.drawClockText`): no background; white fill over a thin dark outline pass with a soft shadow (`setShadowLayer`); tabular digits plus fixed cells per digit and one cell for AM / PM so the width does not change from second to second. Two textures (A = time, or date and time on one line; B = date): each is re-uploaded only when its string changes (time per second / minute, date per day), so a phase switch uploads nothing; the cross-fade is a global-alpha quad (same tiny shader as the ad layer). Per frame: one clock read, two alpha computations, at most two quads, no allocation. Draw order unchanged (above scene, logo, ticker; below full-screen ad and Powered-by). A GL error switches the clock off for those settings, as in 1.0.12.
+
+### 26c. Data
+`BrandKit.clockStyle: String?`, `clockAlternate: Boolean?` (null = key absent) and `clockSize: String?` (absent = small). `ClockSettings` gets `style` and `alternate`; `fromKit` uses "both keys absent" to choose the old look. PATCH sends each only when changed, POST only when not the default (text, alternate on); `KitCompat.NO_KIT_CLOCK` also covers an old server rejecting them. The per-stream override (`StudioUi.clock`, `GoLiveRequest.clockOverride`) is the same `ClockSettings`, so it carries both fields (in-memory only, no migration). Version 1.0.13, code 113.
+
+### 26d. Tests
+`ClockCompactTest` (phase boundaries 5 / 3 s, negative epochs, no date / no alternation, cross-fade alphas, date and time strings, text size share, placement under the logo in landscape, portrait and with a frame-wide logo, narrow logo clamp, both phases on one centre line, other corner, bottom corners vs ticker and Powered-by, tiny canvases, pill regression), `ClockSettingsTest` (old-server and 1.0.12-server kits read as pill, new keys, unknown style, absent size = small, PATCH / POST of the new fields, old-server sentence), `StreamControllerTest` (kit clock applied).
+
+### 26e. Not verified (no device)
+The GL drawing (look of the outline and shadow on real video, fixed-width digits with the phone's font, the cross-fade, placement next to a real logo and the Powered-by mark), the Compose layout of the new rows, and whether the web studio draws it identically.

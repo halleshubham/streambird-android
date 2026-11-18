@@ -13,7 +13,10 @@ import app.streambird.android.clock.ClockLayout
 import app.streambird.android.clock.ClockRect
 import app.streambird.android.clock.ClockSettings
 import app.streambird.android.clock.ClockSize
+import app.streambird.android.clock.ClockStyle
 import app.streambird.android.clock.clockBucket
+import app.streambird.android.clock.clockDateAlpha
+import app.streambird.android.clock.clockTimeAlpha
 import app.streambird.android.clock.formatClock
 import java.time.Instant
 import java.util.Locale
@@ -94,6 +97,12 @@ class FrameCompositor(
     private var clockRectPx: ClockRect? = null
     private var clockBarShown = -1
     private var clockFailedFor: ClockSettings? = null
+    // compact TEXT style: two textures (A = the time, or date and time on one line; B = the date while alternating), each re-uploaded only when its string changes
+    private class ClockSlot { var tex = 0; var w = 0; var h = 0; var key: String? = null; var rect: ClockRect? = null }
+    private val slotA = ClockSlot()
+    private val slotB = ClockSlot()
+    private var clockQuad: ClockQuadGl? = null
+    private var clockPoweredShown = -1
     private val clockLogoRect: ClockRect? by lazy {
         logo?.let { ClockLayout.logoRect(outWidth, outHeight, it.bitmap.width, it.bitmap.height, it.heightPx, it.onRight) }
     }
@@ -241,6 +250,8 @@ class FrameCompositor(
             val nowMs = System.currentTimeMillis()
             val bucket = clockBucket(nowMs, spec.showSeconds)
             val bar = if (ticker != null) tickerBarPx else 0
+            if (clockShown != null && clockShown?.style != spec.style) freeClock() // the other style's textures are not needed any more
+            if (spec.style == ClockStyle.TEXT) { drawClockText(spec, nowMs, bucket, bar); return }
             if (clockTex == 0 || spec != clockShown || bucket != clockBucketShown) buildClock(spec, nowMs, bucket, bar)
             else if (bar != clockBarShown) placeClock(spec, bar)
             val r = clockRectPx ?: return
@@ -255,7 +266,7 @@ class FrameCompositor(
     }
 
     private fun buildClock(spec: ClockSettings, nowMs: Long, bucket: Long, bar: Int) {
-        val maker = clockBitmap?.takeIf { clockBitmapSize == spec.size } ?: ClockBitmap(outHeight, spec.size).also { clockBitmap = it; clockBitmapSize = spec.size }
+        val maker = clockMaker(spec)
         // Locale.getDefault(): weekday / month names follow the phone's language; the patterns are fixed (see formatClock).
         val text = formatClock(Instant.ofEpochMilli(nowMs), spec, Locale.getDefault())
         maker.measure(text, clockMeasure)
@@ -273,9 +284,66 @@ class FrameCompositor(
         clockBarShown = bar
     }
 
+    private fun clockMaker(spec: ClockSettings): ClockBitmap =
+        clockBitmap?.takeIf { clockBitmapSize == spec.size } ?: ClockBitmap(outWidth, outHeight, spec.size).also { clockBitmap = it; clockBitmapSize = spec.size }
+
+    /**
+     * Compact TEXT style: no box. Slot A holds the time (or, with alternation off, the date and time on one line), slot B the date while alternating.
+     * Strings are re-formatted once per [clockBucket] step; a slot's texture is re-uploaded only when its string actually changed, so a phase switch
+     * costs nothing: per frame it is one wall-clock read, two alpha computations and up to two quads (both only during the 200 ms cross-fade).
+     */
+    private fun drawClockText(spec: ClockSettings, nowMs: Long, bucket: Long, bar: Int) {
+        val pk = ads?.poweredKey ?: 0
+        if (spec != clockShown || bucket != clockBucketShown) {
+            if (spec != clockShown) { slotA.key = null; slotB.key = null }
+            buildClockText(spec, nowMs)
+            clockShown = spec; clockBucketShown = bucket
+            placeClockText(spec, bar, pk)
+        } else if (bar != clockBarShown || pk != clockPoweredShown) placeClockText(spec, bar, pk)
+        val q = clockQuad ?: ClockQuadGl(outWidth, outHeight).also { clockQuad = it }
+        drawSlot(q, slotA, clockTimeAlpha(nowMs, spec.alternate, spec.showDate))
+        drawSlot(q, slotB, clockDateAlpha(nowMs, spec.alternate, spec.showDate))
+    }
+
+    private fun drawSlot(q: ClockQuadGl, s: ClockSlot, alpha: Float) {
+        val r = s.rect ?: return
+        if (alpha > 0.002f && s.tex != 0) q.draw(s.tex, r.x, outHeight - r.y - r.h, r.w, r.h, alpha) // layout is top-left origin, GL bottom-left
+    }
+
+    private fun buildClockText(spec: ClockSettings, nowMs: Long) {
+        val maker = clockMaker(spec)
+        val text = formatClock(Instant.ofEpochMilli(nowMs), spec, Locale.getDefault())
+        val alternating = spec.alternate && spec.showDate
+        val lead = if (!alternating && text.date != null) text.date + " · " else null
+        fillSlot(maker, slotA, (lead ?: "") + "|" + text.compactTime, lead, text.compactTime)
+        if (alternating) fillSlot(maker, slotB, text.shortDate ?: "", text.shortDate, null)
+        else if (slotB.tex != 0) { GLES20.glDeleteTextures(1, intArrayOf(slotB.tex), 0); slotB.tex = 0; slotB.key = null; slotB.rect = null }
+        if (GLES20.glGetError() != GLES20.GL_NO_ERROR) throw IllegalStateException("GL error while uploading the clock text")
+    }
+
+    private fun fillSlot(maker: ClockBitmap, s: ClockSlot, key: String, lead: String?, time: String?) {
+        if (s.tex != 0 && key == s.key) return
+        maker.measureText(lead, time, clockMeasure)
+        val w = clockMeasure[0]; val h = clockMeasure[1]
+        val bmp = maker.renderText(lead, time, w, h)
+        if (s.tex == 0) s.tex = uploadLogo(bmp)
+        else { GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, s.tex); GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0) }
+        bmp.recycle()
+        s.w = w; s.h = h; s.key = key
+    }
+
+    private fun placeClockText(spec: ClockSettings, bar: Int, poweredKey: Int) {
+        val powered = if (poweredKey != 0) ads?.poweredRect(bar) else null
+        for (s in arrayOf(slotA, slotB)) {
+            s.rect = if (s.tex != 0 && s.key != null) ClockLayout.clockRect(outWidth, outHeight, spec.position, spec.size, clockLogoRect, bar, s.w, s.h, ClockStyle.TEXT, powered) else null
+        }
+        clockBarShown = bar; clockPoweredShown = poweredKey
+    }
+
     private fun freeClock() {
         if (clockTex != 0) GLES20.glDeleteTextures(1, intArrayOf(clockTex), 0)
-        clockTex = 0; clockShown = null; clockBucketShown = Long.MIN_VALUE; clockRectPx = null; clockBarShown = -1
+        for (s in arrayOf(slotA, slotB)) { if (s.tex != 0) GLES20.glDeleteTextures(1, intArrayOf(s.tex), 0); s.tex = 0; s.key = null; s.rect = null }
+        clockTex = 0; clockShown = null; clockBucketShown = Long.MIN_VALUE; clockRectPx = null; clockBarShown = -1; clockPoweredShown = -1
     }
 
     private fun buildTicker(spec: TickerSpec) {
@@ -370,6 +438,7 @@ class FrameCompositor(
                 animTexture = 0; animSource = null
                 freeTicker()
                 runCatching { freeClock() }
+                runCatching { clockQuad?.release() }
                 runCatching { ads?.release() }
                 drawer?.release(); frameDrawer?.release(); yuv?.release()
             }

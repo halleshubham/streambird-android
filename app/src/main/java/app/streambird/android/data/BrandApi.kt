@@ -116,6 +116,8 @@ object BrandKitPayload {
         if (now.showSeconds != was.showSeconds) b.put("clockShowSeconds", now.showSeconds)
         if (now.timezone != was.timezone) b.put("clockTimezone", now.timezone?.let { JsonPrimitive(it) } ?: JsonNull)
         if (now.size != was.size) b.put("clockSize", now.size.wire)
+        if (now.style != was.style) b.put("clockStyle", now.style.wire)
+        if (now.alternate != was.alternate) b.put("clockAlternate", now.alternate)
     }
 
     private fun textChange(b: kotlinx.serialization.json.JsonObjectBuilder, key: String, c: app.streambird.android.brand.KitText.Change) {
