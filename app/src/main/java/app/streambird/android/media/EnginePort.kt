@@ -11,6 +11,8 @@ interface EnginePort {
     suspend fun republish()
     fun simulateDrop()
     fun setTicker(spec: TickerSpec?)
+    /** Date and time overlay on the running picture (null or not enabled = off). */
+    fun setClock(c: app.streambird.android.clock.ClockSettings?)
     fun setPicturePriority(p: PicturePriority)
     /** The ad clock starts at 0 on the real go-live and keeps counting through a quiet republish. */
     fun startAdClock()

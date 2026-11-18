@@ -57,6 +57,8 @@ data class EngineConfig(
     val whipUrl: String,
     val ticker: TickerSpec? = null,
     val ads: AdsConfig? = null,
+    /** On-air date and time; null = none (settings that are not enabled are drawn as nothing). */
+    val clock: app.streambird.android.clock.ClockSettings? = null,
 )
 
 /** Custom ads of this stream (empty on Free) and the Free-plan flag (StreamBird banner + "Powered by" mark instead). */
@@ -194,6 +196,7 @@ class StreamEngine(
         val source = f.createVideoSource(false).also { videoSource = it }
         val comp = FrameCompositor(source.capturerObserver, h, cfg.outWidth, cfg.outHeight, cfg.logo, unmirror = cfg.frontCamera)
         comp.ticker = cfg.ticker
+        comp.clock = cfg.clock
         cfg.ads?.takeIf { it.freePlan || it.inputs.isNotEmpty() }?.let { ac ->
             val layer = AdLayerGl(cfg.outWidth, cfg.outHeight, { t -> listener.onEvent(t) }, { t -> listener.onEvent(t); listener.onAdNote(t) }, { p, k -> listener.onAdProblem(p, k) })
             layer.shrinkPicture = ac.shrinkPicture
@@ -431,6 +434,8 @@ class StreamEngine(
     }
 
     override fun setTicker(spec: TickerSpec?) { compositor?.ticker = spec }
+
+    override fun setClock(c: app.streambird.android.clock.ClockSettings?) { compositor?.clock = c }
 
     /**
      * Camera liveness: the compositor counts frames it composed. No new frame for 5 s -> restart the capture (up to 3 times, each reported to the UI);

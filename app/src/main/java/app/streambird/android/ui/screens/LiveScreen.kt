@@ -119,6 +119,7 @@ fun LiveScreen(controller: StreamController) {
         }
         ui.adsNote?.let { AdsNoteBar(it, controller::dismissAdsNote) }
         if (ui.phase == LivePhase.LIVE) TickerControl(ui.tickerText, ui.tickerSize) { t, z -> controller.setTicker(t, z) }
+        if (ui.phase == LivePhase.LIVE) ClockLiveControl(ui.clock, controller::setClock)
 
         val links = resolveLiveLinks(
             ui.request?.destinationIds.orEmpty(), ui.request?.liveLinks.orEmpty(),

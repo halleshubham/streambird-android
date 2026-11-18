@@ -258,3 +258,29 @@ Founder question: "Is going live with a preset public by default?" Findings: pre
 ### 24c. Not verified (no device)
 The Compose layout of the new control in the Customize sheet and the real YouTube privacy of a stream started from a card.
 
+
+## 25. Version 1.0.12: date and time on the picture (clock overlay)
+
+An on-air date and time pill, configured in the brand kit, overridable per stream, switchable while live. Off by default: every existing kit and stream is unchanged (a kit from an older server reads as "off").
+
+### 25a. What the host sees
+* **Brand kit editor, "Date and time"** (shared by the 16:9 and 9:16 sets): switch; corner as a 2x2 picker; 12-hour / 24-hour; show the date; show seconds; size Small / Medium / Large; timezone ("This phone (automatic)", 16 common zones starting with Asia/Kolkata, and a searchable list of every `ZoneId.getAvailableZoneIds()` entry); a live example ("Now: Wed 18 Nov  3:04 PM") in the chosen format and zone, refreshed each second.
+* **Setup / Customize, "Date and time"** (after the ticker): starts from the kit in use ("From brand kit Acme: On: top right, 12-hour, ..."; "Not set by a brand kit" when none applies) and shows the same controls. Any change makes this stream's own copy ("Changed for this stream only."; the kit is never modified); "Use the brand kit's settings" drops it. Presets store nothing for it (the copy is not part of a preset and is not saved between app starts).
+* **Live screen**: a switch "Date and time" with the current settings in words. It turns the pill on or off for this stream only; position, format and the rest come from the kit or from Setup.
+
+### 25b. What is drawn (`media/FrameCompositor.drawClock`, `media/ClockBitmap`)
+* Dark rounded pill (black at 65 percent, like the ticker bar) with white text: date regular, time bold, on one line ("Wed 18 Nov  3:04 PM" / "15:04"). Font height is a share of the canvas HEIGHT: Small / Medium / Large = 2.2 / 3 / 4.2 percent (at least 8 px).
+* Margin 16 px to the frame edge (same as the logo). Bottom corners sit above the ticker bar. A clock whose rectangle would touch the logo (same corner, or a logo as wide as the frame) goes just below the logo (top) or above it (bottom).
+* Draw order: scene, logo, ticker, **clock**, then the ads (full-screen ad, Free-plan "Powered by" mark) over it. A shrunken scene (ad picture shrink) does not move the clock: it stays in the frame corner like the ticker.
+* Cost: per frame one wall-clock read, two comparisons and one textured quad. The pill is rendered into a Bitmap and uploaded into one texture only when the shown text can change: every second with seconds on, every minute without ([clockBucket]), or when the settings change. The render is two `drawText` calls into a ~300x60 bitmap on the GL thread (cheap, once per second at most). An exception while drawing switches the clock off for those settings; it never drops frames.
+* Text: `formatClock(instant, zone, format, showDate, showSeconds, locale)` is a pure function. Patterns are fixed (`EEE d MMM`, `h:mm a` / `HH:mm`, with `:ss` when seconds show) so the look matches the website; the locale (`Locale.getDefault()`, the phone's language) supplies weekday and month names and digits; AM/PM is upper-cased (en-IN writes "pm"). An unknown or blank zone falls back to the phone's zone.
+* Position: `ClockLayout.clockRect(canvasW, canvasH, position, size, logoRect, tickerBarHeight, textW, textH)` is pure; `ClockLayout.logoRect` reproduces the logo placement of `drawLogo`.
+
+### 25c. Data
+`BrandKit` has the seven fields (raw wire strings, defaults = off); `ClockSettings.fromKit` reads them leniently. `KitDraft.clock` goes out on PATCH only when changed and on POST only when different from the defaults; `KitCompat.NO_KIT_CLOCK` is the plain sentence for an old server's 400. `GoLiveRequest.clockOverride` (null = as the kit says); the kit's settings are taken from the same fresh kit fetch the ads use (`LoadedAds.kitClock`). `LiveUi.clock` holds what is on the picture; `StreamController.setClock` changes it live. API details: docs/API-CONTRACT.md "Date and time overlay".
+
+### 25d. Tests
+`ClockFormatTest` (12 / 24 hour, midnight, noon, seconds, date off, single-digit day, Asia/Kolkata +05:30 across midnight, New York DST both ways, null / blank / bad zone falls back, en-IN marker, text bucket), `ClockLayoutTest` (four corners landscape and portrait, ticker bar, logo same corner / other corner / frame-wide logo, logo geometry, tiny and degenerate canvases), `ClockSettingsTest` (lenient parsing, PATCH only changed fields, explicit null zone, POST only non-defaults, old-server sentence, zone search, description line), `StreamControllerTest` (kit clock applied, override wins also when off, override without a kit, live on / off keeps the settings).
+
+### 25e. Not verified (no device)
+The GL drawing (placement, flip, blending, once-per-second texture update, look of the pill and fonts), the Compose layout of the new rows, the timezone dialog with its 600 entries, and how the position looks next to a real logo on a camera frame. Whether the web studio's exact pill proportions / date-and-time arrangement match (this app follows the contract: dark rounded pill, white text, sizes 2.2 / 3 / 4.2 percent of height).

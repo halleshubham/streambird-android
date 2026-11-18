@@ -91,6 +91,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
     var thumbId by remember(key) { mutableStateOf(original?.thumbnailAssetId) }
     var kitTitle by remember(key) { mutableStateOf(original?.title.orEmpty()) }
     var kitDescription by remember(key) { mutableStateOf(original?.description.orEmpty()) }
+    var clock by remember(key) { mutableStateOf(app.streambird.android.clock.ClockSettings.fromKit(original)) }
     var isDefault by remember(key) { mutableStateOf(original?.isDefault ?: false) }
     var channels by remember(key) { mutableStateOf(original?.connectionIds?.toSet() ?: emptySet()) }
     var adSlots by remember(key) { mutableStateOf(slotsFromKit(original?.ads.orEmpty())) }
@@ -213,6 +214,14 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
             Text("Saved on the kit for the website studio; the app does not draw lower thirds.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
+        Section("Date and time") {
+            ClockFields(clock, { clock = it })
+            Text(
+                "Shared by the 16:9 and 9:16 sets. Streams that use this kit show it on the picture; you can change it for one stream in Setup and switch it on or off while live.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
                 Text("Use as account default", style = MaterialTheme.typography.titleSmall)
@@ -277,7 +286,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                     KitDraft(
                         name, logoId, position, size.toInt(), style, isDefault, ads, wallpaperAssetId = wallId,
                         logoAssetIdPortrait = logoIdP, wallpaperAssetIdPortrait = wallIdP, adsPortrait = adsP, adsShrinkPicture = shrink, thumbnailAssetId = thumbId,
-                        title = kitTitle, description = kitDescription,
+                        title = kitTitle, description = kitDescription, clock = clock,
                     ),
                     channels,
                 ) { onBack() }

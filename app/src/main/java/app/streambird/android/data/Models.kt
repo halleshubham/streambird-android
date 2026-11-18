@@ -81,6 +81,17 @@ data class BrandKit(
     val title: String? = null,
     /** Default stream description of the kit (max 5000 characters). Absent on older servers = null. */
     val description: String? = null,
+    /**
+     * On-air date and time (1.0.12), shared by the 16:9 and 9:16 sets. All absent on older servers (= the defaults: off). Raw wire strings here; an unknown
+     * value is read as the default by [app.streambird.android.clock.ClockSettings.fromKit].
+     */
+    val clockEnabled: Boolean = false,
+    val clockPosition: String = "top_right",
+    val clockFormat: String = "12h",
+    val clockShowDate: Boolean = true,
+    val clockShowSeconds: Boolean = false,
+    val clockTimezone: String? = null,
+    val clockSize: String = "medium",
 )
 
 /** One ad of a brand kit. `everySec` is the HIDDEN time between showings (not the period); continuous ads have null seconds. */

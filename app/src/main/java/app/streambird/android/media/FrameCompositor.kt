@@ -9,6 +9,14 @@ import android.os.SystemClock
 import android.graphics.Matrix
 import android.opengl.GLES20
 import android.opengl.GLUtils
+import app.streambird.android.clock.ClockLayout
+import app.streambird.android.clock.ClockRect
+import app.streambird.android.clock.ClockSettings
+import app.streambird.android.clock.ClockSize
+import app.streambird.android.clock.clockBucket
+import app.streambird.android.clock.formatClock
+import java.time.Instant
+import java.util.Locale
 import org.webrtc.CapturerObserver
 import org.webrtc.GlRectDrawer
 import org.webrtc.SurfaceTextureHelper
@@ -72,6 +80,23 @@ class FrameCompositor(
     @Volatile var ticker: TickerSpec? = null
     /** Advertisements (null = none: the frame is then exactly what it was before ads existed). */
     @Volatile var ads: AdLayerGl? = null
+
+    /** Date and time overlay (null or not enabled = none). Set from any thread; the pill is re-rendered on the GL thread only when the shown text changes. */
+    @Volatile var clock: ClockSettings? = null
+    private var clockTex = 0
+    private var clockTexW = 0
+    private var clockTexH = 0
+    private var clockShown: ClockSettings? = null
+    private var clockBucketShown = Long.MIN_VALUE
+    private var clockBitmap: ClockBitmap? = null
+    private var clockBitmapSize: ClockSize? = null
+    private val clockMeasure = IntArray(2)
+    private var clockRectPx: ClockRect? = null
+    private var clockBarShown = -1
+    private var clockFailedFor: ClockSettings? = null
+    private val clockLogoRect: ClockRect? by lazy {
+        logo?.let { ClockLayout.logoRect(outWidth, outHeight, it.bitmap.width, it.bitmap.height, it.heightPx, it.onRight) }
+    }
     private var tickerTex = 0
     private var tickerBarTex = 0
     private var tickerVersion = -1L
@@ -117,6 +142,7 @@ class FrameCompositor(
             frameDrawer!!.drawFrame(frame, drawer!!, cropMatrix(frame), sx, sy, sw, sh)
             drawLogo(sx, sy, sw.toFloat() / outWidth)
             drawTicker()
+            drawClock()   // above scene, logo and ticker; below the ads (full-screen ad, Free "Powered by" mark), which are drawn next
             layer?.draw(if (ticker != null) tickerBarPx else 0)   // after camera, logo and ticker; the Free "Powered by" mark is drawn last inside
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             // The texture is consumed from other GL contexts (encoder, preview): make sure the writes are visible.
@@ -200,6 +226,56 @@ class FrameCompositor(
         drawer!!.drawRgb(tickerBarTex, FLIP_Y, 1, 1, 0, y, outWidth, tickerBarPx)
         if (x < outWidth && x + tickerTexW > 0) drawer!!.drawRgb(tickerTex, FLIP_Y, tickerTexW, tickerBarPx, x, y, tickerTexW, tickerBarPx)
         GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    /**
+     * Date and time pill. Per frame this is one wall-clock read, two comparisons and one textured quad. The pill bitmap is rebuilt (and re-uploaded to the
+     * same texture) only when the displayed text can have changed: the epoch second with seconds on, else the epoch minute ([clockBucket]), or when the
+     * settings change. A failure here switches the clock off for those settings; it never drops the frame.
+     */
+    private fun drawClock() {
+        val spec = clock
+        if (spec == null || !spec.enabled) { if (clockTex != 0) freeClock(); return }
+        if (clockFailedFor == spec) return
+        try {
+            val nowMs = System.currentTimeMillis()
+            val bucket = clockBucket(nowMs, spec.showSeconds)
+            val bar = if (ticker != null) tickerBarPx else 0
+            if (clockTex == 0 || spec != clockShown || bucket != clockBucketShown) buildClock(spec, nowMs, bucket, bar)
+            else if (bar != clockBarShown) placeClock(spec, bar)
+            val r = clockRectPx ?: return
+            GLES20.glEnable(GLES20.GL_BLEND)
+            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            drawer!!.drawRgb(clockTex, FLIP_Y, clockTexW, clockTexH, r.x, outHeight - r.y - r.h, r.w, r.h) // layout is top-left origin, GL bottom-left
+            GLES20.glDisable(GLES20.GL_BLEND)
+        } catch (t: Throwable) {
+            clockFailedFor = spec; lastError = "clock overlay: $t"
+            runCatching { freeClock() }
+        }
+    }
+
+    private fun buildClock(spec: ClockSettings, nowMs: Long, bucket: Long, bar: Int) {
+        val maker = clockBitmap?.takeIf { clockBitmapSize == spec.size } ?: ClockBitmap(outHeight, spec.size).also { clockBitmap = it; clockBitmapSize = spec.size }
+        // Locale.getDefault(): weekday / month names follow the phone's language; the patterns are fixed (see formatClock).
+        val text = formatClock(Instant.ofEpochMilli(nowMs), spec, Locale.getDefault())
+        maker.measure(text, clockMeasure)
+        val (pw, ph) = ClockLayout.pillSize(clockMeasure[0], clockMeasure[1], ClockLayout.fontPx(outHeight, spec.size))
+        val bmp = maker.render(text, pw, ph)
+        if (clockTex == 0) clockTex = uploadLogo(bmp)
+        else { GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clockTex); GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0) }
+        bmp.recycle()
+        clockTexW = pw; clockTexH = ph; clockShown = spec; clockBucketShown = bucket
+        placeClock(spec, bar)
+    }
+
+    private fun placeClock(spec: ClockSettings, bar: Int) {
+        clockRectPx = ClockLayout.clockRect(outWidth, outHeight, spec.position, spec.size, clockLogoRect, bar, clockMeasure[0], clockMeasure[1])
+        clockBarShown = bar
+    }
+
+    private fun freeClock() {
+        if (clockTex != 0) GLES20.glDeleteTextures(1, intArrayOf(clockTex), 0)
+        clockTex = 0; clockShown = null; clockBucketShown = Long.MIN_VALUE; clockRectPx = null; clockBarShown = -1
     }
 
     private fun buildTicker(spec: TickerSpec) {
@@ -293,6 +369,7 @@ class FrameCompositor(
                 if (animTexture != 0) GLES20.glDeleteTextures(1, intArrayOf(animTexture), 0)
                 animTexture = 0; animSource = null
                 freeTicker()
+                runCatching { freeClock() }
                 runCatching { ads?.release() }
                 drawer?.release(); frameDrawer?.release(); yuv?.release()
             }
