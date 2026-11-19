@@ -437,6 +437,53 @@ class StreamEngine(
 
     override fun setClock(c: app.streambird.android.clock.ClockSettings?) { compositor?.clock = c }
 
+    override fun setBanner(spec: BannerSpec?) { compositor?.banner = spec }
+
+    /** Live kit change: [prepare][KitTarget.prepare] decodes the new ad layer on the caller's thread, [swap][KitTarget.swap] runs on the compositor's render thread. */
+    override val kitTarget: KitTarget = object : KitTarget {
+        override val renderExecutor: java.util.concurrent.Executor
+            get() = (compositor ?: throw IllegalStateException("no picture pipeline")).renderExecutor
+
+        override fun prepare(content: KitContent): PreparedKitHandle {
+            val cfg = config ?: throw IllegalStateException("engine not started")
+            val unreadableL = java.util.concurrent.CopyOnWriteArrayList<app.streambird.android.ads.AdPlacement>()
+            val noWindowL = java.util.concurrent.CopyOnWriteArrayList<app.streambird.android.ads.AdPlacement>()
+            val notesL = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val preparing = java.util.concurrent.atomic.AtomicBoolean(true)
+            val layerL = if (content.adInputs.isEmpty()) null else AdLayerGl(
+                cfg.outWidth, cfg.outHeight,
+                { t -> listener.onEvent(t) },
+                // Silent for the host: notes about the new pictures go to the diagnostic log only (no banner on the Live screen).
+                { t -> if (preparing.get()) notesL.add(t) else app.streambird.android.diag.Diag.log("engine: kit ad: $t") },
+                { p, k ->
+                    if (preparing.get()) { if (k == app.streambird.android.ads.AdProblem.UNREADABLE) unreadableL.add(p) else noWindowL.add(p) } else listener.onAdProblem(p, k)
+                },
+            )
+            if (layerL != null) {
+                layerL.shrinkPicture = content.shrink
+                layerL.clockStartMs = content.adClockStartMs
+                layerL.prepare(context, content.adInputs, false)
+            }
+            preparing.set(false)
+            return object : PreparedKitHandle, PreparedLayer {
+                override val layer: AdLayerGl? = layerL
+                override val unreadable: List<app.streambird.android.ads.AdPlacement> = unreadableL.toList()
+                override val noWindow: List<app.streambird.android.ads.AdPlacement> = noWindowL.toList()
+                override val notes: List<String> = notesL.toList()
+                override fun discard() { runCatching { layerL?.release() } }
+            }
+        }
+
+        override fun swap(prepared: PreparedKitHandle, content: KitContent): Boolean {
+            val c = compositor ?: return false
+            val layer = (prepared as? PreparedLayer)?.layer
+            return c.swapKit(content.logo, layer, content.clock.takeIf { it.enabled })
+        }
+    }
+
+    /** The engine's own prepared kit: the ad layer waiting to be swapped in. */
+    private interface PreparedLayer { val layer: AdLayerGl? }
+
     /**
      * Camera liveness: the compositor counts frames it composed. No new frame for 5 s -> restart the capture (up to 3 times, each reported to the UI);
      * still nothing -> [EngineListener.onCameraFatal], so the user sees a clear message instead of a "Live" stream without a picture.

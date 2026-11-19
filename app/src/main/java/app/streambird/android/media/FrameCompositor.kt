@@ -31,7 +31,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** A logo to burn into every frame. Geometry follows web-app useHostStudio.ts drawLogo: height = [heightPx] canvas px, 16 px margin. */
-class LogoOverlay(val bitmap: Bitmap, val onRight: Boolean, val heightPx: Int) {
+class LogoOverlay(val bitmap: Bitmap, onRight: Boolean, heightPx: Int) {
+    /** Side and height in canvas px: changeable while live (remote `logo.set`, 1.0.15); the compositor reads them on every frame, so no frame is dropped. */
+    @Volatile var onRight: Boolean = onRight
+    @Volatile var heightPx: Int = heightPx
+
     /**
      * Frames of an animated GIF logo, set (from any thread) once they are decoded; until then, and whenever it is null, [bitmap] (the first frame) is drawn.
      * The compositor picks the frame from the wall clock and uploads it to a texture only when it changes.
@@ -58,7 +62,7 @@ class FrameCompositor(
     private val helper: SurfaceTextureHelper,
     private val outWidth: Int,
     private val outHeight: Int,
-    private val logo: LogoOverlay?,
+    logo: LogoOverlay?,
     /** Camera drivers/libwebrtc mirror front-camera frames for a selfie preview; the broadcast should not be mirrored. */
     unmirror: Boolean,
 ) : CapturerObserver {
@@ -69,6 +73,8 @@ class FrameCompositor(
     private var frameDrawer: org.webrtc.VideoFrameDrawer? = null
     private var yuv: YuvConverter? = null
     private var slots: List<Slot> = emptyList()
+    /** The logo being drawn (null = none). Replaced only by [swapKit] on the render thread, between two frames. */
+    @Volatile private var logo: LogoOverlay? = logo
     private var logoTexture = 0
     // animated GIF logo: one texture, re-filled only when the wall-clock frame changes
     private var animTexture = 0
@@ -103,9 +109,28 @@ class FrameCompositor(
     private val slotB = ClockSlot()
     private var clockQuad: ClockQuadGl? = null
     private var clockPoweredShown = -1
-    private val clockLogoRect: ClockRect? by lazy {
+    private var clockLogoShown = 0
+    /** Where the logo is drawn now (the clock keeps clear of it); follows a live logo change. Allocates: used on re-placement only. */
+    private fun clockLogoRect(): ClockRect? =
         logo?.let { ClockLayout.logoRect(outWidth, outHeight, it.bitmap.width, it.bitmap.height, it.heightPx, it.onRight) }
-    }
+    /** A cheap per-frame key of the logo's picture, side and height: the clock re-places itself when it changes. */
+    private fun logoKey(): Int { val l = logo ?: return 0; return 31 * (31 * System.identityHashCode(l.bitmap) + l.heightPx) + if (l.onRight) 1 else 2 }
+
+    /** Name banner to draw (null = none). Set from any thread; the bitmap is rebuilt on the render thread only when [BannerSpec.version] changes. */
+    @Volatile var banner: BannerSpec? = null
+    private var bannerTex = 0
+    private var bannerW = 0
+    private var bannerH = 0
+    private var bannerVersion = -1L
+    private var bannerAlpha = 0f
+    private var bannerLastMs = 0L
+    private var bannerMaker: NameBannerBitmap? = null
+    private var bannerRect: ClockRect? = null
+    private var bannerKeyBar = -1
+    private var bannerKeyClock = 0
+    private var bannerKeyPowered = -1
+    private var bannerKeyLogo = 0
+    private var bannerFailedFor = -1L
     private var tickerTex = 0
     private var tickerBarTex = 0
     private var tickerVersion = -1L
@@ -152,6 +177,7 @@ class FrameCompositor(
             drawLogo(sx, sy, sw.toFloat() / outWidth)
             drawTicker()
             drawClock()   // above scene, logo and ticker; below the ads (full-screen ad, Free "Powered by" mark), which are drawn next
+            drawBanner()  // the name banner: above scene, logo, ticker and clock; below the ads
             layer?.draw(if (ticker != null) tickerBarPx else 0)   // after camera, logo and ticker; the Free "Powered by" mark is drawn last inside
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             // The texture is consumed from other GL contexts (encoder, preview): make sure the writes are visible.
@@ -253,7 +279,7 @@ class FrameCompositor(
             if (clockShown != null && clockShown?.style != spec.style) freeClock() // the other style's textures are not needed any more
             if (spec.style == ClockStyle.TEXT) { drawClockText(spec, nowMs, bucket, bar); return }
             if (clockTex == 0 || spec != clockShown || bucket != clockBucketShown) buildClock(spec, nowMs, bucket, bar)
-            else if (bar != clockBarShown) placeClock(spec, bar)
+            else if (bar != clockBarShown || logoKey() != clockLogoShown) placeClock(spec, bar)
             val r = clockRectPx ?: return
             GLES20.glEnable(GLES20.GL_BLEND)
             GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -280,8 +306,8 @@ class FrameCompositor(
     }
 
     private fun placeClock(spec: ClockSettings, bar: Int) {
-        clockRectPx = ClockLayout.clockRect(outWidth, outHeight, spec.position, spec.size, clockLogoRect, bar, clockMeasure[0], clockMeasure[1])
-        clockBarShown = bar
+        clockRectPx = ClockLayout.clockRect(outWidth, outHeight, spec.position, spec.size, clockLogoRect(), bar, clockMeasure[0], clockMeasure[1])
+        clockBarShown = bar; clockLogoShown = logoKey()
     }
 
     private fun clockMaker(spec: ClockSettings): ClockBitmap =
@@ -299,7 +325,7 @@ class FrameCompositor(
             buildClockText(spec, nowMs)
             clockShown = spec; clockBucketShown = bucket
             placeClockText(spec, bar, pk)
-        } else if (bar != clockBarShown || pk != clockPoweredShown) placeClockText(spec, bar, pk)
+        } else if (bar != clockBarShown || pk != clockPoweredShown || logoKey() != clockLogoShown) placeClockText(spec, bar, pk)
         val q = clockQuad ?: ClockQuadGl(outWidth, outHeight).also { clockQuad = it }
         drawSlot(q, slotA, clockTimeAlpha(nowMs, spec.alternate, spec.showDate))
         drawSlot(q, slotB, clockDateAlpha(nowMs, spec.alternate, spec.showDate))
@@ -334,16 +360,133 @@ class FrameCompositor(
 
     private fun placeClockText(spec: ClockSettings, bar: Int, poweredKey: Int) {
         val powered = if (poweredKey != 0) ads?.poweredRect(bar) else null
+        val logoRect = clockLogoRect()
         for (s in arrayOf(slotA, slotB)) {
-            s.rect = if (s.tex != 0 && s.key != null) ClockLayout.clockRect(outWidth, outHeight, spec.position, spec.size, clockLogoRect, bar, s.w, s.h, ClockStyle.TEXT, powered) else null
+            s.rect = if (s.tex != 0 && s.key != null) ClockLayout.clockRect(outWidth, outHeight, spec.position, spec.size, logoRect, bar, s.w, s.h, ClockStyle.TEXT, powered) else null
         }
-        clockBarShown = bar; clockPoweredShown = poweredKey
+        clockBarShown = bar; clockPoweredShown = poweredKey; clockLogoShown = logoKey()
     }
 
     private fun freeClock() {
         if (clockTex != 0) GLES20.glDeleteTextures(1, intArrayOf(clockTex), 0)
         for (s in arrayOf(slotA, slotB)) { if (s.tex != 0) GLES20.glDeleteTextures(1, intArrayOf(s.tex), 0); s.tex = 0; s.key = null; s.rect = null }
-        clockTex = 0; clockShown = null; clockBucketShown = Long.MIN_VALUE; clockRectPx = null; clockBarShown = -1; clockPoweredShown = -1
+        clockTex = 0; clockShown = null; clockBucketShown = Long.MIN_VALUE; clockRectPx = null; clockBarShown = -1; clockPoweredShown = -1; clockLogoShown = 0
+    }
+
+    // ---- name banner (1.0.15) ----
+
+    /**
+     * The name banner: a prebuilt bitmap (name + title on a dark rounded bar with a coloured edge) drawn as one quad with a fading opacity. The bitmap is
+     * rebuilt only when the text changes ([BannerSpec.version]) and only when it is about to be drawn; per frame this is one clock read, one fade step and
+     * one quad. Placement (pure [NameBannerLayout]) is recomputed only when the ticker bar, the clock's rectangle or the "Powered by" mark changed.
+     * A failure here switches the banner off for that text; it never drops the frame.
+     */
+    private fun drawBanner() {
+        val spec = banner
+        val now = SystemClock.elapsedRealtime()
+        val dt = if (bannerLastMs == 0L) 0L else (now - bannerLastMs).coerceIn(0L, 100L)
+        bannerLastMs = now
+        val target = if (spec != null && spec.visible) 1f else 0f
+        if (bannerTex == 0 && target == 0f) { bannerAlpha = 0f; return }
+        if (spec != null && spec.version == bannerFailedFor) return
+        try {
+            bannerAlpha = NameBanner.fadeStep(bannerAlpha, target, dt)
+            if (bannerAlpha <= NameBannerLayout.MIN_ALPHA && target == 0f) { bannerAlpha = 0f; if (spec == null) freeBanner(); return }
+            if (spec != null && target == 1f && (bannerTex == 0 || spec.version != bannerVersion)) buildBanner(spec)
+            if (bannerTex == 0) return
+            val bar = if (ticker != null) tickerBarPx else 0
+            val pk = ads?.poweredKey ?: 0
+            val ck = clockAvoidKey()
+            if (bannerRect == null || bar != bannerKeyBar || pk != bannerKeyPowered || ck != bannerKeyClock) {
+                val powered = if (pk != 0) ads?.poweredRect(bar) else null
+                bannerRect = NameBannerLayout.drawPlan(outWidth, outHeight, bar, bannerW, bannerH, 1f, clockAvoidRect(), powered)?.rect
+                bannerKeyBar = bar; bannerKeyPowered = pk; bannerKeyClock = ck
+            }
+            val r = bannerRect ?: return
+            val q = clockQuad ?: ClockQuadGl(outWidth, outHeight).also { clockQuad = it }
+            q.draw(bannerTex, r.x, outHeight - r.y - r.h, r.w, r.h, bannerAlpha)   // layout is top-left origin, GL bottom-left
+        } catch (t: Throwable) {
+            bannerFailedFor = spec?.version ?: -1L; lastError = "name banner: $t"
+            runCatching { freeBanner() }
+        }
+    }
+
+    private fun buildBanner(spec: BannerSpec) {
+        val maker = bannerMaker ?: NameBannerBitmap(outWidth, outHeight).also { bannerMaker = it }
+        val pk = ads?.poweredKey ?: 0
+        val bar = if (ticker != null) tickerBarPx else 0
+        val powered = if (pk != 0) ads?.poweredRect(bar) else null
+        val bmp = maker.render(spec.name, spec.title, NameBannerLayout.maxBarWidth(outWidth, powered))
+        if (bannerTex == 0) bannerTex = uploadLogo(bmp)
+        else { GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bannerTex); GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0) }
+        bannerW = bmp.width; bannerH = bmp.height
+        bmp.recycle()
+        bannerVersion = spec.version; bannerRect = null
+        if (GLES20.glGetError() != GLES20.GL_NO_ERROR) throw IllegalStateException("GL error while uploading the name banner")
+    }
+
+    private fun freeBanner() {
+        if (bannerTex != 0) GLES20.glDeleteTextures(1, intArrayOf(bannerTex), 0)
+        bannerTex = 0; bannerVersion = -1; bannerRect = null; bannerAlpha = 0f; bannerKeyBar = -1; bannerKeyPowered = -1; bannerKeyClock = 0
+    }
+
+    /** Changes whenever the clock's rectangle was re-placed (new instances), so the banner re-places itself; 0 = no clock rectangle. */
+    private fun clockAvoidKey(): Int {
+        val spec = clock
+        if (spec == null || !spec.enabled || clockShown == null) return 0
+        return if (spec.style == ClockStyle.TEXT) 31 * System.identityHashCode(slotA.rect) + System.identityHashCode(slotB.rect) else System.identityHashCode(clockRectPx)
+    }
+
+    /** The date and time overlay's current rectangle (both text slots joined), for the banner to stay clear of it. Allocates: re-placement only. */
+    private fun clockAvoidRect(): ClockRect? {
+        val spec = clock
+        if (spec == null || !spec.enabled || clockShown == null) return null
+        if (spec.style != ClockStyle.TEXT) return clockRectPx
+        val a = slotA.rect; val b = slotB.rect
+        if (a == null) return b
+        if (b == null) return a
+        val x = minOf(a.x, b.x); val y = minOf(a.y, b.y)
+        return ClockRect(x, y, maxOf(a.right, b.right) - x, maxOf(a.bottom, b.bottom) - y)
+    }
+
+    // ---- live kit swap (1.0.15) ----
+
+    /** Runs a task on the render thread (the camera's GL thread), BETWEEN two frames: that thread handles frames and posted tasks one after the other. */
+    val renderExecutor: java.util.concurrent.Executor = java.util.concurrent.Executor { task ->
+        if (released || !helper.handler.post(task)) throw java.util.concurrent.RejectedExecutionException("render thread is gone")
+    }
+
+    /**
+     * RENDER THREAD ONLY (post it with [renderExecutor]). Replaces logo, ad layer and date and time in one step: the only GL work is one texture upload
+     * for the new logo (done BEFORE anything is replaced, so a failure leaves the old state completely untouched) and the deletion of the old textures.
+     * Everything slow (download, decoding, the ad layer's bitmaps) was done by the caller earlier. Returns false when nothing was changed.
+     */
+    fun swapKit(newLogo: LogoOverlay?, newAds: AdLayerGl?, newClock: ClockSettings?): Boolean {
+        if (released) return false
+        var newTex = 0
+        try {
+            if (newLogo != null && drawer != null) {
+                newTex = uploadLogo(newLogo.bitmap)
+                if (GLES20.glGetError() != GLES20.GL_NO_ERROR) throw IllegalStateException("GL error while uploading the logo")
+            }
+        } catch (t: Throwable) {
+            if (newTex != 0) runCatching { GLES20.glDeleteTextures(1, intArrayOf(newTex), 0) }
+            lastError = "kit swap: $t"
+            return false
+        }
+        // From here on nothing can fail: commit.
+        val oldTex = logoTexture
+        logo = newLogo
+        logoTexture = newTex                 // 0 while GL is not initialised yet: ensureGl() uploads the new logo with the rest
+        if (animTexture != 0) GLES20.glDeleteTextures(1, intArrayOf(animTexture), 0)
+        animTexture = 0; animSource = null; animShown = -1
+        if (oldTex != 0) GLES20.glDeleteTextures(1, intArrayOf(oldTex), 0)
+        val oldAds = ads
+        ads = newAds
+        runCatching { oldAds?.release() }
+        clock = newClock
+        bannerRect = null                    // placement depends on the ads' mark and the clock
+        return true
     }
 
     private fun buildTicker(spec: TickerSpec) {
@@ -438,6 +581,7 @@ class FrameCompositor(
                 animTexture = 0; animSource = null
                 freeTicker()
                 runCatching { freeClock() }
+                runCatching { freeBanner() }
                 runCatching { clockQuad?.release() }
                 runCatching { ads?.release() }
                 drawer?.release(); frameDrawer?.release(); yuv?.release()

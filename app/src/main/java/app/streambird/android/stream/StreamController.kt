@@ -134,6 +134,9 @@ data class LoadedAds(
     val notes: List<String> = emptyList(), val sources: Map<AdPlacement, AdSource> = emptyMap(), val kitName: String? = null,
     /** The date and time settings of the kit that was resolved (null = no kit was resolved). */
     val kitClock: app.streambird.android.clock.ClockSettings? = null,
+    /** The kit that was resolved (null = none) and the customer's kits as fetched (null = not fetched): for the remote-control snapshot. */
+    val kitId: String? = null,
+    val kits: List<BrandKit>? = null,
 )
 
 enum class LivePhase { IDLE, STARTING, LIVE, ENDING, ENDED, FAILED }
@@ -174,6 +177,13 @@ data class LiveUi(
     val adClockStartMs: Long = 0,
     /** Date and time on the picture now (the stream's override, else the kit's); [app.streambird.android.clock.ClockSettings.enabled] says whether it shows. */
     val clock: app.streambird.android.clock.ClockSettings = app.streambird.android.clock.ClockSettings(),
+    /** The logo on air (side, height); [app.streambird.android.remote.LogoInfo.present] false = none. Changes with a remote `logo.set` / `kit.apply`. */
+    val logo: app.streambird.android.remote.LogoInfo = app.streambird.android.remote.LogoInfo(false, false, app.streambird.android.remote.DEFAULT_LOGO_SIZE),
+    /** The name banner (host's Live screen row or a remote `lowerThird.set`). */
+    val banner: app.streambird.android.media.NameBannerState = app.streambird.android.media.NameBannerState(),
+    /** The brand kit on air (resolved at go-live, or applied by a remote `kit.apply`) and the customer's kits as last fetched: only for the remote snapshot. */
+    val kitId: String? = null,
+    val kits: List<app.streambird.android.remote.KitRef> = emptyList(),
 ) {
     val active get() = phase == LivePhase.STARTING || phase == LivePhase.LIVE || phase == LivePhase.ENDING
 }
@@ -214,6 +224,21 @@ class StreamController @Inject constructor(
     private var logoBmp: android.graphics.Bitmap? = null
     private var logoOverlay: LogoOverlay? = null
     private var logoAnimJob: Job? = null
+    /** The logo object the compositor draws (also the test logo, which [logoOverlay] never held); its side and height are changeable live. */
+    @Volatile private var liveLogo: LogoOverlay? = null
+    @Volatile private var bannerSpec: app.streambird.android.media.BannerSpec? = null
+    private var kitJob: Job? = null
+    private val kitListTried = AtomicBoolean(false)
+
+    /** Where a live kit change gets its data (the app's own server through [ApiClient]); tests replace it. */
+    internal var kitSource: KitSource = ApiKitSource(api)
+    internal val kitApplier = KitApplier(
+        object : KitSource {
+            override suspend fun kits() = kitSource.kits()
+            override suspend fun file(assetId: String) = kitSource.file(assetId)
+        },
+        { bytes -> env.decodeLogo(bytes) }, { app.streambird.android.diag.Diag.log(it) },
+    )
 
     // Remote support control (1.0.14): see remote/. The client runs only while this phone's stream is LIVE; the tracker records host-originated changes.
     private val hostChanges = app.streambird.android.remote.HostChangeTracker { System.nanoTime() / 1_000_000 }
@@ -246,7 +271,7 @@ class StreamController @Inject constructor(
         if (!ok) return
         app.streambird.android.diag.Diag.log("GO LIVE requested: tier=${req.tier.label} ${req.orientation} dests=${req.destinationIds.size} ticker=${req.tickerText.isNotBlank()} thumb=${req.thumbnailUri != null}")
         val g = ++gen
-        created.set(null); endSent.set(false); engine = null; tickerSpec = null; log = null
+        created.set(null); endSent.set(false); engine = null; tickerSpec = null; log = null; bannerSpec = null; liveLogo = null; kitListTried.set(false)
         stopRemote(); hostChanges.clear()
         env.startForegroundService()
         runJob = scope.launch { run(req, g) }
@@ -275,7 +300,8 @@ class StreamController @Inject constructor(
             currentCoroutineContext().ensureActive()
             val (logo, logoNote) = loadLogo(req, g)
             currentCoroutineContext().ensureActive()
-            startUpdate(g) { it.copy(logoNote = logoNote) }
+            liveLogo = logo
+            startUpdate(g) { it.copy(logoNote = logoNote, logo = logoInfoOf(logo)) }
             // Each ad loads on its own: one failing fetch drops only that ad, and the host is told which.
             val loaded = loadAds(req)
             val (adInputs, adFailures, kitShrink) = loaded
@@ -288,7 +314,7 @@ class StreamController @Inject constructor(
                 adFailures.map { f -> LiveAd(f.placement, source = loaded.sources[f.placement] ?: AdSource.KIT, problem = f.reason.take(80).trimEnd('.')) })
                 .sortedBy { it.placement.ordinal }
             val note = (loaded.notes + listOfNotNull(describeAdFailures(adFailures))).joinToString("\n").ifEmpty { null }
-            startUpdate(g) { it.copy(adSlots = liveAds, adsNote = note, freePlan = req.freePlan, adsShrink = shrink, clock = clock) }
+            startUpdate(g) { it.copy(adSlots = liveAds, adsNote = note, freePlan = req.freePlan, adsShrink = shrink, clock = clock, kitId = loaded.kitId, kits = kitRefs(loaded.kits)) }
             event("clock: ${app.streambird.android.clock.Clock.describe(clock)} (${if (req.clockOverride != null) "this stream" else if (loaded.kitClock != null) "kit '${loaded.kitName}'" else "no kit"})", withRow = true)
             adFailures.forEach { event("ad ${it.placement.wire} failed to load: ${it.reason}", withRow = true) }
             loaded.notes.forEach { event("ads: $it", withRow = true) }
@@ -575,6 +601,29 @@ class StreamController @Inject constructor(
         remote?.stateChanged()
     }
 
+    /** Live name banner from the Live screen's row: texts and Show / Hide for this stream (never saved). A host change: it wins over a support session for 3 s. */
+    fun setBanner(rawName: String, rawTitle: String, show: Boolean) {
+        hostChanges.mark(app.streambird.android.remote.RemoteKeys.LOWER_THIRD)
+        val next = _ui.value.banner.patched(rawName, true, rawTitle, show)
+        putBanner(next)
+        event(if (next.visible) "name banner shown" else "name banner hidden", withRow = true)
+        remote?.stateChanged()
+    }
+
+    /** Puts [s] on the picture and on the screen state (the compositor rebuilds the bitmap only when the text changed). */
+    private fun putBanner(s: app.streambird.android.media.NameBannerState) {
+        val spec = app.streambird.android.media.BannerSpec.next(bannerSpec, s)
+        bannerSpec = spec
+        engine?.setBanner(spec)
+        _ui.update { it.copy(banner = s) }
+    }
+
+    private fun logoInfoOf(l: LogoOverlay?) = if (l == null) app.streambird.android.remote.LogoInfo(false, false, app.streambird.android.remote.DEFAULT_LOGO_SIZE)
+        else app.streambird.android.remote.LogoInfo(true, l.onRight, l.heightPx)
+
+    private fun kitRefs(kits: List<BrandKit>?): List<app.streambird.android.remote.KitRef> =
+        kits.orEmpty().map { app.streambird.android.remote.KitRef(it.id, it.name) }
+
     // ---- remote support control (1.0.14) ----
 
     private fun startRemote(streamId: String, g: Int) {
@@ -594,17 +643,37 @@ class StreamController @Inject constructor(
         if (gen != g || _ui.value.phase != LivePhase.LIVE) stopRemote() // the stream ended while the client was being started
     }
 
-    private fun stopRemote() { remote?.stop(); remote = null }
+    private fun stopRemote() { remote?.stop(); remote = null; kitJob?.cancel(); kitJob = null }
 
     private fun remoteSnapshot(): kotlinx.serialization.json.JsonObject? {
         val u = _ui.value
         if (u.phase != LivePhase.LIVE) return null
+        ensureKitList(u)
         return app.streambird.android.remote.RemoteState.build(
             app.streambird.android.remote.RemoteStateInput(
                 u.adSlots, u.adsShrink, u.tickerText, u.clock, u.request?.orientation?.wire ?: u.stream?.orientation ?: "portrait",
                 app.streambird.android.BuildConfig.VERSION_NAME, u.freePlan,
+                kits = u.kits, kitId = u.kitId, logo = u.logo, banner = u.banner,
             ),
         )
+    }
+
+    /**
+     * A stream that started without a brand kit has not fetched the kit list: fetch it ONCE, in the background, when the first snapshot goes out (so only
+     * while a support control page can exist), then upload the snapshot again. Never on Free, never again after a failure (the list simply stays unknown).
+     */
+    private fun ensureKitList(u: LiveUi) {
+        if (u.freePlan || u.kits.isNotEmpty() || !kitListTried.compareAndSet(false, true)) return
+        val g = gen
+        scope.launch {
+            try {
+                val kits = retryOnce { api.brandKits() }
+                _ui.update { if (gen == g) it.copy(kits = kitRefs(kits)) else it }
+                remote?.stateChanged()
+            } catch (e: CancellationException) { throw e } catch (t: Throwable) {
+                app.streambird.android.diag.Diag.log("remote control: kit list unavailable (${(t as? ApiException)?.status ?: t.javaClass.simpleName})")
+            }
+        }
     }
 
     /** What a support session may change. Same effect on the picture as the Live screen's controls, but not a host change and nothing in the host-visible event list. */
@@ -637,6 +706,75 @@ class StreamController @Inject constructor(
             val n = c.normalized()
             engine?.setClock(n.takeIf { it.enabled })
             _ui.update { it.copy(clock = n) }
+        }
+
+        // ---- 1.0.15 ----
+        override val freePlan: Boolean get() = _ui.value.freePlan
+        override fun logo() = _ui.value.logo.takeIf { it.present }
+        override fun applyLogo(onRight: Boolean?, size: Int?) {
+            val l = liveLogo ?: return
+            if (onRight != null) l.onRight = onRight       // volatile fields the compositor reads on its next frame: no GL work, no frame is dropped
+            if (size != null) l.heightPx = size
+            _ui.update { it.copy(logo = logoInfoOf(l)) }
+        }
+        override fun banner() = _ui.value.banner
+        override fun applyBanner(s: app.streambird.android.media.NameBannerState) = putBanner(s)   // not a host change, nothing in the event list
+
+        override fun applyKit(kitId: String, done: (app.streambird.android.remote.ApplyResult) -> Unit): app.streambird.android.remote.ApplyResult {
+            val target = engine?.kitTarget ?: return app.streambird.android.remote.ApplyResult.err("could not apply")
+            val req = _ui.value.request ?: return app.streambird.android.remote.ApplyResult.err("could not apply")
+            if (req.freePlan) return app.streambird.android.remote.ApplyResult.err("plan does not include brand kits")
+            if (!kitApplier.tryBegin()) return app.streambird.android.remote.ApplyResult.err("busy")
+            val startedAt = hostChanges.now()
+            val covers = app.streambird.android.remote.RemoteKeys.kitCovers()
+            val shape = BrandOrientation.fromWire(req.orientation.wire)
+            try {
+                kitJob = scope.launch {
+                    val outcome = kitApplier.run(kitId, shape, target, _ui.value.adClockStartMs) {
+                        when {
+                            !isLive -> "stream not live"
+                            hostChanges.changedSince(covers, startedAt) -> app.streambird.android.remote.RemoteApplier.HOST_CHANGED   // the host wins: nothing is overwritten
+                            else -> null
+                        }
+                    }
+                    done(finishKit(outcome, g))
+                }
+            } catch (t: Throwable) { kitApplier.release(); return app.streambird.android.remote.ApplyResult.err("could not apply") }
+            return app.streambird.android.remote.ApplyResult.PENDING
+        }
+    }
+
+    /**
+     * The kit is on air (or the attempt failed): bring the controller's own state in line. On success the OLD logo bitmap and its animation are recycled
+     * (the render thread no longer touches them: the swap is done), the new logo's GIF animation starts like at go-live, and the Live sheet's ad list
+     * follows the new set. Nothing here is host-visible except what the screen shows anyway (the ads list); no event, no banner.
+     */
+    private fun finishKit(outcome: KitOutcome, g: Int): app.streambird.android.remote.ApplyResult {
+        when (outcome) {
+            is KitOutcome.Failed -> {
+                outcome.kits?.let { ks -> _ui.update { if (gen == g) it.copy(kits = kitRefs(ks)) else it } }
+                remote?.stateChanged()
+                return app.streambird.android.remote.ApplyResult.err(outcome.reason)
+            }
+            is KitOutcome.Applied -> {
+                if (gen != g) { runCatching { outcome.logo?.bitmap?.recycle() }; return app.streambird.android.remote.ApplyResult.err("stream not live") }
+                val old = liveLogo; val oldBmp = logoBmp
+                logoAnimJob?.cancel(); logoAnimJob = null
+                liveLogo = outcome.logo; logoOverlay = outcome.logo; logoBmp = outcome.logo?.bitmap
+                if (old != null) { val a = old.animation; old.animation = null; runCatching { a?.recycle() } }
+                if (oldBmp != null && oldBmp !== outcome.logo?.bitmap) runCatching { oldBmp.recycle() }
+                val newLogo = outcome.logo; val bytes = outcome.logoBytes
+                if (newLogo != null && bytes != null && app.streambird.android.brand.sniffImage(bytes)?.format == app.streambird.android.brand.ImageFormat.GIF) startLogoAnimation(newLogo, bytes, outcome.kit.logoSize, g, silent = true)
+                val slots = (outcome.inputs.map { a -> LiveAd(a.placement, source = outcome.sources[a.placement] ?: AdSource.KIT, enabled = a.enabled, schedule = a.schedule, hasWindow = if (a.placement in outcome.noWindow) false else null) })
+                    .sortedBy { it.placement.ordinal }
+                _ui.update {
+                    if (gen != g) it else it.copy(
+                        adSlots = slots, adsNote = null, adsShrink = outcome.shrink, clock = outcome.clock, logo = logoInfoOf(newLogo),
+                        kitId = outcome.kit.id, kits = kitRefs(outcome.kits),
+                    )
+                }
+                return app.streambird.android.remote.ApplyResult.OK
+            }
         }
     }
 
@@ -726,12 +864,15 @@ class StreamController @Inject constructor(
         var kitShrink = true
         var kitName: String? = null
         var kitClock: app.streambird.android.clock.ClockSettings? = null
+        var kitId: String? = null
+        var allKits: List<BrandKit>? = null
         // The kit (fresh from the server, same choice as the logo) supplies the ads unless the stream runs without a kit.
         var kitAds: List<app.streambird.android.data.KitAd>? = null
         if (req.useKitAds) {
             try {
                 val kits = retryOnce { api.brandKits() }
                 val kit = kits.firstOrNull { it.id == req.brandKitId } ?: pickBrandKit(kits, req.destinationIds, { it.isDefault }, { it.connectionIds })
+                allKits = kits; kitId = kit?.id
                 val shape = BrandOrientation.fromWire(req.orientation.wire)
                 // The set matching the stream's orientation; portrait ads do not fall back to the landscape ones.
                 kitAds = kit?.let { kitSetFor(it, shape).ads }
@@ -760,7 +901,7 @@ class StreamController @Inject constructor(
         }
         val inputs = results.mapNotNull { it.first }
         failures.addAll(results.mapNotNull { it.second })
-        return LoadedAds(inputs, failures, kitShrink, notes, merged.associate { it.placement to it.source }, kitName, kitClock)
+        return LoadedAds(inputs, failures, kitShrink, notes, merged.associate { it.placement to it.source }, kitName, kitClock, kitId, allKits)
     }
 
     // ---- logo ----
@@ -768,7 +909,7 @@ class StreamController @Inject constructor(
     private fun releaseLogo() {
         logoAnimJob?.cancel(); logoAnimJob = null
         logoOverlay?.let { o -> val a = o.animation; o.animation = null; a?.recycle() }
-        logoOverlay = null
+        logoOverlay = null; liveLogo = null
         runCatching { logoBmp?.recycle() }; logoBmp = null
     }
 
@@ -776,10 +917,12 @@ class StreamController @Inject constructor(
      * An animated GIF logo: the first frame is already on the picture; the frames are decoded in the background (an evenly spaced subset when the
      * GIF is long, see GifFrames.kt) and take over from the wall clock once ready. A GIF that cannot animate stays a still picture; the host is told.
      */
-    private fun startLogoAnimation(overlay: LogoOverlay, bytes: ByteArray, logoSize: Int, g: Int) {
+    private fun startLogoAnimation(overlay: LogoOverlay, bytes: ByteArray, logoSize: Int, g: Int, silent: Boolean = false) {
+        // [silent] (a remote kit change): the notes go to the diagnostic log only, never to the host's event list.
+        fun note(t: String) = if (silent) app.streambird.android.diag.Diag.log(t) else event(t, withRow = true)
         val plan = app.streambird.android.media.planGifLogo(app.streambird.android.media.parseGifTiming(bytes), logoSize)
         if (plan is app.streambird.android.media.GifLogoPlan.Still) {
-            plan.reason?.let { event("logo GIF stays a still picture: $it", withRow = true) }
+            plan.reason?.let { note("logo GIF stays a still picture: $it") }
             return
         }
         logoAnimJob = scope.launch(kotlinx.coroutines.Dispatchers.Default) {
@@ -790,9 +933,9 @@ class StreamController @Inject constructor(
                     r.animation.startedAtMs = android.os.SystemClock.elapsedRealtime()
                     overlay.animation = r.animation
                     val f = r.plan.frames
-                    event("logo animated: ${f.size} frames" + if (f.subsampled) " (of ${f.sourceCount})" else "", withRow = true)
+                    note("logo animated: ${f.size} frames" + if (f.subsampled) " (of ${f.sourceCount})" else "")
                 }
-                is app.streambird.android.media.LogoAnimationResult.Still -> r.reason?.let { event("logo GIF stays a still picture: $it", withRow = true) }
+                is app.streambird.android.media.LogoAnimationResult.Still -> r.reason?.let { note("logo GIF stays a still picture: $it") }
             }
         }
     }

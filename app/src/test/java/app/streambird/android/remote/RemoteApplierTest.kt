@@ -7,6 +7,7 @@ import app.streambird.android.ads.AdSource
 import app.streambird.android.clock.ClockHours
 import app.streambird.android.clock.ClockPosition
 import app.streambird.android.clock.ClockSettings
+import app.streambird.android.media.NameBannerState
 import app.streambird.android.stream.LiveAd
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -31,6 +32,16 @@ class RemoteApplierTest {
         override fun applyAdSchedule(p: AdPlacement, s: AdSchedule) { calls.add("schedule ${p.wire} $s") }
         override fun applyTicker(text: String) { ticker = text; calls.add("ticker '$text'") }
         override fun applyClock(c: ClockSettings) { clockNow = c; calls.add("clock") }
+        override var freePlan = false
+        var logoNow: LogoInfo? = LogoInfo(true, false, 90)
+        var bannerNow = NameBannerState()
+        var kitResult: ApplyResult = ApplyResult.PENDING
+        var kitLate: ((ApplyResult) -> Unit)? = null
+        override fun logo() = logoNow
+        override fun applyLogo(onRight: Boolean?, size: Int?) { logoNow = logoNow?.let { LogoInfo(true, onRight ?: it.onRight, size ?: it.size) }; calls.add("logo $onRight $size") }
+        override fun banner() = bannerNow
+        override fun applyBanner(s: NameBannerState) { bannerNow = s; calls.add("banner ${s.show}") }
+        override fun applyKit(kitId: String, done: (ApplyResult) -> Unit): ApplyResult { calls.add("kit $kitId"); kitLate = done; return kitResult }
     }
 
     private var now = 1_000_000L
@@ -154,7 +165,7 @@ class RemoteApplierTest {
         assertEquals("\"portrait\"", o["orientation"].toString())
         assertEquals("\"1.0.14\"", o["appVersion"].toString())
         assertTrue(o["clock"].toString().contains(""""timezone":"Asia/Kolkata""""))
-        assertEquals(setOf("v", "platform", "appVersion", "orientation", "freePlan", "ads", "adsShrink", "ticker", "clock"), o.keys)
+        assertEquals(setOf("v", "platform", "appVersion", "orientation", "freePlan", "ads", "adsShrink", "ticker", "clock", "kit", "logo", "lowerThird"), o.keys)
     }
 
     @Test fun `snapshot has no ticker text when the ticker is off and never any secret looking key`() {

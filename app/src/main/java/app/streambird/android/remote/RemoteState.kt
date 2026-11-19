@@ -5,8 +5,12 @@ import app.streambird.android.ads.AdPlacement
 import app.streambird.android.ads.AdSchedule
 import app.streambird.android.ads.AdSource
 import app.streambird.android.clock.ClockSettings
+import app.streambird.android.media.NameBanner
+import app.streambird.android.media.NameBannerState
 import app.streambird.android.stream.LiveAd
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -19,7 +23,20 @@ data class RemoteStateInput(
     val orientation: String,
     val appVersion: String,
     val freePlan: Boolean,
+    /** 1.0.15: the customer's brand kits as last fetched (empty = unknown), the kit on air now, the logo and the name banner. */
+    val kits: List<KitRef> = emptyList(),
+    val kitId: String? = null,
+    val logo: LogoInfo = LogoInfo(false, false, DEFAULT_LOGO_SIZE),
+    val banner: NameBannerState = NameBannerState(),
 )
+
+/** A brand kit as the snapshot lists it: id and name only. */
+data class KitRef(val id: String, val name: String)
+
+/** The logo on air: [onRight] false = left, [size] = height in canvas px (the kit's `logoSize` unit). [present] false = the stream has no logo. */
+data class LogoInfo(val present: Boolean, val onRight: Boolean, val size: Int)
+
+const val DEFAULT_LOGO_SIZE = 90
 
 /**
  * The compact snapshot of the settings a support session may change, sent with `PUT /streams/{id}/remote-control/state`.
@@ -28,6 +45,9 @@ data class RemoteStateInput(
  */
 object RemoteState {
     const val SCHEMA = 1
+    const val MAX_KITS = 50
+    const val MAX_KIT_NAME = 80
+    const val MAX_KIT_ID = 64
 
     fun build(i: RemoteStateInput): JsonObject = buildJsonObject {
         put("v", SCHEMA)
@@ -48,6 +68,21 @@ object RemoteState {
             put("on", t != null)
         })
         put("clock", clock(i.clock))
+        // 1.0.15 optional fields (an older control page ignores them).
+        val kits = if (i.freePlan) emptyList() else i.kits.filter { it.id.isNotEmpty() && it.id.length <= MAX_KIT_ID }.take(MAX_KITS)
+        if (kits.isNotEmpty()) put("kits", buildJsonArray { kits.forEach { k -> add(buildJsonObject { put("id", k.id); put("name", NameBanner.clean(k.name, MAX_KIT_NAME).ifEmpty { "Brand kit" }) }) } })
+        put("kit", i.kitId?.takeIf { it.isNotEmpty() && it.length <= MAX_KIT_ID }?.let { id -> buildJsonObject { put("id", id) } } ?: JsonNull)
+        put("logo", buildJsonObject {
+            put("present", i.logo.present)
+            put("position", if (i.logo.onRight) "right" else "left")
+            put("size", i.logo.size.coerceIn(RemoteParser.MIN_LOGO_SIZE, RemoteParser.MAX_LOGO_SIZE))
+        })
+        put("lowerThird", buildJsonObject {
+            put("available", true)
+            put("name", i.banner.name.takeIf { it.isNotEmpty() })
+            put("title", i.banner.title)
+            put("show", i.banner.show)
+        })
     }
 
     private fun ad(a: LiveAd): JsonObject = buildJsonObject {
@@ -84,5 +119,12 @@ object RemoteKeys {
     const val ADS_SHRINK = "ads.shrink"
     const val TICKER = "ticker"
     const val CLOCK = "clock"
+    const val LOGO = "logo"
+    const val LOWER_THIRD = "lowerThird"
+    const val KIT = "kit"
+
+    /** Everything a kit change replaces: it is refused when the host touched any of these a moment ago, and aborted when the host touches one while it is being prepared. */
+    fun kitCovers(): List<String> =
+        listOf(KIT, LOGO, CLOCK, ADS_SHRINK) + AdPlacement.entries.flatMap { listOf(adManual(it), adEnabled(it), adSchedule(it)) }
 }
 

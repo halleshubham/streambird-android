@@ -109,7 +109,7 @@ class RemoteParserTest {
     }
 
     @Test fun `unsupported types are accepted as shape and carry the not supported action`() {
-        for (t in listOf("logo.set", "kit.apply", "layout.set", "lowerThird.set", "wallpaper.dim")) {
+        for (t in listOf("layout.set", "wallpaper.dim")) {
             assertEquals(t, RemoteAction.Unsupported(), ok(cmd(t, """{"anything":1}""")).action)
         }
         assertEquals("not supported on the phone app", NOT_SUPPORTED)

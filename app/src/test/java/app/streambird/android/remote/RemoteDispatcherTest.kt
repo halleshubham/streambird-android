@@ -78,7 +78,7 @@ class RemoteDispatcherTest {
     }
 
     @Test fun `rejected and unsupported commands are acked with the reason and the sequence moves on`() {
-        val r = d.process(batch(cmd(1, "stream.stop", "{}"), cmd(2, "logo.set", """{"size":10}"""), cmd(3, "ads.manual", """{"placement":"x","mode":"shown"}"""), cmd(4)))
+        val r = d.process(batch(cmd(1, "stream.stop", "{}"), cmd(2, "layout.set", """{"mode":"x"}"""), cmd(3, "ads.manual", """{"placement":"x","mode":"shown"}"""), cmd(4)))
         assertEquals(listOf("command not allowed", "not supported on the phone app", "unknown placement", null), r.acks.map { it.error })
         assertEquals(listOf(false, false, false, true), r.acks.map { it.ok })
         assertEquals(4L, d.lastSeq)

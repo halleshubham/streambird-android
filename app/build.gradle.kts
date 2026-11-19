@@ -23,8 +23,8 @@ val hasReleaseSigning = releaseKeystoreFile?.exists() == true &&
     signingValue("STREAMBIRD_KEY_PASSWORD") != null
 
 // Single source of truth for the version: gradle.properties (override with -PstreambirdVersionCode=... -PstreambirdVersionName=...).
-val appVersionCode = (project.findProperty("streambirdVersionCode") as String?)?.toInt() ?: 114
-val appVersionName = (project.findProperty("streambirdVersionName") as String?) ?: "1.0.14"
+val appVersionCode = (project.findProperty("streambirdVersionCode") as String?)?.toInt() ?: 115
+val appVersionName = (project.findProperty("streambirdVersionName") as String?) ?: "1.0.15"
 
 android {
     namespace = "app.streambird.android"

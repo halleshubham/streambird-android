@@ -24,6 +24,10 @@ interface EnginePort {
     fun setAdSchedule(p: app.streambird.android.ads.AdPlacement, s: app.streambird.android.ads.AdSchedule)
     /** "Shrink picture while ads show" on/off for the running stream. */
     fun setAdsShrink(on: Boolean)
+    /** Name banner on the running picture (null = none; [BannerSpec.show] false = fading out). */
+    fun setBanner(spec: BannerSpec?) {}
+    /** The two-step live kit change (prepare off the render thread, swap on it); null = this engine cannot (tests). */
+    val kitTarget: KitTarget? get() = null
     fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit)
     val preview: PreviewHandle?
     val droppedFrames: Long
