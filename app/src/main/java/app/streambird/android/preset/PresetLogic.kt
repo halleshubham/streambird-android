@@ -159,15 +159,26 @@ fun setupLine(brandName: String?, tier: StreamTier, tickerOn: Boolean): String =
  * 16:9 is mentioned only for landscape (portrait is the app's usual shape).
  */
 fun presetSummary(cfg: PresetConfig, connections: List<PlatformConnection>, kitName: (String) -> String?, brandAllowed: Boolean): String {
-    val dests = cfg.destinationIds.orEmpty().mapNotNull { id -> connections.firstOrNull { it.id == id }?.let { connectionName(it, connections) } }
-    val parts = mutableListOf<String>()
-    parts += if (dests.isEmpty()) "No destination" else dests.joinToString(" + ")
-    if (brandAllowed) parts += cfg.brandKitId?.let { id -> (kitName(id) ?: "Brand kit").let { "$it brand" } } ?: "Auto brand"
-    parts += visibilityLabel(visibilityForPreset(cfg))
-    parts += if (cfg.tickerEnabled == true) "Ticker on" else "Ticker off"
-    tierFromWire(cfg.quality)?.let { parts += it.label }
-    if (orientationFromWire(cfg.orientation)?.isLandscape == true) parts += "16:9"
-    return parts.joinToString(SEP)
+    val p = presetSummaryParts(cfg, connections, kitName, brandAllowed)
+    return (listOf(if (p.channels.isEmpty()) "No destination" else p.channels.joinToString(" + ")) + p.details).joinToString(SEP)
+}
+
+/**
+ * The same summary split for the card: [channels] (shown as chips), [details] (one quiet line: brand, visibility, ticker, quality, 16:9) and
+ * [missingChannels] (channels of the preset the account no longer has; the card warns about them). A kit that cannot be named says "Brand kit".
+ */
+data class PresetSummaryParts(val channels: List<String>, val details: List<String>, val missingChannels: Int)
+
+fun presetSummaryParts(cfg: PresetConfig, connections: List<PlatformConnection>, kitName: (String) -> String?, brandAllowed: Boolean): PresetSummaryParts {
+    val wanted = cfg.destinationIds.orEmpty().distinct()
+    val dests = wanted.mapNotNull { id -> connections.firstOrNull { it.id == id }?.let { connectionName(it, connections) } }
+    val details = mutableListOf<String>()
+    if (brandAllowed) details += cfg.brandKitId?.let { id -> kitName(id)?.let { "$it brand" } ?: "Brand kit" } ?: "Auto brand"
+    details += visibilityLabel(visibilityForPreset(cfg))
+    details += if (cfg.tickerEnabled == true) "Ticker on" else "Ticker off"
+    tierFromWire(cfg.quality)?.let { details += it.label }
+    if (orientationFromWire(cfg.orientation)?.isLandscape == true) details += "16:9"
+    return PresetSummaryParts(dests, details, wanted.size - dests.size)
 }
 
 const val SEP = " · "

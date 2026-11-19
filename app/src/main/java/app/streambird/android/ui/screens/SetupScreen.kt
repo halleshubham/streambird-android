@@ -5,7 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -93,11 +94,11 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
 
     if (showVisibility) VisibilityPicker(vm, s.visibility)
 
-    Text("Shape (fixed once the stream is created)", style = MaterialTheme.typography.titleSmall)
+    SectionTitle("Shape (fixed once the stream is created)")
     Segmented(StreamOrientation.entries, s.orientation, { it.label }, { o -> vm.update { it.copy(orientation = o) } })
     if (s.orientation.isLandscape) Text("Landscape: the screen turns to landscape while you stream. Hold the phone sideways.", style = MaterialTheme.typography.bodySmall)
 
-    Text("Quality (${s.orientation.label.substringBefore(" ").lowercase()}, 30 fps)", style = MaterialTheme.typography.titleSmall)
+    SectionTitle("Quality (${s.orientation.label.substringBefore(" ").lowercase()}, 30 fps)")
     Segmented(
         StreamTier.entries, s.tier, { it.label }, { t -> vm.update { it.copy(tier = t) } },
         sub = { it.sizeLabel(s.orientation) }, enabled = { it in s.allowedTiers },
@@ -109,15 +110,15 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
 
     CellularHint(s.tier)
 
-    Text("Picture priority", style = MaterialTheme.typography.titleSmall)
+    SectionTitle("Picture priority")
     Segmented(PicturePriority.entries, s.priority, { it.label }, { p -> vm.update { it.copy(priority = p) } })
     Text(s.priority.hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-    Text("Logo overlay", style = MaterialTheme.typography.titleSmall)
+    SectionTitle("Logo overlay")
     LogoChoice.entries.forEach { c ->
         val ok = c != LogoChoice.BRAND || s.brandAllowed
-        Row(Modifier.fillMaxWidth().clickable(enabled = ok) { vm.update { it.copy(logoChoice = c) } }, verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(selected = s.logoChoice == c, onClick = { vm.update { it.copy(logoChoice = c) } }, enabled = ok)
+        Row(Modifier.fillMaxWidth().selectable(selected = s.logoChoice == c, enabled = ok, role = Role.RadioButton) { vm.update { it.copy(logoChoice = c) } }, verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected = s.logoChoice == c, onClick = null, enabled = ok)
             Text(c.label + if (ok) "" else "  (not included in this account's plan)")
         }
     }
@@ -137,7 +138,7 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Text("Front camera", Modifier.weight(1f)); Switch(s.frontCamera, { v -> vm.update { it.copy(frontCamera = v) } })
     }
-    Text("Experiments", style = MaterialTheme.typography.titleSmall)
+    SectionTitle("Experiments")
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Text("H.264 High profile", Modifier.weight(1f)); Switch(s.h264HighProfile, { v -> vm.update { it.copy(h264HighProfile = v) } })
     }
@@ -153,7 +154,7 @@ fun ColumnScope.SetupFields(vm: StudioViewModel, s: StudioUi, onBrand: () -> Uni
 /** Public / Unlisted / Private for this stream and for the preset saved from it. The title names the chosen value so it is never a guess. */
 @Composable
 fun ColumnScope.VisibilityPicker(vm: StudioViewModel, visibility: String) {
-    Text("Visibility: ${app.streambird.android.preset.visibilityLabel(visibility)}", style = MaterialTheme.typography.titleSmall)
+    SectionTitle("Visibility: ${app.streambird.android.preset.visibilityLabel(visibility)}")
     Segmented(app.streambird.android.preset.VISIBILITIES, visibility, { app.streambird.android.preset.visibilityLabel(it) }, { v -> vm.update { it.copy(visibility = v) } })
     Text(app.streambird.android.preset.VISIBILITY_HINT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }

@@ -5,6 +5,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,7 +31,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.streambird.android.R
@@ -159,7 +164,7 @@ fun <T> Segmented(
     enabled: (T) -> Boolean = { true },
 ) {
     Row(
-        modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outline, CircleShape).background(MaterialTheme.colorScheme.surface, CircleShape).padding(4.dp),
+        modifier.fillMaxWidth().selectableGroup().border(1.dp, MaterialTheme.colorScheme.outline, CircleShape).background(MaterialTheme.colorScheme.surface, CircleShape).padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         options.forEach { o ->
@@ -168,7 +173,7 @@ fun <T> Segmented(
             Column(
                 Modifier.weight(1f).clip(CircleShape)
                     .background(if (on) MaterialTheme.colorScheme.primary else Color.Transparent)
-                    .clickable(enabled = ok, role = Role.RadioButton) { onSelect(o) }
+                    .selectable(selected = on, enabled = ok, role = Role.RadioButton) { onSelect(o) }
                     .padding(horizontal = 6.dp, vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -184,7 +189,23 @@ fun <T> Segmented(
 @Composable
 fun PageHeading(title: String, lead: String? = null, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(title, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onBackground)
+        Text(title, Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onBackground)
         lead?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
+
+/** A small title inside a screen (not the page title): announced as a heading so TalkBack users can jump between sections. */
+@Composable
+fun SectionTitle(text: String, modifier: Modifier = Modifier) {
+    Text(text, modifier.semantics { heading() }, style = MaterialTheme.typography.titleSmall)
+}
+
+/**
+ * Colours for status TEXT on the page background. The amber (D97706) and green (16A34A) used for tinted boxes are only about 3.2:1 on white;
+ * these keep the same hue and reach 4.5:1 (WCAG AA) in light, and stay bright in dark.
+ */
+@Composable
+fun warningTextColor(): Color = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) SbTokens.warningDark else Color(0xFFB45309)
+
+@Composable
+fun okTextColor(): Color = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFF4ADE80) else Color(0xFF15803D)

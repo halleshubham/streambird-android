@@ -261,13 +261,44 @@ class StudioViewModel @Inject constructor(
     /** Pulls the presets again (Home opening, the Retry button); silent. */
     fun refreshPresets() { viewModelScope.launch { runCatching { presets.refresh() } } }
 
-    fun deletePreset(id: String, onDone: (Boolean) -> Unit = {}) {
+    /** The saved preset that was open when the host deleted it, so Undo can open it again. */
+    private var deletedActiveId: String? = null
+
+    /**
+     * Delete with Undo (1.0.16): the card is hidden at once, the server delete happens after [app.streambird.android.preset.UNDO_WINDOW_MS] unless
+     * [undoDeletePreset] was called. A preset open in Customize closes (it is "Save as preset" again) and reopens on Undo.
+     */
+    fun deletePreset(p: app.streambird.android.data.Preset) {
         viewModelScope.launch {
-            val ok = presets.delete(id)
-            if (ok) _ui.update { if (it.activePreset?.id == id) it.copy(activePreset = null) else it }
-            onDone(ok)
+            if (!presets.beginDelete(p)) return@launch
+            deletedActiveId = if (_ui.value.activePreset?.id == p.id) p.id else null
+            _ui.update { if (it.activePreset?.id == p.id) it.copy(activePreset = null) else it }
+            kotlinx.coroutines.delay(app.streambird.android.preset.UNDO_WINDOW_MS)
+            presets.commitDeleteIfDue(p.id)
         }
     }
+
+    fun undoDeletePreset() {
+        val back = presets.undoDelete() ?: return
+        if (deletedActiveId == back.id) _ui.update { it.copy(activePreset = back) }
+        deletedActiveId = null
+    }
+
+    fun duplicatePreset(p: app.streambird.android.data.Preset) { viewModelScope.launch { runCatching { presets.duplicate(p) } } }
+
+    fun renamePreset(p: app.streambird.android.data.Preset, name: String) {
+        viewModelScope.launch {
+            val r = runCatching { presets.rename(p.id, name) }.getOrNull()
+            if (r != null) _ui.update { if (it.activePreset?.id == r.id) it.copy(activePreset = r) else it }
+        }
+    }
+
+    /** What the card would drop or lower today (disconnected channel, plan limits, deleted kit): shown on the card before the host taps. */
+    fun presetWarnings(p: app.streambird.android.data.Preset): List<String> = app.streambird.android.preset.presetWarnings(p.config, limits(_ui.value))
+
+    /** The open setup's differences from the saved preset ("Quality", "Ticker"...); empty when nothing is open or nothing differs. */
+    fun presetChanges(s: StudioUi): List<String> =
+        s.activePreset?.let { app.streambird.android.preset.presetChanges(choices(s), it.config, limits(s)) }.orEmpty()
 
     fun goLive() {
         val s = _ui.value

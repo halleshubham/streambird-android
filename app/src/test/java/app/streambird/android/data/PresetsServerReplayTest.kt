@@ -53,6 +53,8 @@ class PresetsServerReplayTest {
     @Volatile private var listFailure: (() -> MockResponse)? = null
     @Volatile private var routeMissing = false
     private val seen = mutableListOf<RecordedRequest>()
+    private val sentBodies = mutableListOf<Pair<String, String>>()
+    private fun readBody(r: RecordedRequest): JsonObject { val t = r.body.readUtf8(); synchronized(sentBodies) { sentBodies += r.method!! to t }; return Json.parseToJsonElement(t).jsonObject }
 
     private fun envelope(status: Int, error: String, message: Any) = MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json; charset=utf-8").setBody(
         buildJsonObject {
@@ -140,7 +142,7 @@ class PresetsServerReplayTest {
     private fun ok(code: Int, body: kotlinx.serialization.json.JsonElement) = MockResponse().setResponseCode(code).setHeader("Content-Type", "application/json; charset=utf-8").setBody(body.toString())
 
     private fun create(r: RecordedRequest): MockResponse {
-        val body = Json.parseToJsonElement(r.body.readUtf8()).jsonObject
+        val body = readBody(r)
         val errs = validate(body, requireAll = true)
         if (errs.isNotEmpty()) return envelope(400, "Bad Request", errs)
         if (rows.size >= 20) return envelope(409, "Conflict", "You can keep up to 20 presets. Delete one to save another.")
@@ -152,7 +154,7 @@ class PresetsServerReplayTest {
 
     private fun update(id: String, r: RecordedRequest): MockResponse {
         if (!v4.matches(id)) return envelope(400, "Bad Request", "Validation failed (uuid is expected)")
-        val body = Json.parseToJsonElement(r.body.readUtf8()).jsonObject
+        val body = readBody(r)
         val errs = validate(body, requireAll = false)
         if (errs.isNotEmpty()) return envelope(400, "Bad Request", errs)
         val i = rows.indexOfFirst { it["id"]!!.jsonPrimitive.content == id }
@@ -317,5 +319,68 @@ class PresetsServerReplayTest {
         assertTrue(c.state.value.loadError!!.contains("Missing x-api-key"))
         assertNull(c.save(null, "x", PresetConfig()))
         assertTrue(c.state.value.error!!.contains("session expired"))
+    }
+
+    // ---- 1.0.16: duplicate, rename, delete with Undo against the server-like mock ----
+
+    private fun bodies(method: String) = synchronized(sentBodies) { sentBodies.filter { it.first == method }.map { it.second } }
+
+    @Test fun `duplicate creates a copy with the same config under name copy, and rename sends only the name`() = runBlocking {
+        val c = controller(); c.refresh()
+        val orig = c.save(null, "Friday show", choicesToConfig(choices(conns[0], conns[1], kitId = kit, ticker = "Hello")).copy(visibility = "unlisted"))!!
+        val copy = c.duplicate(orig)
+        assertNotNull(c.state.value.error, copy)
+        assertEquals("Friday show copy", copy!!.name); assertEquals(orig.config, copy.config)
+        assertEquals("Created \"Friday show copy\"", c.state.value.notice)
+        assertEquals(2, rows.size)
+        // the copy's POST carries exactly name + config with the known keys
+        val last = Json.parseToJsonElement(bodies("POST").last()).jsonObject
+        assertEquals(setOf("name", "config"), last.keys)
+        assertEquals(setOf("orientation", "destinationIds", "brandKitId", "quality", "tickerEnabled", "tickerText", "visibility"), last["config"]!!.jsonObject.keys)
+
+        val renamed = c.rename(copy.id, "Second show")
+        assertNotNull(c.state.value.error, renamed)
+        val patch = Json.parseToJsonElement(bodies("PATCH").last()).jsonObject
+        assertEquals(setOf("name"), patch.keys); assertEquals("Second show", patch["name"]!!.jsonPrimitive.content)
+        assertEquals(copy.config, c.state.value.items.first { it.id == copy.id }.config)
+        val fresh = controller(); fresh.refresh()
+        assertEquals(listOf("Friday show", "Second show"), fresh.state.value.items.map { it.name }.sorted())
+    }
+
+    @Test fun `duplicate at twenty is refused locally, before any request`() = runBlocking {
+        val c = controller(); c.refresh()
+        repeat(20) { assertNotNull(c.save(null, "p$it", PresetConfig())) }
+        val posts = bodies("POST").size
+        assertNull(c.duplicate(c.state.value.items.first()))
+        assertTrue(c.state.value.error!!.contains("20 presets")); assertEquals(posts, bodies("POST").size)
+    }
+
+    @Test fun `a duplicate of a preset whose kit was deleted is explained (422), the list is unchanged`() = runBlocking {
+        val c = controller(); c.refresh()
+        val p = c.save(null, "Old kit", PresetConfig(brandKitId = kit))!!
+        // the preset now refers to a kit the account no longer has
+        val stale = p.copy(config = p.config.copy(brandKitId = UUID.randomUUID().toString()))
+        assertNull(c.duplicate(stale))
+        assertTrue(c.state.value.error!!.contains("brandKitId does not belong") && c.state.value.error!!.contains("check them"))
+        assertEquals(1, rows.size)
+    }
+
+    @Test fun `delete with undo reaches the server only after the window, undo never does`() = runBlocking {
+        var t = 0L
+        val c = PresetController(ApiPresets(api), { t }) { logs += it }
+        c.refresh()
+        val keep = c.save(null, "Keep", PresetConfig())!!
+        val gone = c.save(null, "Gone", PresetConfig())!!
+        c.beginDelete(gone)
+        assertEquals(2, rows.size); assertEquals(listOf(keep.id), c.state.value.items.map { it.id })
+        c.undoDelete()
+        assertEquals(setOf(keep.id, gone.id), c.state.value.items.map { it.id }.toSet())
+        assertTrue(synchronized(seen) { seen.none { it.method == "DELETE" } })
+
+        c.beginDelete(gone); t += app.streambird.android.preset.UNDO_WINDOW_MS
+        assertTrue(c.commitDeleteIfDue(gone.id))
+        assertEquals(listOf(keep.id), rows.map { it["id"]!!.jsonPrimitive.content })
+        assertEquals("Preset deleted", c.state.value.notice)
+        assertEquals(1, synchronized(seen) { seen.count { it.method == "DELETE" } })
     }
 }
