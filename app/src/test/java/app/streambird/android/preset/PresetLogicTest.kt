@@ -33,7 +33,7 @@ class PresetLogicTest {
 
     @Test fun `summary variations`() {
         assertEquals("YouTube${dot}Auto brand${dot}Public${dot}Ticker off${dot}1080p${dot}16:9", presetSummary(PresetConfig("landscape", listOf("c1"), null, "fhd", false), conns, kits::get, true))
-        assertEquals("YouTube${dot}Brand kit brand${dot}Public${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("c1"), brandKitId = "gone"), conns, kits::get, true))
+        assertEquals("YouTube${dot}Brand kit${dot}Public${dot}Ticker off", presetSummary(PresetConfig(destinationIds = listOf("c1"), brandKitId = "gone"), conns, kits::get, true))
         assertEquals("YouTube${dot}Public${dot}Ticker off${dot}540p", presetSummary(PresetConfig(destinationIds = listOf("c1"), quality = "sd"), conns, kits::get, false))
         assertEquals("No destination${dot}Auto brand${dot}Public${dot}Ticker off", presetSummary(PresetConfig(), conns, kits::get, true))
         // a disconnected channel is skipped
