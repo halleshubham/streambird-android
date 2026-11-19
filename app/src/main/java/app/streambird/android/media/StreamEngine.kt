@@ -497,6 +497,8 @@ class StreamEngine(
 
     override fun startAdClock() { compositor?.ads?.clockStartMs = android.os.SystemClock.elapsedRealtime() }
     override fun setAdsShrink(on: Boolean) { compositor?.ads?.shrinkPicture = on }
+    override fun setAdEnabled(p: app.streambird.android.ads.AdPlacement, on: Boolean) { compositor?.ads?.setEnabled(p, on) }
+    override fun setAdSchedule(p: app.streambird.android.ads.AdPlacement, s: app.streambird.android.ads.AdSchedule) { compositor?.ads?.setSchedule(p, s) }
     override fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?) { compositor?.ads?.setManual(p, m) }
 
     override fun setPicturePriority(p: PicturePriority) {

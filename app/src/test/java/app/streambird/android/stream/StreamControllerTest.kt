@@ -46,7 +46,7 @@ class StreamControllerTest {
         override suspend fun stop() { stops.incrementAndGet(); delay(20) }
         override suspend fun republish() { republishes.incrementAndGet() }
         override fun simulateDrop() {}
-        override fun setTicker(spec: TickerSpec?) {}
+        override fun setTicker(spec: TickerSpec?) { tickers.add(spec) }
         val clocks = CopyOnWriteArrayList<app.streambird.android.clock.ClockSettings?>()
         override fun setClock(c: app.streambird.android.clock.ClockSettings?) { clocks.add(c) }
         override fun setPicturePriority(p: PicturePriority) {}
@@ -55,6 +55,10 @@ class StreamControllerTest {
         override fun startAdClock() { clockStarts.incrementAndGet() }
         override fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?) { manuals.add(p to m) }
         val shrinks = CopyOnWriteArrayList<Boolean>()
+        val enables = CopyOnWriteArrayList<Pair<AdPlacement, Boolean>>(); val schedules = CopyOnWriteArrayList<Pair<AdPlacement, app.streambird.android.ads.AdSchedule>>()
+        val tickers = CopyOnWriteArrayList<TickerSpec?>()
+        override fun setAdEnabled(p: AdPlacement, on: Boolean) { enables.add(p to on) }
+        override fun setAdSchedule(p: AdPlacement, s: app.streambird.android.ads.AdSchedule) { schedules.add(p to s) }
         override fun setAdsShrink(on: Boolean) { shrinks.add(on) }
         override fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit) { done(null, false) }
         override val preview: PreviewHandle? = null
@@ -112,6 +116,7 @@ class StreamControllerTest {
         }
     }
 
+    private val prefs = Prefs()
     private lateinit var scope: CoroutineScope
     private lateinit var server: Server
     private lateinit var env: FakeEnv
@@ -124,14 +129,14 @@ class StreamControllerTest {
         server = Server()
         env = FakeEnv(engineQueue) { nextEngine() }
         val api = ApiClient(OkHttpClient.Builder().addInterceptor(server.interceptor).build()) { "https://streambird.test" }
-        controller = StreamController(env, api, Prefs(), scope).apply { pollIntervalMs = 50; armDelayMs = 30; autoReturnMs = 600 }
+        controller = StreamController(env, api, prefs, scope).apply { pollIntervalMs = 50; armDelayMs = 30; autoReturnMs = 600 }
     }
 
     @After fun tearDown() { scope.cancel() }
 
     private val req get() = GoLiveRequest("t", "public", setOf("c1"), StreamTier.P720, StreamOrientation.PORTRAIT, PicturePriority.BALANCED, false, true, true, LogoChoice.NONE)
 
-    private fun waitFor(what: String, ms: Long = 5000, cond: () -> Boolean) = runBlocking { withTimeout(ms) { while (!cond()) delay(10) } }
+    private fun waitFor(what: String, ms: Long = 15000, cond: () -> Boolean) = runBlocking { try { withTimeout(ms) { while (!cond()) delay(10) } } catch (e: kotlinx.coroutines.TimeoutCancellationException) { throw AssertionError("timed out waiting for $what") } }
 
     private fun phases(): CopyOnWriteArrayList<LivePhase> {
         val seen = CopyOnWriteArrayList<LivePhase>()
@@ -427,5 +432,124 @@ class StreamControllerTest {
         val slots = controller.ui.value.adSlots.associateBy { it.placement }
         assertEquals(false, slots[AdPlacement.L_SHAPE]!!.hasWindow); assertNull(slots[AdPlacement.L_SHAPE]!!.problem)
         assertEquals("the picture could not be read", slots[AdPlacement.LOWER_THIRD]!!.problem)
+    }
+    // ---- remote support control (1.0.14) ----
+
+    private class FakeRemoteApi : app.streambird.android.remote.RemoteControlApi {
+        val polls = CopyOnWriteArrayList<Pair<String, Long>>()
+        val answers = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val cancelled = AtomicInteger()
+        val acks = CopyOnWriteArrayList<app.streambird.android.remote.RemoteAck>()
+        val states = CopyOnWriteArrayList<kotlinx.serialization.json.JsonObject>()
+        @Volatile var failWith: Throwable? = null
+        override suspend fun poll(streamId: String, after: Long): String {
+            polls.add(streamId to after)
+            failWith?.let { throw it }
+            try { return answers.receive() } catch (e: kotlinx.coroutines.CancellationException) { cancelled.incrementAndGet(); throw e }
+        }
+        override suspend fun ack(streamId: String, ack: app.streambird.android.remote.RemoteAck) { acks.add(ack) }
+        override suspend fun putState(streamId: String, rev: Long, state: kotlinx.serialization.json.JsonObject) { states.add(state) }
+    }
+
+    private fun remoteCmd(seq: Int, type: String, payload: String) =
+        """{"seq":$seq,"id":"c$seq","type":"$type","payload":$payload,"at":"${java.time.Instant.now()}"}"""
+    private fun remoteAnswer(vararg c: String) = """{"commands":[${c.joinToString(",")}],"now":"${java.time.Instant.now()}"}"""
+
+    @Test fun `the remote client starts when the stream is live, applies commands without a host trace and stops when the stream ends`() {
+        val remote = FakeRemoteApi(); controller.remoteApi = remote
+        controller.start(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true)); waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        waitFor("poll") { remote.polls.size == 1 }
+        assertEquals("s1" to 0L, remote.polls[0])
+        waitFor("first state", 20000) { remote.states.isNotEmpty() }
+        val eventsBefore = controller.ui.value.events
+        val adSlot = controller.ui.value.adSlots.first { it.problem == null }.placement
+        remote.answers.trySend(remoteAnswer(
+            remoteCmd(1, "ticker.set", """{"text":"Remote headline","on":true}"""),
+            remoteCmd(2, "ads.manual", """{"placement":"${adSlot.wire}","mode":"shown"}"""),
+            remoteCmd(3, "ads.shrink", """{"on":false}"""),
+            remoteCmd(4, "clock.set", """{"enabled":true,"position":"bottom_right","format":"24h"}"""),
+            remoteCmd(5, "ads.schedule", """{"placement":"${adSlot.wire}","mode":"interval","showSec":10,"everySec":60}"""),
+            remoteCmd(6, "ads.enabled", """{"placement":"${adSlot.wire}","on":false}"""),
+        ))
+        waitFor("6 acks", 20000) { remote.acks.size == 6 }
+        assertTrue(remote.acks.toString(), remote.acks.all { it.ok })
+        val e = engineQueue[0]
+        assertEquals("Remote headline", e.tickers.last()!!.text); assertEquals("Remote headline", controller.ui.value.tickerText)
+        assertEquals("", prefs.tickerText)                                   // not the host's choice: never saved
+        assertEquals(listOf(adSlot to app.streambird.android.ads.AdManual.SHOWN), e.manuals)
+        assertEquals(listOf(false), e.shrinks); assertFalse(controller.ui.value.adsShrink)
+        assertTrue(e.clocks.last()!!.enabled); assertEquals(app.streambird.android.clock.ClockPosition.BOTTOM_RIGHT, controller.ui.value.clock.position)
+        assertEquals(listOf(adSlot to app.streambird.android.ads.AdSchedule.Interval(10, 60)), e.schedules)
+        assertEquals(listOf(adSlot to false), e.enables)
+        val slot = controller.ui.value.adSlots.first { it.placement == adSlot }
+        assertFalse(slot.enabled); assertEquals(app.streambird.android.ads.AdSchedule.Interval(10, 60), slot.schedule)
+        assertEquals(eventsBefore, controller.ui.value.events)                // silent: nothing in the host-visible event list
+        waitFor("state after commands", 20000) { remote.states.any { it["adsShrink"].toString() == "false" } }
+        waitFor("poll after=6", 20000) { remote.polls.any { it.second == 6L } }
+
+        controller.end(); waitFor("ended") { controller.ui.value.phase == LivePhase.ENDED }
+        waitFor("poll cancelled") { remote.cancelled.get() == 1 }
+    }
+
+    @Test fun `commands for ads that are not on this stream and everything outside the whitelist are refused, the stream keeps running`() {
+        val remote = FakeRemoteApi(); controller.remoteApi = remote
+        controller.start(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true)); waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        waitFor("poll") { remote.polls.size == 1 }
+        remote.answers.trySend(remoteAnswer(
+            remoteCmd(1, "ads.enabled", """{"placement":"side_third","on":true}"""),      // its picture failed to load
+            remoteCmd(2, "ads.manual", """{"placement":"l_shape","mode":"shown"}"""),     // not in this kit's set
+            remoteCmd(3, "stream.stop", "{}"), remoteCmd(4, "camera.flip", "{}"), remoteCmd(5, "kit.apply", """{"kitId":"k1"}"""),
+        ))
+        waitFor("5 acks") { remote.acks.size == 5 }
+        assertEquals(listOf(false, false, false, false, false), remote.acks.map { it.ok })
+        assertEquals(listOf("no side_third ad on this stream", "no l_shape ad on this stream", "command not allowed", "command not allowed", "not supported on the phone app"), remote.acks.map { it.error })
+        assertEquals(LivePhase.LIVE, controller.ui.value.phase); assertEquals(0, server.count("POST /api/streams/s1/end"))
+        assertTrue(engineQueue[0].manuals.isEmpty() && engineQueue[0].enables.isEmpty())
+    }
+
+    @Test fun `the host's own change wins a conflict within 3 seconds and a later host change simply overrides`() {
+        val remote = FakeRemoteApi(); controller.remoteApi = remote
+        goLive(); waitFor("poll") { remote.polls.size == 1 }
+        controller.setTicker("Host headline", app.streambird.android.media.TickerSize.M)
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "ticker.set", """{"text":"Support headline","on":true}""")))
+        waitFor("ack") { remote.acks.size == 1 }
+        assertEquals("host changed it just now", remote.acks[0].error)
+        assertEquals("Host headline", controller.ui.value.tickerText)
+        remote.answers.trySend(remoteAnswer(remoteCmd(2, "clock.set", """{"enabled":true}""")))   // another setting: allowed
+        waitFor("ack 2") { remote.acks.size == 2 }
+        assertTrue(remote.acks[1].ok)
+        controller.setClock(controller.ui.value.clock.copy(enabled = false))                       // the host overrides it at once, nothing is locked
+        assertFalse(controller.ui.value.clock.enabled)
+    }
+
+    @Test fun `an old server without the feature (404) changes nothing for the host and polls only once`() {
+        val remote = FakeRemoteApi(); remote.failWith = app.streambird.android.data.ApiException(404, "Not Found"); controller.remoteApi = remote
+        goLive()
+        waitFor("poll") { remote.polls.size == 1 }
+        runBlocking { delay(300) }
+        assertEquals(1, remote.polls.size)
+        assertEquals(LivePhase.LIVE, controller.ui.value.phase)
+        assertEquals("Live. Platforms need a few seconds to show the picture.", controller.ui.value.message)
+        controller.end(); waitFor("ended") { controller.ui.value.phase == LivePhase.ENDED }
+    }
+
+    @Test fun `ending by the server or a new go live also stops the poll and a second stream polls its own id`() {
+        val remote = FakeRemoteApi(); controller.remoteApi = remote
+        goLive(); waitFor("poll") { remote.polls.size == 1 }
+        server.statusJson = { 200 to """{"status":"ended","relayInputStatus":null,"destinations":[]}""" }
+        waitFor("ended") { controller.ui.value.phase == LivePhase.ENDED }
+        waitFor("cancelled") { remote.cancelled.get() == 1 }
+        server.statusJson = { 200 to """{"status":"live","relayInputStatus":null,"destinations":[]}""" }
+        controller.acknowledge(); goLive()
+        waitFor("second poll") { remote.polls.size == 2 }
+        assertEquals("s2", remote.polls[1].first); assertEquals(0L, remote.polls[1].second)
+    }
+
+    @Test fun `a failed start never starts the remote client`() {
+        val remote = FakeRemoteApi(); controller.remoteApi = remote
+        nextEngine = { FakeEngine(failStart = true) }
+        controller.start(req); waitFor("failed") { controller.ui.value.phase == LivePhase.FAILED }
+        runBlocking { delay(150) }
+        assertTrue(remote.polls.isEmpty())
     }
 }

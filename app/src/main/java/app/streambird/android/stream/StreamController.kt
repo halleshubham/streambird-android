@@ -207,13 +207,20 @@ class StreamController @Inject constructor(
     private var unwatchNetwork: (() -> Unit)? = null
     private var unwatchTriggers: (() -> Unit)? = null
     private var reconnector: Reconnector? = null
-    private var tickerSpec: TickerSpec? = null
+    @Volatile private var tickerSpec: TickerSpec? = null
     @Volatile private var gen = 0
     private val created = AtomicReference<StreamDto?>(null)
     private val endSent = AtomicBoolean(false)
     private var logoBmp: android.graphics.Bitmap? = null
     private var logoOverlay: LogoOverlay? = null
     private var logoAnimJob: Job? = null
+
+    // Remote support control (1.0.14): see remote/. The client runs only while this phone's stream is LIVE; the tracker records host-originated changes.
+    private val hostChanges = app.streambird.android.remote.HostChangeTracker { System.nanoTime() / 1_000_000 }
+    @Volatile private var remote: app.streambird.android.remote.RemoteControlClient? = null
+
+    /** The remote-control protocol calls (the app's normal session); tests replace it. */
+    internal var remoteApi: app.streambird.android.remote.RemoteControlApi = app.streambird.android.remote.HttpRemoteControlApi(api)
 
     /** Timings; tests shorten them. */
     internal var pollIntervalMs = 5_000L
@@ -240,6 +247,7 @@ class StreamController @Inject constructor(
         app.streambird.android.diag.Diag.log("GO LIVE requested: tier=${req.tier.label} ${req.orientation} dests=${req.destinationIds.size} ticker=${req.tickerText.isNotBlank()} thumb=${req.thumbnailUri != null}")
         val g = ++gen
         created.set(null); endSent.set(false); engine = null; tickerSpec = null; log = null
+        stopRemote(); hostChanges.clear()
         env.startForegroundService()
         runJob = scope.launch { run(req, g) }
     }
@@ -322,11 +330,13 @@ class StreamController @Inject constructor(
             event("LIVE", withRow = true)
             armJob = scope.launch { armReconnector(stream.id, g) }
             pollJob = scope.launch { pollStatus(stream.id, g) }
+            startRemote(stream.id, g)
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
             val msg = (t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName
             event("start failed: $msg", withRow = false)
+            stopRemote()
             stopReconnector()
             runCatching { engine?.stop() }
             engine = null
@@ -348,6 +358,7 @@ class StreamController @Inject constructor(
     fun end(reason: String? = null) {
         if (!tryMove(LivePhase.STARTING, LivePhase.LIVE) { it.copy(phase = LivePhase.ENDING, message = "Ending the stream...") }) return
         val g = gen
+        stopRemote()
         scope.launch {
             stopReconnector()
             armJob?.cancel(); pollJob?.cancel()
@@ -381,6 +392,7 @@ class StreamController @Inject constructor(
         // Clean slate: nothing of the finished stream may leak into the next Go live, and old timers become no-ops.
         gen++
         runJob?.cancel(); pollJob?.cancel(); armJob?.cancel()
+        stopRemote()
         stopReconnector()
         val e = engine; engine = null
         if (e != null) scope.launch { runCatching { e.stop() } }
@@ -523,36 +535,109 @@ class StreamController @Inject constructor(
 
     /** Show now / Hide / Follow schedule for one ad (never saved). */
     fun setAdManual(p: AdPlacement, m: AdManual?) {
+        hostChanges.mark(app.streambird.android.remote.RemoteKeys.adManual(p))
         engine?.setAdManual(p, m)
         _ui.update { it.copy(adSlots = it.adSlots.map { a -> if (a.placement == p) a.copy(manual = m) else a }) }
         event("ad ${p.wire} " + when (m) { AdManual.SHOWN -> "shown by hand"; AdManual.HIDDEN -> "hidden by hand"; null -> "follows the schedule" }, withRow = true)
+        remote?.stateChanged()
     }
 
     /** Live switch "Shrink picture while ads show" for this stream (never saved to the kit). */
     fun setAdsShrink(on: Boolean) {
+        hostChanges.mark(app.streambird.android.remote.RemoteKeys.ADS_SHRINK)
         engine?.setAdsShrink(on)
         _ui.update { it.copy(adsShrink = on) }
         event("ads shrink picture " + if (on) "on" else "off", withRow = true)
+        remote?.stateChanged()
     }
 
     /** Live change of the date and time overlay for this stream (never saved to the kit); [c] enabled = shown. */
     fun setClock(c: app.streambird.android.clock.ClockSettings) {
+        hostChanges.mark(app.streambird.android.remote.RemoteKeys.CLOCK)
         val n = c.normalized()
         engine?.setClock(n.takeIf { it.enabled })
         _ui.update { it.copy(clock = n) }
         event("clock " + app.streambird.android.clock.Clock.describe(n), withRow = true)
+        remote?.stateChanged()
     }
 
     fun dismissAdsNote() = _ui.update { it.copy(adsNote = null) }
 
     /** Live ticker edit: text and size apply to the running picture without restarting anything. */
     fun setTicker(rawText: String, size: TickerSize) {
+        hostChanges.mark(app.streambird.android.remote.RemoteKeys.TICKER)
         val spec = TickerSpec.next(tickerSpec, rawText, size, android.os.SystemClock.elapsedRealtime())
         tickerSpec = spec
         engine?.setTicker(spec)
         settings.tickerText = spec?.text.orEmpty(); settings.tickerSize = size.name
         _ui.update { it.copy(tickerText = spec?.text.orEmpty(), tickerSize = size) }
         event(if (spec != null) "ticker on size=${size.label} len=${spec.text.length}" else "ticker off", withRow = true)
+        remote?.stateChanged()
+    }
+
+    // ---- remote support control (1.0.14) ----
+
+    private fun startRemote(streamId: String, g: Int) {
+        val client = try {
+            val controls = RemoteAdapter(g)
+            val dispatcher = app.streambird.android.remote.RemoteDispatcher(
+                app.streambird.android.remote.RemoteApplier(controls, hostChanges), { controls.isLive },
+                app.streambird.android.remote.RateLimiter { System.nanoTime() / 1_000_000 }, { System.currentTimeMillis() }, { app.streambird.android.diag.Diag.log(it) },
+            )
+            app.streambird.android.remote.RemoteControlClient(
+                remoteApi, dispatcher, scope, { remoteSnapshot() }, { System.nanoTime() / 1_000_000 }, log = { app.streambird.android.diag.Diag.log(it) },
+            )
+        } catch (e: Throwable) { app.streambird.android.diag.Diag.log("remote control: could not start (${e.javaClass.simpleName})"); return }
+        if (gen != g) return
+        remote = client
+        client.start(streamId)
+        if (gen != g || _ui.value.phase != LivePhase.LIVE) stopRemote() // the stream ended while the client was being started
+    }
+
+    private fun stopRemote() { remote?.stop(); remote = null }
+
+    private fun remoteSnapshot(): kotlinx.serialization.json.JsonObject? {
+        val u = _ui.value
+        if (u.phase != LivePhase.LIVE) return null
+        return app.streambird.android.remote.RemoteState.build(
+            app.streambird.android.remote.RemoteStateInput(
+                u.adSlots, u.adsShrink, u.tickerText, u.clock, u.request?.orientation?.wire ?: u.stream?.orientation ?: "portrait",
+                app.streambird.android.BuildConfig.VERSION_NAME, u.freePlan,
+            ),
+        )
+    }
+
+    /** What a support session may change. Same effect on the picture as the Live screen's controls, but not a host change and nothing in the host-visible event list. */
+    private inner class RemoteAdapter(private val g: Int) : app.streambird.android.remote.RemoteControls {
+        override val isLive: Boolean get() = gen == g && _ui.value.phase == LivePhase.LIVE
+        override fun hasAd(p: AdPlacement) = _ui.value.adSlots.any { it.placement == p && it.problem == null }
+        override fun tickerText() = _ui.value.tickerText
+        override fun clock() = _ui.value.clock
+        override fun applyAdManual(p: AdPlacement, m: AdManual?) {
+            engine?.setAdManual(p, m)
+            _ui.update { it.copy(adSlots = it.adSlots.map { a -> if (a.placement == p) a.copy(manual = m) else a }) }
+        }
+        override fun applyAdEnabled(p: AdPlacement, on: Boolean) {
+            engine?.setAdEnabled(p, on)
+            _ui.update { it.copy(adSlots = it.adSlots.map { a -> if (a.placement == p) a.copy(enabled = on) else a }) }
+        }
+        override fun applyAdsShrink(on: Boolean) { engine?.setAdsShrink(on); _ui.update { it.copy(adsShrink = on) } }
+        override fun applyAdSchedule(p: AdPlacement, s: AdSchedule) {
+            engine?.setAdSchedule(p, s)
+            _ui.update { it.copy(adSlots = it.adSlots.map { a -> if (a.placement == p) a.copy(schedule = s) else a }) }
+        }
+        override fun applyTicker(text: String) {
+            val size = _ui.value.tickerSize
+            val spec = TickerSpec.next(tickerSpec, text, size, android.os.SystemClock.elapsedRealtime())
+            tickerSpec = spec
+            engine?.setTicker(spec)
+            _ui.update { it.copy(tickerText = spec?.text.orEmpty()) }   // not saved to the phone's preferences: it is not the host's choice
+        }
+        override fun applyClock(c: app.streambird.android.clock.ClockSettings) {
+            val n = c.normalized()
+            engine?.setClock(n.takeIf { it.enabled })
+            _ui.update { it.copy(clock = n) }
+        }
     }
 
     private fun event(text: String, withRow: Boolean) {
@@ -588,6 +673,7 @@ class StreamController @Inject constructor(
     /** The stream ended on the server (website, another device, force-end, failure): stop publishing, camera and service; do NOT call /end. */
     private suspend fun endedByServer(status: String, dests: List<StreamStatusDestination>, g: Int) {
         if (gen != g || !tryMove(LivePhase.LIVE) { it.copy(phase = LivePhase.ENDING, message = "The stream was ended elsewhere. Stopping...") }) return
+        stopRemote()
         stopReconnector()
         armJob?.cancel(); pollJob?.cancel()
         runJob?.cancelAndJoin()

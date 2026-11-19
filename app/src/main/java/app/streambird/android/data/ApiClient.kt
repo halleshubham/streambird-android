@@ -92,6 +92,17 @@ class ApiClient(
             .build()
     }
 
+    /**
+     * Client for the remote-control long poll (the server holds a request up to ~25 s): same cookie jar, interceptors and connection pool as [http],
+     * read timeout 35 s (just above the server's wait), no overall call timeout. Cancelling the coroutine cancels the call.
+     */
+    internal val remoteHttp: OkHttpClient by lazy {
+        http.newBuilder()
+            .readTimeout(REMOTE_READ_TIMEOUT_S, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(0, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     internal fun url(path: String): HttpUrl = (baseUrl().trimEnd('/') + "/api" + path).toHttpUrl()
 
     /** Cancellable: cancelling the coroutine cancels the HTTP call, also while the body is being read. Unexpected bodies (HTML from a captive portal, missing fields) become [ApiException]. */
@@ -195,6 +206,9 @@ class ApiClient(
 
         /** After the last byte is sent the server validates and stores the file (object storage) before it answers. */
         const val UPLOAD_READ_TIMEOUT_S = 120L
+
+        /** Remote-control long poll: the server waits up to 25 s, so a read quiet for 35 s means a dead connection. */
+        const val REMOTE_READ_TIMEOUT_S = 35L
 
         /**
          * Pulls a human message out of the backend's error body, whatever its shape. The real server wraps Nest's own response in its AllExceptionsFilter:

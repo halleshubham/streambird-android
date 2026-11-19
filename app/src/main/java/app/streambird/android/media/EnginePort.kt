@@ -18,6 +18,10 @@ interface EnginePort {
     fun startAdClock()
     /** Show now / Hide (null = follow the schedule). Never saved. */
     fun setAdManual(p: app.streambird.android.ads.AdPlacement, m: app.streambird.android.ads.AdManual?)
+    /** Switches one loaded ad on or off for the running stream (same flag the kit's `enabled` sets at start). Never saved. */
+    fun setAdEnabled(p: app.streambird.android.ads.AdPlacement, on: Boolean)
+    /** Replaces one loaded ad's show/hide schedule on the running stream. Never saved. */
+    fun setAdSchedule(p: app.streambird.android.ads.AdPlacement, s: app.streambird.android.ads.AdSchedule)
     /** "Shrink picture while ads show" on/off for the running stream. */
     fun setAdsShrink(on: Boolean)
     fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit)

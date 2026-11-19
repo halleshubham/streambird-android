@@ -113,6 +113,10 @@ class AdLayerGl(
 
     fun setManual(p: AdPlacement, m: AdManual?) { rts[p.ordinal].manual = m }
 
+    /** Live on/off and schedule of a loaded ad (volatile fields, read by the next frame): nothing is decoded or uploaded, so no frame is dropped. Ignored for an ad that never loaded. */
+    fun setEnabled(p: AdPlacement, on: Boolean) { val r = rts[p.ordinal]; if (r.bitmap != null || r.tex != 0) r.enabled = on }
+    fun setSchedule(p: AdPlacement, s: AdSchedule) { val r = rts[p.ordinal]; if (r.bitmap != null || r.tex != 0) r.schedule = s }
+
     private companion object {
         /** The placements whose visible picture can take room from the scene (the lower and left third; the frame when it has a window). */
         val SHRINKING = listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.L_SHAPE)
