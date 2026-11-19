@@ -60,6 +60,27 @@ class StreamControllerTest {
         override fun setAdEnabled(p: AdPlacement, on: Boolean) { enables.add(p to on) }
         override fun setAdSchedule(p: AdPlacement, s: app.streambird.android.ads.AdSchedule) { schedules.add(p to s) }
         override fun setAdsShrink(on: Boolean) { shrinks.add(on) }
+        val banners = CopyOnWriteArrayList<app.streambird.android.media.BannerSpec?>()
+        override fun setBanner(spec: app.streambird.android.media.BannerSpec?) { banners.add(spec) }
+        /** The fake render thread and the kit swaps it was asked to do. */
+        val renderThread: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "fake-render") }
+        val kitSwaps = CopyOnWriteArrayList<Pair<app.streambird.android.media.KitContent, String>>()
+        val kitPrepares = CopyOnWriteArrayList<String>()
+        @Volatile var kitSwapOk = true
+        override val kitTarget = object : app.streambird.android.media.KitTarget {
+            override val renderExecutor: java.util.concurrent.Executor get() = renderThread
+            override fun prepare(content: app.streambird.android.media.KitContent): app.streambird.android.media.PreparedKitHandle {
+                kitPrepares.add(Thread.currentThread().name)
+                return object : app.streambird.android.media.PreparedKitHandle {
+                    override val unreadable = emptyList<AdPlacement>(); override val noWindow = emptyList<AdPlacement>(); override val notes = emptyList<String>()
+                    override fun discard() {}
+                }
+            }
+            override fun swap(prepared: app.streambird.android.media.PreparedKitHandle, content: app.streambird.android.media.KitContent): Boolean {
+                if (!kitSwapOk) return false
+                kitSwaps.add(content to Thread.currentThread().name); return true
+            }
+        }
         override fun switchCamera(done: (error: String?, nowFront: Boolean) -> Unit) { done(null, false) }
         override val preview: PreviewHandle? = null
         override val droppedFrames = 0L
@@ -79,8 +100,9 @@ class StreamControllerTest {
         override fun watchDeviceNetwork(onChange: (String) -> Unit): () -> Unit = {}
         override fun watchNetworkTriggers(onTrigger: (Trigger) -> Unit): () -> Unit { triggers = onTrigger; return {} }
         override fun logHeader() = listOf("app" to "test")
-        override fun testLogo() = null
-        override fun decodeLogo(bytes: ByteArray) = null
+        @Volatile var logoBitmap: android.graphics.Bitmap? = null
+        override fun testLogo() = logoBitmap
+        override fun decodeLogo(bytes: ByteArray) = logoBitmap
         override fun prepareThumbnail(uri: String, portrait: Boolean) = ByteArray(0)
     }
 
@@ -498,7 +520,7 @@ class StreamControllerTest {
         remote.answers.trySend(remoteAnswer(
             remoteCmd(1, "ads.enabled", """{"placement":"side_third","on":true}"""),      // its picture failed to load
             remoteCmd(2, "ads.manual", """{"placement":"l_shape","mode":"shown"}"""),     // not in this kit's set
-            remoteCmd(3, "stream.stop", "{}"), remoteCmd(4, "camera.flip", "{}"), remoteCmd(5, "kit.apply", """{"kitId":"k1"}"""),
+            remoteCmd(3, "stream.stop", "{}"), remoteCmd(4, "camera.flip", "{}"), remoteCmd(5, "layout.set", """{"mode":"x"}"""),
         ))
         waitFor("5 acks") { remote.acks.size == 5 }
         assertEquals(listOf(false, false, false, false, false), remote.acks.map { it.ok })
@@ -551,5 +573,236 @@ class StreamControllerTest {
         controller.start(req); waitFor("failed") { controller.ui.value.phase == LivePhase.FAILED }
         runBlocking { delay(150) }
         assertTrue(remote.polls.isEmpty())
+    }
+
+    // ---- 1.0.15: logo.set, name banner, kit.apply ----
+
+    private val kitA = "0b6f6f0e-3c43-4a76-9d3b-6a3f3d6a9c11"
+    private val kitB = "22222222-2222-2222-2222-222222222222"
+    private fun be32(v: Int) = byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
+    private fun pngBytes(w: Int = 100, h: Int = 50) = byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13) + "IHDR".toByteArray() + be32(w) + be32(h) + ByteArray(10)
+    private fun unsafeBitmap(): android.graphics.Bitmap {
+        val unsafeClass = Class.forName("sun.misc.Unsafe")
+        val field = unsafeClass.getDeclaredField("theUnsafe").apply { isAccessible = true }
+        return unsafeClass.getMethod("allocateInstance", Class::class.java).invoke(field.get(null), android.graphics.Bitmap::class.java) as android.graphics.Bitmap
+    }
+    private fun kitOf(id: String, name: String, portraitAds: List<app.streambird.android.data.KitAd> = emptyList(), shrink: Boolean = false, clockOn: Boolean = true) =
+        app.streambird.android.data.BrandKit(id = id, name = name, adsPortrait = portraitAds, adsShrinkPicture = shrink, clockEnabled = clockOn, clockPosition = "bottom_left", clockFormat = "24h", clockStyle = "text", clockAlternate = true)
+    private fun kitAd(p: String, asset: String) = app.streambird.android.data.KitAd(p, asset, true, "continuous", null, null)
+
+    /** A kit source with real picture headers (the applier checks them). */
+    private inner class PngKits(kits: List<app.streambird.android.data.BrandKit>, val gate: CompletableDeferred<Unit>? = null, val fail: Throwable? = null) : KitSource {
+        @Volatile var kits = kits
+        val fetches = AtomicInteger(); val files = CopyOnWriteArrayList<String>()
+        override suspend fun kits(): List<app.streambird.android.data.BrandKit> { fetches.incrementAndGet(); fail?.let { throw it }; return kits }
+        override suspend fun file(assetId: String): ByteArray { files.add(assetId); gate?.await(); return pngBytes() }
+    }
+
+    private fun goLiveWithRemote(r: GoLiveRequest = req.copy(logoChoice = LogoChoice.NONE)): FakeRemoteApi {
+        val remote = FakeRemoteApi(); controller.remoteApi = remote
+        controller.start(r); waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        waitFor("poll") { remote.polls.size == 1 }
+        return remote
+    }
+
+    @Test fun `logo set changes the live logo's side and size and the snapshot, silently`() {
+        env.logoBitmap = unsafeBitmap()
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.TEST))
+        val logo = engineQueue[0].lastConfig!!.logo!!
+        assertEquals(false, logo.onRight); assertEquals(120, logo.heightPx)
+        assertEquals(app.streambird.android.remote.LogoInfo(true, false, 120), controller.ui.value.logo)
+        val before = controller.ui.value.events
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "logo.set", """{"position":"right","size":220}"""), remoteCmd(2, "logo.set", """{"size":16}""")))
+        waitFor("2 acks") { remote.acks.size == 2 }
+        assertTrue(remote.acks.toString(), remote.acks.all { it.ok })
+        assertEquals(true, logo.onRight); assertEquals(16, logo.heightPx)                       // the very object the compositor draws from
+        assertEquals(app.streambird.android.remote.LogoInfo(true, true, 16), controller.ui.value.logo)
+        assertEquals(before, controller.ui.value.events)
+        waitFor("state with the logo", 20000) { remote.states.any { it["logo"].toString() == """{"present":true,"position":"right","size":16}""" } }
+    }
+
+    @Test fun `logo set on a stream without a logo is refused and the snapshot says there is none`() {
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.NONE))
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "logo.set", """{"position":"right"}""")))
+        waitFor("ack") { remote.acks.size == 1 }
+        assertEquals("no logo on this stream", remote.acks[0].error)
+        waitFor("first state", 20000) { remote.states.isNotEmpty() }
+        assertEquals("""{"present":false,"position":"left","size":90}""", remote.states[0]["logo"].toString())
+    }
+
+    @Test fun `the name banner is set by a support session silently and by the host from the Live screen, the host wins for 3 seconds`() {
+        val remote = goLiveWithRemote()
+        val e = engineQueue[0]
+        waitFor("first state", 20000) { remote.states.isNotEmpty() }
+        assertEquals("""{"available":true,"name":null,"title":null,"show":false}""", remote.states[0]["lowerThird"].toString())
+        val before = controller.ui.value.events
+        remote.answers.trySend(remoteAnswer(
+            remoteCmd(1, "lowerThird.set", """{"name":"Jane Doe","title":"Host"}"""), remoteCmd(2, "lowerThird.set", """{"show":true}"""),
+        ))
+        waitFor("2 acks") { remote.acks.size == 2 }
+        assertTrue(remote.acks.toString(), remote.acks.all { it.ok })
+        assertEquals(app.streambird.android.media.NameBannerState("Jane Doe", "Host", true), controller.ui.value.banner)
+        assertTrue(e.banners.last()!!.visible); assertEquals(1L, e.banners.last()!!.version)
+        assertEquals(before, controller.ui.value.events)                                          // nothing in the host-visible list
+        waitFor("state with the banner", 20000) { remote.states.any { it["lowerThird"].toString() == """{"available":true,"name":"Jane Doe","title":"Host","show":true}""" } }
+        // the host changes it from the Live screen: a host change, with an event, and it wins over support for 3 s
+        controller.setBanner("Guest", "", false)
+        assertEquals(app.streambird.android.media.NameBannerState("Guest", null, false), controller.ui.value.banner)
+        assertFalse(e.banners.last()!!.visible)
+        assertTrue(controller.ui.value.events.last().endsWith("name banner hidden"))
+        remote.answers.trySend(remoteAnswer(remoteCmd(3, "lowerThird.set", """{"show":true}""")))
+        waitFor("ack 3") { remote.acks.size == 3 }
+        assertEquals("host changed it just now", remote.acks[2].error)
+        assertFalse(controller.ui.value.banner.show)
+    }
+
+    @Test fun `a banner show with no name is refused`() {
+        val remote = goLiveWithRemote()
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "lowerThird.set", """{"show":true}"""), remoteCmd(2, "lowerThird.set", """{"name":"‮‬"}""")))
+        waitFor("2 acks") { remote.acks.size == 2 }
+        assertEquals(listOf("no name for the banner", null), remote.acks.map { it.error })
+        assertEquals(app.streambird.android.media.NameBannerState(), controller.ui.value.banner)
+    }
+
+    @Test fun `kit apply swaps on the render thread, updates the screen and the snapshot, and the ack follows`() {
+        val src = PngKits(listOf(kitOf(kitA, "Acme", listOf(kitAd("lower_third", "ad1"), kitAd("side_third", "ad2"))), kitOf(kitB, "Other")))
+        controller.kitSource = src
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.NONE, useKitAds = false))
+        val e = engineQueue[0]
+        val before = controller.ui.value.events
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "kit.apply", """{"kitId":"$kitA"}""")))
+        waitFor("ack") { remote.acks.size == 1 }
+        assertTrue(remote.acks.toString(), remote.acks[0].ok); assertEquals("c1", remote.acks[0].id)
+        val (content, swapThread) = e.kitSwaps.single()
+        assertEquals("fake-render", swapThread); assertTrue(e.kitPrepares.none { it == "fake-render" })        // prepared elsewhere, swapped only on the render thread
+        assertEquals(kitA, content.kitId); assertEquals(false, content.shrink); assertTrue(content.clock.enabled)
+        assertEquals(setOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD), content.adInputs.map { it.placement }.toSet())
+        assertEquals(setOf("ad1", "ad2"), src.files.toSet())
+        val ui = controller.ui.value
+        assertEquals(kitA, ui.kitId); assertEquals(listOf(AdPlacement.SIDE_THIRD, AdPlacement.LOWER_THIRD).sortedBy { it.ordinal }, ui.adSlots.map { it.placement })
+        assertFalse(ui.adsShrink); assertTrue(ui.clock.enabled); assertEquals(app.streambird.android.clock.ClockPosition.BOTTOM_LEFT, ui.clock.position)
+        assertNull(ui.adsNote)
+        assertEquals(before, ui.events)                                                                       // silent
+        waitFor("snapshot with the kit", 20000) { remote.states.any { it["kit"].toString() == """{"id":"$kitA"}""" } }
+        val s = remote.states.last { it["kit"].toString() == """{"id":"$kitA"}""" }
+        assertEquals("""[{"id":"$kitA","name":"Acme"},{"id":"$kitB","name":"Other"}]""", s["kits"].toString())
+        assertTrue(s["ads"].toString().contains(""""lower_third":{"present":true"""))
+    }
+
+    @Test fun `a failed kit apply keeps everything as it was and acks the reason`() {
+        val src = PngKits(listOf(kitOf(kitA, "Acme", listOf(kitAd("lower_third", "ad1")))))
+        controller.kitSource = src
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true))   // go-live kit comes from the HTTP fake (id k1)
+        val uiBefore = controller.ui.value
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "kit.apply", """{"kitId":"$kitB"}""")))
+        waitFor("ack") { remote.acks.size == 1 }
+        assertFalse(remote.acks[0].ok); assertEquals("kit not found", remote.acks[0].error)
+        assertTrue(engineQueue[0].kitSwaps.isEmpty())
+        val u = controller.ui.value
+        assertEquals(uiBefore.adSlots, u.adSlots); assertEquals(uiBefore.clock, u.clock); assertEquals(uiBefore.adsShrink, u.adsShrink); assertEquals(uiBefore.logo, u.logo)
+        assertEquals("k1", u.kitId)                                                                   // still the kit from go-live
+        // a swap the render side refuses: nothing changes either
+        engineQueue[0].kitSwapOk = false
+        remote.answers.trySend(remoteAnswer(remoteCmd(2, "kit.apply", """{"kitId":"$kitA"}""")))
+        waitFor("ack 2") { remote.acks.size == 2 }
+        assertEquals("could not apply", remote.acks[1].error)
+        assertEquals("k1", controller.ui.value.kitId); assertEquals(uiBefore.adSlots, controller.ui.value.adSlots)
+        // a failing download
+        engineQueue[0].kitSwapOk = true
+        controller.kitSource = PngKits(listOf(kitOf(kitA, "Acme", listOf(kitAd("lower_third", "ad1")))), fail = app.streambird.android.data.ApiException(500, "x"))
+        remote.answers.trySend(remoteAnswer(remoteCmd(3, "kit.apply", """{"kitId":"$kitA"}""")))
+        waitFor("ack 3", 30000) { remote.acks.size == 3 }
+        assertEquals("download failed", remote.acks[2].error)
+        assertEquals(LivePhase.LIVE, controller.ui.value.phase)
+    }
+
+    @Test fun `the Free plan has no kits and the ack says so`() {
+        val src = PngKits(listOf(kitOf(kitA, "Acme")))
+        controller.kitSource = src
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.NONE, freePlan = true))
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "kit.apply", """{"kitId":"$kitA"}""")))
+        waitFor("ack") { remote.acks.size == 1 }
+        assertEquals("plan does not include brand kits", remote.acks[0].error)
+        assertEquals(0, src.fetches.get()); assertTrue(engineQueue[0].kitSwaps.isEmpty())
+        waitFor("first state", 20000) { remote.states.isNotEmpty() }
+        assertFalse(remote.states[0].containsKey("kits"))
+        assertEquals(0, server.count("GET /api/brand-kits"))
+    }
+
+    @Test fun `a second kit apply while one is running answers busy and the first one finishes normally`() {
+        val gate = CompletableDeferred<Unit>()
+        val src = PngKits(listOf(kitOf(kitA, "Acme", listOf(kitAd("lower_third", "ad1")))), gate = gate)
+        controller.kitSource = src
+        val remote = goLiveWithRemote()
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "kit.apply", """{"kitId":"$kitA"}"""), remoteCmd(2, "kit.apply", """{"kitId":"$kitA"}""")))
+        waitFor("busy ack") { remote.acks.size == 1 }
+        assertEquals("c2", remote.acks[0].id); assertEquals("busy", remote.acks[0].error)
+        assertTrue(engineQueue[0].kitSwaps.isEmpty())
+        gate.complete(Unit)
+        waitFor("first ack") { remote.acks.size == 2 }
+        assertEquals("c1", remote.acks[1].id); assertTrue(remote.acks[1].ok)
+        remote.answers.trySend(remoteAnswer(remoteCmd(3, "kit.apply", """{"kitId":"$kitA"}""")))              // the slot is free again
+        waitFor("third ack") { remote.acks.size == 3 }
+        assertTrue(remote.acks[2].ok)
+    }
+
+    @Test fun `the host touching a setting a kit replaces wins, before and during the apply`() {
+        val gate = CompletableDeferred<Unit>()
+        val src = PngKits(listOf(kitOf(kitA, "Acme", listOf(kitAd("lower_third", "ad1")))), gate = gate)
+        controller.kitSource = src
+        val remote = goLiveWithRemote()
+        // during: the host switches the clock while the files are still downloading
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "kit.apply", """{"kitId":"$kitA"}""")))
+        waitFor("download started") { src.files.isNotEmpty() }
+        controller.setClock(controller.ui.value.clock.copy(enabled = true))
+        gate.complete(Unit)
+        waitFor("ack") { remote.acks.size == 1 }
+        assertEquals("host changed it just now", remote.acks[0].error)
+        assertTrue(engineQueue[0].kitSwaps.isEmpty())
+        // before: a host change a moment ago refuses the command at once
+        controller.setAdsShrink(true)
+        remote.answers.trySend(remoteAnswer(remoteCmd(2, "kit.apply", """{"kitId":"$kitA"}""")))
+        waitFor("ack 2") { remote.acks.size == 2 }
+        assertEquals("host changed it just now", remote.acks[1].error)
+    }
+
+    @Test fun `ending the stream while a kit is being prepared never swaps anything`() {
+        val gate = CompletableDeferred<Unit>()
+        controller.kitSource = PngKits(listOf(kitOf(kitA, "Acme", listOf(kitAd("lower_third", "ad1")))), gate = gate)
+        val remote = goLiveWithRemote()
+        remote.answers.trySend(remoteAnswer(remoteCmd(1, "kit.apply", """{"kitId":"$kitA"}""")))
+        waitFor("download started") { (controller.kitApplier.isRunning) }
+        controller.end(); waitFor("ended") { controller.ui.value.phase == LivePhase.ENDED }
+        gate.complete(Unit)
+        waitFor("slot free") { !controller.kitApplier.isRunning }
+        assertTrue(engineQueue[0].kitSwaps.isEmpty())
+    }
+
+    @Test fun `a stream that started with a kit lists the customer's kits and the kit in the first snapshot`() {
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true))
+        waitFor("first state", 20000) { remote.states.isNotEmpty() }
+        val s = remote.states[0]
+        assertEquals("""{"id":"k1"}""", s["kit"].toString())
+        assertEquals("""[{"id":"k1","name":"Kit"}]""", s["kits"].toString())
+        assertEquals(1, server.count("GET /api/brand-kits"))                                           // the go-live fetch only, nothing extra
+    }
+
+    @Test fun `a stream without a kit fetches the kit list once when the first snapshot goes out`() {
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.NONE, useKitAds = false))
+        waitFor("snapshot with kits", 20000) { remote.states.any { it.containsKey("kits") } }
+        assertEquals("null", remote.states.last { it.containsKey("kits") }["kit"].toString())
+        assertEquals(1, server.count("GET /api/brand-kits"))
+        runBlocking { delay(1500) }
+        assertEquals(1, server.count("GET /api/brand-kits"))                                           // not again
+    }
+
+    @Test fun `an old server that has no kit list leaves the snapshot without kits and changes nothing else`() {
+        server.kitsResponse = { 404 to """{"statusCode":404,"message":"Not Found"}""" }
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.NONE, useKitAds = false))
+        waitFor("first state", 20000) { remote.states.isNotEmpty() }
+        runBlocking { delay(1500) }
+        assertTrue(remote.states.none { it.containsKey("kits") })
+        assertEquals(LivePhase.LIVE, controller.ui.value.phase)
+        assertTrue(remote.states[0].containsKey("lowerThird") && remote.states[0].containsKey("logo"))
     }
 }

@@ -13,6 +13,7 @@ import app.streambird.android.clock.ClockPosition
 import app.streambird.android.clock.ClockSettings
 import app.streambird.android.clock.ClockSize
 import app.streambird.android.clock.ClockStyle
+import app.streambird.android.media.NameBanner
 import app.streambird.android.media.Ticker
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -33,7 +34,13 @@ sealed class RemoteAction {
     data class AdsSchedule(val placement: AdPlacement, val schedule: AdSchedule) : RemoteAction()
     data class TickerSet(val text: String?, val on: Boolean) : RemoteAction()
     data class ClockSet(val patch: ClockPatch) : RemoteAction()
-    /** A whitelisted type the phone app has no equivalent for (logo.set, kit.apply, layout.set, lowerThird.set, wallpaper.dim): acked as not supported. */
+    /** Apply one of the customer's brand kits to the running stream (logo, ads, date and time, shrink). [kitId] is a uuid. */
+    data class KitApply(val kitId: String) : RemoteAction()
+    /** Logo side and / or height in canvas px (same units as the brand kit's `logoSize`); a null field stays as it is. */
+    data class LogoSet(val onRight: Boolean?, val size: Int?) : RemoteAction()
+    /** The name banner (1.0.15). [name] / [show] null = unchanged; [titleGiven] false = title unchanged; texts are already sanitised. */
+    data class LowerThirdSet(val name: String?, val titleGiven: Boolean, val title: String?, val show: Boolean?) : RemoteAction()
+    /** A whitelisted type the phone app has no equivalent for (layout.set, wallpaper.dim): acked as not supported. */
     data class Unsupported(val why: String = NOT_SUPPORTED) : RemoteAction()
 }
 
@@ -73,9 +80,12 @@ object RemoteParser {
     const val MAX_COMMANDS_PER_ANSWER = 100
 
     /** Types the phone can apply. Anything not in this set or [UNSUPPORTED_TYPES] (stop, start, camera, bitrate, recording, destinations ...) is refused. */
-    val SUPPORTED_TYPES = setOf("ads.manual", "ads.enabled", "ads.shrink", "ads.schedule", "ticker.set", "clock.set")
+    val SUPPORTED_TYPES = setOf("ads.manual", "ads.enabled", "ads.shrink", "ads.schedule", "ticker.set", "clock.set", "kit.apply", "logo.set", "lowerThird.set")
     /** Whitelisted by the server but without an equivalent on the phone: payload must be an object, then acked "not supported". */
-    val UNSUPPORTED_TYPES = setOf("logo.set", "kit.apply", "layout.set", "lowerThird.set", "wallpaper.dim")
+    val UNSUPPORTED_TYPES = setOf("layout.set", "wallpaper.dim")
+    const val MAX_LOGO_SIZE = 600
+    const val MIN_LOGO_SIZE = 16
+    private val UUID_RE = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
     private val ID_RE = Regex("[A-Za-z0-9_-]{1,$MAX_ID}")
     private val json = Json { ignoreUnknownKeys = true }
@@ -113,6 +123,9 @@ object RemoteParser {
         "ads.schedule" -> RemoteAction.AdsSchedule(placement(p), schedule(p))
         "ticker.set" -> ticker(p)
         "clock.set" -> RemoteAction.ClockSet(clock(p))
+        "kit.apply" -> RemoteAction.KitApply(str(p, "kitId").takeIf { UUID_RE.matches(it) } ?: throw Bad("kitId must be an id"))
+        "logo.set" -> logo(p)
+        "lowerThird.set" -> lowerThird(p)
         else -> RemoteAction.Unsupported()
     }
 
@@ -152,6 +165,36 @@ object RemoteParser {
         }
         if (text != null && text.length > MAX_TICKER) throw Bad("text longer than $MAX_TICKER")
         return RemoteAction.TickerSet(text, on)
+    }
+
+    private fun logo(p: JsonObject): RemoteAction.LogoSet {
+        if (!p.containsKey("position") && !p.containsKey("size")) throw Bad("no logo fields")
+        val onRight = if (p.containsKey("position")) when (str(p, "position")) { "left" -> false; "right" -> true; else -> throw Bad("unknown position") } else null
+        val size = if (p.containsKey("size")) {
+            val n = intLong(p["size"]) ?: throw Bad("size must be a whole number")
+            if (n !in MIN_LOGO_SIZE..MAX_LOGO_SIZE) throw Bad("size out of range")
+            n.toInt()
+        } else null
+        return RemoteAction.LogoSet(onRight, size)
+    }
+
+    /** Text from a remote command is capped, then stripped of control and bidi characters, line breaks and runs of spaces ([NameBanner.clean]). */
+    private fun lowerThird(p: JsonObject): RemoteAction.LowerThirdSet {
+        if (!p.containsKey("name") && !p.containsKey("title") && !p.containsKey("show")) throw Bad("no banner fields")
+        val name = if (p.containsKey("name")) {
+            val raw = str(p, "name")
+            if (raw.length > NameBanner.NAME_MAX) throw Bad("name longer than ${NameBanner.NAME_MAX}")
+            NameBanner.cleanName(raw)
+        } else null
+        val titleGiven = p.containsKey("title")
+        var title: String? = null
+        if (titleGiven && p["title"] !is JsonNull) {
+            val raw = (p["title"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw Bad("title must be a string or null")
+            if (raw.length > NameBanner.TITLE_MAX) throw Bad("title longer than ${NameBanner.TITLE_MAX}")
+            title = NameBanner.cleanTitle(raw)
+        }
+        val show = if (p.containsKey("show")) bool(p, "show") else null
+        return RemoteAction.LowerThirdSet(name, titleGiven, title, show)
     }
 
     private fun clock(p: JsonObject): ClockPatch {

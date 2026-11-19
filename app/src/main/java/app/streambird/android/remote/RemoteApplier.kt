@@ -4,6 +4,7 @@ import app.streambird.android.ads.AdManual
 import app.streambird.android.ads.AdPlacement
 import app.streambird.android.ads.AdSchedule
 import app.streambird.android.clock.ClockSettings
+import app.streambird.android.media.NameBannerState
 import app.streambird.android.media.Ticker
 
 /**
@@ -25,22 +26,39 @@ interface RemoteControls {
     /** Empty text = ticker off. Size stays what the host chose; nothing is saved to the phone's preferences. */
     fun applyTicker(text: String)
     fun applyClock(c: ClockSettings)
+
+    // ---- 1.0.15 ----
+    /** The Free plan (no brand kits, no custom ads). */
+    val freePlan: Boolean
+    /** The logo on air now; null = this stream has none. */
+    fun logo(): LogoInfo?
+    /** Side and / or height of the EXISTING logo (null = unchanged). Size is already within 16..600. Same effect on the picture as the kit's logo placement; no frame is dropped. */
+    fun applyLogo(onRight: Boolean?, size: Int?)
+    fun banner(): NameBannerState
+    fun applyBanner(s: NameBannerState)
+    /**
+     * Starts applying a brand kit and returns AT ONCE: an error ("busy", "stream not live" ...) or [ApplyResult.PENDING] when the work started. A started
+     * change reports its final result later through [done] (any thread), exactly once; on a failure the old picture is untouched.
+     */
+    fun applyKit(kitId: String, done: (ApplyResult) -> Unit): ApplyResult
 }
 
-data class ApplyResult(val ok: Boolean, val error: String? = null) {
-    companion object { val OK = ApplyResult(true); fun err(msg: String) = ApplyResult(false, msg) }
+/** [pending] = the work was started and the real result comes later (kit.apply): not acked yet. */
+data class ApplyResult(val ok: Boolean, val error: String? = null, val pending: Boolean = false) {
+    companion object { val OK = ApplyResult(true); val PENDING = ApplyResult(false, null, true); fun err(msg: String) = ApplyResult(false, msg) }
 }
 
 /** Maps each validated command onto the live controls. Never throws: a failure becomes an error result. */
 class RemoteApplier(private val controls: RemoteControls, private val host: HostChangeTracker) {
-    fun apply(cmd: RemoteCommand): ApplyResult {
+    /** [late] gets the final result of a command that answered [ApplyResult.PENDING] (kit.apply); other commands never call it. */
+    fun apply(cmd: RemoteCommand, late: (ApplyResult) -> Unit = {}): ApplyResult {
         val a = cmd.action
         if (a is RemoteAction.Unsupported) return ApplyResult.err(a.why)
         if (!controls.isLive) return ApplyResult.err("stream not live")
-        return try { applyLive(a) } catch (e: Exception) { ApplyResult.err("could not apply") }
+        return try { applyLive(a, late) } catch (e: Exception) { ApplyResult.err("could not apply") }
     }
 
-    private fun applyLive(a: RemoteAction): ApplyResult {
+    private fun applyLive(a: RemoteAction, late: (ApplyResult) -> Unit): ApplyResult {
         when (a) {
             is RemoteAction.AdsManual -> return ad(a.placement, RemoteKeys.adManual(a.placement)) { controls.applyAdManual(a.placement, a.mode) }
             is RemoteAction.AdsEnabled -> return ad(a.placement, RemoteKeys.adEnabled(a.placement)) { controls.applyAdEnabled(a.placement, a.on) }
@@ -52,6 +70,20 @@ class RemoteApplier(private val controls: RemoteControls, private val host: Host
                 return guarded(RemoteKeys.TICKER) { controls.applyTicker(text) }
             }
             is RemoteAction.ClockSet -> return guarded(RemoteKeys.CLOCK) { controls.applyClock(a.patch.applyTo(controls.clock())) }
+            is RemoteAction.LogoSet -> {
+                if (controls.logo() == null) return ApplyResult.err("no logo on this stream")
+                return guarded(RemoteKeys.LOGO) { controls.applyLogo(a.onRight, a.size?.coerceIn(RemoteParser.MIN_LOGO_SIZE, RemoteParser.MAX_LOGO_SIZE)) }
+            }
+            is RemoteAction.LowerThirdSet -> {
+                val next = controls.banner().patched(a.name, a.titleGiven, a.title, a.show)
+                if (a.show == true && next.name.isEmpty()) return ApplyResult.err("no name for the banner")
+                return guarded(RemoteKeys.LOWER_THIRD) { controls.applyBanner(next) }
+            }
+            is RemoteAction.KitApply -> {
+                if (controls.freePlan) return ApplyResult.err("plan does not include brand kits")
+                if (RemoteKeys.kitCovers().any { host.recent(it) }) return ApplyResult.err(HOST_CHANGED)
+                return controls.applyKit(a.kitId, late)
+            }
             is RemoteAction.Unsupported -> return ApplyResult.err(a.why)
         }
     }

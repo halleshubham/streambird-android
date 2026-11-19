@@ -30,6 +30,12 @@ class HostChangeTracker(private val windowMs: Long = WINDOW_MS, private val nowM
         return nowMs() - t in 0 until windowMs
     }
 
+    /** True when the host changed any of [keys] at or after [sinceMs] (the same clock as [mark]): a long-running remote change must not overwrite it. */
+    fun changedSince(keys: Collection<String>, sinceMs: Long): Boolean = keys.any { k -> (last[k] ?: Long.MIN_VALUE) >= sinceMs }
+
+    /** The clock [mark] uses, for callers that need "now" on the same scale. */
+    fun now(): Long = nowMs()
+
     fun clear() = last.clear()
 
     companion object { const val WINDOW_MS = 3_000L }

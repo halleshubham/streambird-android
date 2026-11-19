@@ -31,6 +31,9 @@ class RemoteDispatcher(
 
     data class Result(val acks: List<RemoteAck>, val appliedAny: Boolean)
 
+    /** Receives the acknowledgement of a command that finished later (kit.apply), and whether it changed the picture. Called from any thread. */
+    @Volatile var onLateAck: (RemoteAck, Boolean) -> Unit = { _, _ -> }
+
     fun process(batch: ParsedBatch): Result {
         val acks = ArrayList<RemoteAck>()
         var applied = false
@@ -52,22 +55,25 @@ class RemoteDispatcher(
                     if (cmd.seq <= lastSeq) { log("remote: ${cmd.type} seq=${cmd.seq} skipped (already seen)"); continue }
                     if (cmd.id in seenIds) { remember(cmd.seq, cmd.id); log("remote: ${cmd.type} seq=${cmd.seq} skipped (id already seen)"); continue }
                     remember(cmd.seq, cmd.id)
-                    val (ok, error) = decide(cmd, serverNow)
-                    if (ok) applied = true
-                    log("remote: ${cmd.type} seq=${cmd.seq} -> " + if (ok) "ok" else "refused ($error)")
-                    acks.add(ack(cmd.id, ok, error))
+                    val r = decide(cmd, serverNow)
+                    if (r.pending) { log("remote: ${cmd.type} seq=${cmd.seq} -> started"); continue } // the ack follows when the work is done
+                    if (r.ok) applied = true
+                    log("remote: ${cmd.type} seq=${cmd.seq} -> " + if (r.ok) "ok" else "refused (${r.error})")
+                    acks.add(ack(cmd.id, r.ok, r.error))
                 }
             }
         }
         return Result(acks, applied)
     }
 
-    private fun decide(cmd: RemoteCommand, serverNow: Long): Pair<Boolean, String?> {
-        if (serverNow - cmd.atMs > MAX_AGE_MS) return false to "command too old"
-        if (cmd.action !is RemoteAction.Unsupported && !isLive()) return false to "stream not live"
-        if (!rate.tryAcquire()) return false to "rate limited"
-        val r = applier.apply(cmd)
-        return r.ok to r.error
+    private fun decide(cmd: RemoteCommand, serverNow: Long): ApplyResult {
+        if (serverNow - cmd.atMs > MAX_AGE_MS) return ApplyResult.err("command too old")
+        if (cmd.action !is RemoteAction.Unsupported && !isLive()) return ApplyResult.err("stream not live")
+        if (!rate.tryAcquire()) return ApplyResult.err("rate limited")
+        return applier.apply(cmd) { res ->
+            log("remote: ${cmd.type} seq=${cmd.seq} -> " + if (res.ok) "ok" else "refused (${res.error})")
+            onLateAck(ack(cmd.id, res.ok, res.error), res.ok)
+        }
     }
 
     private fun remember(seq: Long, id: String?) {
@@ -106,6 +112,11 @@ class RemoteControlClient(
     private var rev = 0L
     private var acks = Channel<RemoteAck>(Channel.UNLIMITED)
     private var stateSignal = Channel<Unit>(Channel.CONFLATED)
+
+    init {
+        // A command that finishes later (kit.apply) is acked from the same queue as the others and triggers a state upload when it changed the picture.
+        dispatcher.onLateAck = { ack, applied -> acks.trySend(ack); if (applied) stateChanged() }
+    }
 
     val running: Boolean get() = pollJob?.isActive == true
 
