@@ -13,6 +13,16 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import app.streambird.android.ads.adSwitchedOffText
+import app.streambird.android.ads.MAX_ADS_PER_PLACEMENT
+import app.streambird.android.ads.adLabel
+import app.streambird.android.ads.adTalkBackLabel
+import app.streambird.android.ads.addAd
+import app.streambird.android.ads.moveAd
+import app.streambird.android.ads.removeAd
+import app.streambird.android.ads.replaceAd
+import app.streambird.android.ads.setAdEnabled
+import app.streambird.android.ads.setAdSeconds
+import app.streambird.android.ads.withSchedule
 import app.streambird.android.ads.FrameWindowState
 import app.streambird.android.ads.frameWindowText
 import androidx.compose.foundation.layout.Arrangement
@@ -100,14 +110,20 @@ fun SlotCard(
             extra?.invoke()
         }
     }
-    if (picking) AlertDialog(
-        onDismissRequest = { picking = false },
-        title = { Text("${slot.label}: choose from uploaded") },
+    if (picking) AssetPickerDialog("${slot.label}: choose from uploaded", library, loader, assetUrl, onChoose = { onChoose(it); picking = false }, onDismiss = { picking = false })
+}
+
+/** "Choose from uploaded": the library files of one kind, tap one to pick it. */
+@Composable
+fun AssetPickerDialog(title: String, library: List<AssetItem>, loader: ImageLoader, assetUrl: (String) -> String, onChoose: (String) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
         text = {
             if (library.isEmpty()) Text("Nothing uploaded for this slot yet. Use \"Upload\".")
             else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(library, key = { it.id }) { a ->
-                    Row(Modifier.fillMaxWidth().clickable { onChoose(a.id); picking = false }.padding(4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().clickable { onChoose(a.id) }.padding(4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         AssetImage(assetUrl(a.id), loader, Modifier.size(48.dp))
                         Column(Modifier.weight(1f)) {
                             Text(a.name.ifBlank { "Untitled" } + if (a.isGif) " (GIF)" else "", maxLines = 1)
@@ -118,7 +134,7 @@ fun SlotCard(
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = { picking = false }) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -168,7 +184,8 @@ fun KitAdsSection(
     loader: ImageLoader,
     assetUrl: (String) -> String,
     storageEnabled: Boolean,
-    onUpload: (AdPlacement) -> Unit,
+    /** (placement, index of the ad to replace, null = add another). */
+    onUpload: (AdPlacement, Int?) -> Unit,
     onRemoveAds: () -> Unit,
     busy: Boolean,
     shrink: Boolean = true,
@@ -184,37 +201,41 @@ fun KitAdsSection(
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (savedAds.isEmpty()) Text("No ${orientation.label} ads saved on this kit.", style = MaterialTheme.typography.bodySmall)
-                savedAds.forEach { a ->
-                    val p = AdPlacement.fromWire(a.placement) ?: return@forEach
+                savedAds.forEachIndexed { idx, a ->
+                    val p = AdPlacement.fromWire(a.placement) ?: return@forEachIndexed
+                    val num = savedAds.take(idx + 1).count { it.placement == a.placement }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         AssetImage(assetUrl(a.assetId), loader, Modifier.size(48.dp))
                         Column(Modifier.weight(1f)) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(p.label, style = MaterialTheme.typography.titleSmall)
+                                Text(adLabel(p, num), style = MaterialTheme.typography.titleSmall)
                                 if (!a.enabled) AdOffChip()
                             }
                             Text((if (a.enabled) "" else "Off, ") + describeSchedule(scheduleOf(a)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (!a.enabled) AdOffWarning(adSwitchedOffText(p))
+                            if (!a.enabled) AdOffWarning(adSwitchedOffText(p, adNumber = num))
                         }
                     }
                 }
                 if (savedAds.isNotEmpty()) OutlinedButton(onClick = onRemoveAds, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Remove ${orientation.label} ads", color = MaterialTheme.colorScheme.error) }
             }
             AdsAccess.EDITABLE -> {
-                Text("One ad per placement (lower third, left third, full screen, L-shaped frame), a picture or an animated GIF, shown all the time or now and then.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Up to $MAX_ADS_PER_PLACEMENT ads per placement (lower third, left third, full screen, L-shaped frame), each a picture or an animated GIF, shown all the time or now and then. Several ads of one placement play in turn.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 fun change(p: AdPlacement, f: (AdEditSlot) -> AdEditSlot) = onSlots(slots.map { if (it.placement == p) f(it) else it })
                 slots.forEach { s ->
+                    var addingFor by remember(s.placement) { mutableStateOf(false) }
+                    val n = s.count
                     SlotCard(
                         orientation, s.placement.slot(), s.assetId, library, loader, assetUrl, storageEnabled, busy,
-                        onChoose = { id -> change(s.placement) { it.copy(assetId = id) } },
-                        onUpload = { onUpload(s.placement) },
-                        onRemove = { change(s.placement) { it.copy(assetId = null) } },
+                        onChoose = { id -> change(s.placement) { if (it.assetId == null) it.addAd(id) else it.replaceAd(0, id) } },
+                        onUpload = { onUpload(s.placement, 0) },
+                        onRemove = { change(s.placement) { it.removeAd(0) } },
                         headerEnd = {
+                            if (n >= 2) Text("$n ads", Modifier.padding(end = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             if (s.assetId != null) {
                                 if (!s.enabled) AdOffChip(Modifier.padding(end = 8.dp))
                                 Switch(
-                                    checked = s.enabled, onCheckedChange = { v -> change(s.placement) { it.copy(enabled = v) } },
-                                    modifier = Modifier.semantics { contentDescription = "${s.placement.label} ad On"; stateDescription = if (s.enabled) "On" else "Off, switched off" },
+                                    checked = s.enabled, onCheckedChange = { v -> change(s.placement) { it.setAdEnabled(0, v) } },
+                                    modifier = Modifier.semantics { contentDescription = "${adTalkBackLabel(s.placement, 1)} On"; stateDescription = if (s.enabled) "On" else "Off, switched off" },
                                 )
                             }
                         },
@@ -224,13 +245,73 @@ fun KitAdsSection(
                                 FrameWindowPreview(s.assetId, library.firstOrNull { it.id == s.assetId }, loader, assetUrl, frameWindow)
                             }
                             if (s.assetId != null) {
-                                ScheduleEditor(s.schedule, { sch -> change(s.placement) { it.copy(schedule = sch) } })
+                                ScheduleEditor(s.schedule, { sch -> change(s.placement) { it.withSchedule(sch) } })
                                 if (s.schedule is AdSchedule.Interval) Text(describeSchedule(s.schedule), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (n >= 2) AdSequenceControls(s, 0, onSeconds = { sec -> change(s.placement) { it.setAdSeconds(0, sec) } }, onMove = { d -> change(s.placement) { it.moveAd(0, d) } }, onRemove = null)
+                                // The 2nd..5th ads of the placement, in play order.
+                                s.more.forEachIndexed { k, a ->
+                                    val i = k + 1; val num = i + 1
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            AssetImage(assetUrl(a.assetId), loader, Modifier.size(48.dp))
+                                            Column(Modifier.weight(1f)) {
+                                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                    Text("Ad $num", style = MaterialTheme.typography.titleSmall)
+                                                    if (!a.enabled) AdOffChip()
+                                                }
+                                                Text(library.firstOrNull { it.id == a.assetId }?.name?.ifBlank { null } ?: "Picture", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                                            }
+                                            Switch(
+                                                checked = a.enabled, onCheckedChange = { v -> change(s.placement) { it.setAdEnabled(i, v) } },
+                                                modifier = Modifier.semantics { contentDescription = "${adTalkBackLabel(s.placement, num)} On"; stateDescription = if (a.enabled) "On" else "Off, switched off" },
+                                            )
+                                        }
+                                        if (!a.enabled) AdOffWarning(adSwitchedOffText(s.placement, adNumber = num))
+                                        AdSequenceControls(s, i, onSeconds = { sec -> change(s.placement) { it.setAdSeconds(i, sec) } }, onMove = { d -> change(s.placement) { it.moveAd(i, d) } }, onRemove = { change(s.placement) { it.removeAd(i) } })
+                                    }
+                                }
+                                if (s.canAddAnother) OutlinedButton(
+                                    onClick = { addingFor = true }, enabled = !busy,
+                                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Add another ${s.placement.label} ad" },
+                                ) { Text("+ Add another") }
+                                else Text("Up to $MAX_ADS_PER_PLACEMENT ads per placement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         },
+                    )
+                    if (addingFor) AlertDialog(
+                        onDismissRequest = { addingFor = false },
+                        title = { Text("${s.placement.label}: add another ad") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { addingFor = false; onUpload(s.placement, null) }, enabled = storageEnabled && !busy, modifier = Modifier.fillMaxWidth()) { Text("Upload a picture") }
+                                Text("or choose one you uploaded:", style = MaterialTheme.typography.bodySmall)
+                                if (library.isEmpty()) Text("Nothing uploaded yet.", style = MaterialTheme.typography.bodySmall)
+                                library.take(30).forEach { a ->
+                                    Row(Modifier.fillMaxWidth().clickable { change(s.placement) { it.addAd(a.id) }; addingFor = false }.padding(4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        AssetImage(assetUrl(a.id), loader, Modifier.size(40.dp))
+                                        Text(a.name.ifBlank { "Untitled" } + if (a.isGif) " (GIF)" else "", Modifier.weight(1f), maxLines = 1)
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {},
+                        dismissButton = { TextButton(onClick = { addingFor = false }) { Text("Cancel") } },
                     )
                 }
             }
         }
+    }
+}
+
+/** Seconds field plus Up / Down / Remove for ONE ad of a placement's sequence in the kit editor ([onRemove] null = no Remove: the first ad has its own on the card). */
+@Composable
+private fun AdSequenceControls(s: AdEditSlot, index: Int, onSeconds: (Int?) -> Unit, onMove: (Int) -> Unit, onRemove: (() -> Unit)?) {
+    val n = index + 1
+    val label = adTalkBackLabel(s.placement, n)
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        AdSecondsField(s.schedule, s.ads.getOrNull(index)?.showSec, label, Modifier.weight(1f), onSeconds)
+        TextButton(onClick = { onMove(-1) }, enabled = index > 0, modifier = Modifier.semantics { contentDescription = "Move $label up" }) { Text("Up") }
+        TextButton(onClick = { onMove(1) }, enabled = index < s.count - 1, modifier = Modifier.semantics { contentDescription = "Move $label down" }) { Text("Down") }
+        if (onRemove != null) TextButton(onClick = onRemove, modifier = Modifier.semantics { contentDescription = "Remove $label" }) { Text("Remove") }
     }
 }

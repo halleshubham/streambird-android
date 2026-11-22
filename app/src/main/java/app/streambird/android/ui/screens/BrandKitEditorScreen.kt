@@ -44,7 +44,11 @@ import app.streambird.android.brand.KitText
 import app.streambird.android.ads.AdsAccess
 import app.streambird.android.ads.adsAccess
 import app.streambird.android.ads.adsEdited
-import app.streambird.android.ads.kitAdsFromSlots
+import app.streambird.android.ads.kitAdsSave
+import app.streambird.android.ads.addAd
+import app.streambird.android.ads.replaceAd
+import app.streambird.android.brand.kitSetFor
+import app.streambird.android.data.KitAd
 import app.streambird.android.ads.slotsFromKit
 import app.streambird.android.ads.validateSlots
 import app.streambird.android.data.BrandKitPayload
@@ -59,7 +63,8 @@ private fun styleLabel(s: String) = when (s) { "bar" -> "Bar"; "accent" -> "Acce
 private sealed interface UploadTarget {
     data class Logo(val o: BrandOrientation) : UploadTarget
     data class Wallpaper(val o: BrandOrientation) : UploadTarget
-    data class Ad(val o: BrandOrientation, val p: AdPlacement) : UploadTarget
+    /** [index] = the ad to replace, null = add another ad to the placement. */
+    data class Ad(val o: BrandOrientation, val p: AdPlacement, val index: Int? = 0) : UploadTarget
     object Thumbnail : UploadTarget
 }
 
@@ -94,8 +99,8 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
     var clock by remember(key) { mutableStateOf(app.streambird.android.clock.ClockSettings.fromKit(original)) }
     var isDefault by remember(key) { mutableStateOf(original?.isDefault ?: false) }
     var channels by remember(key) { mutableStateOf(original?.connectionIds?.toSet() ?: emptySet()) }
-    var adSlots by remember(key) { mutableStateOf(slotsFromKit(original?.ads.orEmpty())) }
-    var adSlotsP by remember(key) { mutableStateOf(slotsFromKit(original?.adsPortrait.orEmpty())) }
+    var adSlots by remember(key) { mutableStateOf(slotsFromKit(original?.ads.orEmpty(), original?.adsMore.orEmpty())) }
+    var adSlotsP by remember(key) { mutableStateOf(slotsFromKit(original?.adsPortrait.orEmpty(), original?.adsMorePortrait.orEmpty())) }
     var target by remember { mutableStateOf<UploadTarget?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val t = target; target = null
@@ -105,7 +110,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
             is UploadTarget.Wallpaper -> vm.upload(uri, "wallpaper") { id -> if (t.o == BrandOrientation.LANDSCAPE) wallId = id else wallIdP = id }
             is UploadTarget.Thumbnail -> vm.upload(uri, "thumbnail") { id -> thumbId = id }
             is UploadTarget.Ad -> vm.upload(uri, "ad") { id ->
-                val f = { l: List<AdEditSlot> -> l.map { if (it.placement == t.p) it.copy(assetId = id) else it } }
+                val f = { l: List<AdEditSlot> -> l.map { if (it.placement != t.p) it else if (t.index == null || it.assetId == null) it.addAd(id) else it.replaceAd(t.index, id) } }
                 if (t.o == BrandOrientation.LANDSCAPE) adSlots = f(adSlots) else adSlotsP = f(adSlotsP)
             }
         }
@@ -263,14 +268,15 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
 
         KitAdsSection(
             orientation = orientation, access = access,
-            savedAds = (if (portrait) original?.adsPortrait else original?.ads).orEmpty(),
+            savedAds = original?.let { kitSetFor(it, orientation).ads }.orEmpty(),
             slots = if (portrait) adSlotsP else adSlots, onSlots = { if (portrait) adSlotsP = it else adSlots = it },
             library = st.library?.adFiles.orEmpty(), loader = vm.repo.imageLoader, assetUrl = vm.repo::assetUrl,
             storageEnabled = st.storageEnabled,
-            onUpload = { p -> pick(UploadTarget.Ad(orientation, p)) },
+            onUpload = { p, index -> pick(UploadTarget.Ad(orientation, p, index)) },
             onRemoveAds = { original?.let { o ->
                 val d = BrandKitPayload.draftOf(o)
-                vm.save(o, if (portrait) d.copy(adsPortrait = emptyList()) else d.copy(ads = emptyList()), o.connectionIds.toSet()) { }
+                // Clearing a set sends BOTH fields when the kit has further ads, so none are left behind.
+                vm.save(o, if (portrait) d.copy(adsPortrait = emptyList(), adsMorePortrait = emptyList<KitAd>().takeIf { o.adsMorePortrait.isNotEmpty() }) else d.copy(ads = emptyList(), adsMore = emptyList<KitAd>().takeIf { o.adsMore.isNotEmpty() }), o.connectionIds.toSet()) { }
             } },
             busy = busy, shrink = shrink, frameWindow = vm.repo::frameWindow,
         )
@@ -279,13 +285,14 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
         Button(
             onClick = {
                 // Each set's ads are sent ONLY when the user changed them (omitted otherwise: other edits never touch them).
-                val ads = if (access == AdsAccess.EDITABLE && adsEdited(original?.ads.orEmpty(), adSlots)) kitAdsFromSlots(adSlots) else null
-                val adsP = if (access == AdsAccess.EDITABLE && adsEdited(original?.adsPortrait.orEmpty(), adSlotsP)) kitAdsFromSlots(adSlotsP) else null
+                val saveL = if (access == AdsAccess.EDITABLE) kitAdsSave(original?.ads.orEmpty(), original?.adsMore.orEmpty(), adSlots) else null
+                val saveP = if (access == AdsAccess.EDITABLE) kitAdsSave(original?.adsPortrait.orEmpty(), original?.adsMorePortrait.orEmpty(), adSlotsP) else null
+                val ads = saveL?.ads; val adsP = saveP?.ads
                 vm.save(
                     original,
                     KitDraft(
                         name, logoId, position, size.toInt(), style, isDefault, ads, wallpaperAssetId = wallId,
-                        logoAssetIdPortrait = logoIdP, wallpaperAssetIdPortrait = wallIdP, adsPortrait = adsP, adsShrinkPicture = shrink, thumbnailAssetId = thumbId,
+                        logoAssetIdPortrait = logoIdP, wallpaperAssetIdPortrait = wallIdP, adsPortrait = adsP, adsMore = saveL?.adsMore, adsMorePortrait = saveP?.adsMore, adsShrinkPicture = shrink, thumbnailAssetId = thumbId,
                         title = kitTitle, description = kitDescription, clock = clock,
                     ),
                     channels,

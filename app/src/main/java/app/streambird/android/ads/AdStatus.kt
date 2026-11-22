@@ -90,9 +90,17 @@ const val AD_OFF_CHIP = "Off"
  * The warning line under an ad that is present but switched off. With [hasOnSwitch] (Setup, kit editor) it says what to do: "L-shaped frame is
  * switched off: tick On to use it". The Live sheet has no On switch, so there it says where to change it instead.
  */
-fun adSwitchedOffText(p: AdPlacement, hasOnSwitch: Boolean = true): String =
-    if (hasOnSwitch) "${p.label} is switched off: tick On to use it"
-    else "${p.label} is switched off: it cannot be switched on during the stream. Tick On in the kit or on the Setup screen before going live."
+fun adSwitchedOffText(p: AdPlacement, hasOnSwitch: Boolean = true, adNumber: Int = 1): String {
+    val name = adLabel(p, adNumber)
+    return if (hasOnSwitch) "$name is switched off: tick On to use it"
+    else "$name is switched off: it cannot be switched on during the stream. Tick On in the kit or on the Setup screen before going live."
+}
+
+/** "Lower third" for the first ad of a placement (as before sequences), "Lower third ad 2" for the others. */
+fun adLabel(p: AdPlacement, adNumber: Int = 1): String = if (adNumber <= 1) p.label else "${p.label} ad $adNumber"
+
+/** TalkBack name of one ad of a placement ("Lower third ad 2"), also for the first ad and lone ads. */
+fun adTalkBackLabel(p: AdPlacement, adNumber: Int): String = "${p.label} ad $adNumber"
 
 /** Name of a placement inside a sentence ("lower third", "L-shaped frame"). */
 private fun adNameInSentence(p: AdPlacement): String = if (p.label.startsWith("L-")) p.label else p.label.replaceFirstChar { it.lowercase() }
@@ -119,14 +127,45 @@ fun adsSwitchedOffNote(off: List<AdPlacement>): String? {
 }
 
 /** Placements of ads that exist but are switched off. [ads] = (placement, enabled) of the ads that are present. */
-fun switchedOffPlacements(ads: List<Pair<AdPlacement, Boolean>>): List<AdPlacement> = ads.filter { !it.second }.map { it.first }.distinct().sortedBy { it.ordinal }
+fun switchedOffPlacements(ads: List<Pair<AdPlacement, Boolean>>): List<AdPlacement> =
+    ads.map { it.first }.distinct().filter { p -> ads.none { it.first == p && it.second } }.sortedBy { it.ordinal }   // a placement counts only when EVERY ad of it is off
 
-/** The kit editor's slots: a slot with a picture and its On switch off. */
-fun slotsSwitchedOff(slots: List<AdEditSlot>): List<AdPlacement> = slots.filter { it.assetId != null && !it.enabled }.map { it.placement }
+/** The kit editor's slots: a slot with a picture and EVERY ad of it switched off. */
+fun slotsSwitchedOff(slots: List<AdEditSlot>): List<AdPlacement> = slots.filter { s -> s.assetId != null && s.ads.none { it.enabled } }.map { it.placement }
 
-/** Number of switched-off ads on a saved kit (both shapes). */
+/** Number of switched-off ads on a saved kit (both shapes); pass every ad of each set (first ads + further ads, see [allAds]). */
 fun kitAdsSwitchedOffCount(landscape: List<app.streambird.android.data.KitAd>, portrait: List<app.streambird.android.data.KitAd>): Int =
     (landscape + portrait).count { !it.enabled }
+
+/** Every ad of a kit: landscape (first ads + `adsMore`) and portrait, for [kitAdsSwitchedOffCount]. */
+fun app.streambird.android.data.BrandKit.allAds(): Pair<List<app.streambird.android.data.KitAd>, List<app.streambird.android.data.KitAd>> = (ads + adsMore) to (adsPortrait + adsMorePortrait)
+
+// ---- Live: the sequence of a placement in words ----
+
+/**
+ * "Now showing 2 of 3" while one ad of the sequence is on the picture, "Up next: 2 of 3" while the placement is in its hidden part (interval) or hidden by the
+ * host. [position] = 1-based place of the current ad in the whole list of [total]; null when fewer than two ads can play.
+ */
+fun sequencePositionText(position: Int, total: Int, showing: Boolean): String? =
+    if (total < 2 || position < 1 || position > total) null else if (showing) "Now showing $position of $total" else "Up next: $position of $total"
+
+/**
+ * One line for a placement with SEVERAL ads (a single ad is described by [adStatusText] exactly as before). [ads] = the placement's ads in play order, each as the
+ * scheduler sees them ([SeqAd.enabled] = on AND loaded), [manual] the placement's manual state, [schedule] its mode and pause. What wins: nothing on, manual, the schedule.
+ */
+fun sequenceStatusText(elapsedSec: Double, ads: List<SeqAd>, manual: AdManual?, schedule: SeqSchedule): String {
+    val st = adSequenceState(elapsedSec, ads, schedule, ads.size, SeqState())
+    if (st.index < 0) return "Switched off for this stream"
+    val pos = st.index + 1; val total = ads.size
+    when (manual) {
+        AdManual.SHOWN -> return "Shown by you (${sequencePositionText(pos, total, true)}). Pick Follow schedule to go back."
+        AdManual.HIDDEN -> return "Hidden by you. Pick Follow schedule to go back."
+        null -> {}
+    }
+    if (schedule !is SeqSchedule.Interval) return "${sequencePositionText(pos, total, true)}. Next ad in ${formatCountdown(st.secondsLeft.toLong())}"
+    return if (st.visible) "${sequencePositionText(pos, total, true)} (ends in ${formatDuration(max(1, st.secondsLeft))})"
+    else "${sequencePositionText(pos, total, false)}. Shows in ${formatCountdown(st.secondsLeft.toLong())} for ${formatDuration(ads[st.index].showSec)}"
+}
 
 /** The chip on a kit list card: "1 ad switched off", "2 ads switched off"; null when none. */
 fun adsSwitchedOffChipText(n: Int): String? = when { n <= 0 -> null; n == 1 -> "1 ad switched off"; else -> "$n ads switched off" }

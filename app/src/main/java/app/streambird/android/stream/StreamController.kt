@@ -71,6 +71,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -125,7 +126,34 @@ data class LiveAd(
     val schedule: AdSchedule = AdSchedule.Continuous,
     val problem: String? = null,
     val hasWindow: Boolean? = null,
-)
+    /** 1.0.18 sequences: a placement may have several ads, listed one [LiveAd] each in play order. [index] = its place (0 = first); [manual] and the mode / pause of [schedule] are the placement's. */
+    val index: Int = 0,
+    /** This ad's seconds in continuous mode (null = 20, or a lone ad); interval: the show window is in [schedule]. */
+    val dwellSec: Int? = null,
+    /** The library file of a kit ad (to show its name / thumbnail) and the file name of a phone picture. */
+    val assetId: String? = null,
+    val name: String? = null,
+) {
+    /** The seconds the scheduler uses for this ad. */
+    val showSec: Int get() = (schedule as? AdSchedule.Interval)?.showSec ?: dwellSec ?: app.streambird.android.ads.AD_DWELL_DEFAULT
+}
+
+/** The Live-sheet list of a stream's ads: every loaded ad and every one that failed, per placement in play order. A frame whose graphic has no window is flagged. */
+fun liveAdsOf(inputs: List<AdInput>, failures: List<AdLoadFailure>, noWindow: Collection<AdPlacement> = emptyList()): List<LiveAd> =
+    (inputs.map { a ->
+        LiveAd(a.placement, null, a.source, a.enabled, a.schedule, hasWindow = if (a.placement in noWindow) false else null, index = a.index, dwellSec = a.dwellSec, assetId = a.assetId, name = a.name)
+    } + failures.map { f -> LiveAd(f.placement, source = AdSource.KIT, problem = f.reason.take(80).trimEnd('.'), index = f.index) })
+        .sortedWith(compareBy({ it.placement.ordinal }, { it.index }))
+
+/** The placement's schedule changed (remote `ads.schedule`): its mode and pause for every ad; the show window only for the first ad (the others keep their own), like the web studio. */
+fun List<LiveAd>.rescheduled(p: AdPlacement, s: AdSchedule): List<LiveAd> {
+    val first = filter { it.placement == p }.minOfOrNull { it.index }
+    return map { a ->
+        if (a.placement != p) a
+        else if (s is AdSchedule.Interval) a.copy(schedule = AdSchedule.Interval(if (a.index == first) s.showSec else a.showSec, s.everySec), dwellSec = null)
+        else a.copy(schedule = AdSchedule.Continuous, dwellSec = a.showSec)   // the web keeps each ad's seconds when the mode flips
+    }
+}
 
 /**
  * Result of [StreamController]'s ad loading: the pictures that loaded (with where each came from), the ones that did not, the kit's shrink
@@ -312,9 +340,7 @@ class StreamController @Inject constructor(
             val clock = req.clockOverride?.normalized() ?: loaded.kitClock ?: app.streambird.android.clock.ClockSettings()
             currentCoroutineContext().ensureActive()
             // Every ad of the stream is listed on the Live sheet, also the ones that could not be loaded (with the reason), so nothing is silently missing.
-            val liveAds = (adInputs.map { a -> LiveAd(a.placement, source = loaded.sources[a.placement] ?: AdSource.KIT, enabled = a.enabled, schedule = a.schedule) } +
-                adFailures.map { f -> LiveAd(f.placement, source = loaded.sources[f.placement] ?: AdSource.KIT, problem = f.reason.take(80).trimEnd('.')) })
-                .sortedBy { it.placement.ordinal }
+            val liveAds = liveAdsOf(adInputs, adFailures)
             // Ads that exist but are switched off (the host's own per-stream switch; kit ads start enabled): said once, with at most three names.
             val offPlacements = switchedOffPlacements(adInputs.map { it.placement to it.enabled })
             val offNote = adsSwitchedOffNote(offPlacements)
@@ -508,10 +534,10 @@ class StreamController @Inject constructor(
         override fun onCameraRecovered() { _ui.update { it.copy(cameraNote = null) } }
         override fun onCameraFatal(text: String) { end(reason = text) }
         override fun onAdNote(text: String) { _ui.update { it.copy(adsNote = listOfNotNull(it.adsNote, text).joinToString("\n")) } }
-        override fun onAdProblem(placement: AdPlacement, kind: AdProblem) {
+        override fun onAdProblem(placement: AdPlacement, kind: AdProblem, adIndex: Int) {
             _ui.update { u ->
                 u.copy(adSlots = u.adSlots.map { a ->
-                    if (a.placement != placement) a
+                    if (a.placement != placement || a.index != adIndex) a
                     else when (kind) {
                         AdProblem.UNREADABLE -> a.copy(problem = "the picture could not be read")
                         AdProblem.NO_WINDOW -> a.copy(hasWindow = false)
@@ -660,6 +686,7 @@ class StreamController @Inject constructor(
                 u.adSlots, u.adsShrink, u.tickerText, u.clock, u.request?.orientation?.wire ?: u.stream?.orientation ?: "portrait",
                 app.streambird.android.BuildConfig.VERSION_NAME, u.freePlan,
                 kits = u.kits, kitId = u.kitId, logo = u.logo, banner = u.banner,
+                adElapsedSec = app.streambird.android.ads.adElapsedSec(android.os.SystemClock.elapsedRealtime(), u.adClockStartMs),
             ),
         )
     }
@@ -699,7 +726,7 @@ class StreamController @Inject constructor(
         override fun applyAdsShrink(on: Boolean) { engine?.setAdsShrink(on); _ui.update { it.copy(adsShrink = on) } }
         override fun applyAdSchedule(p: AdPlacement, s: AdSchedule) {
             engine?.setAdSchedule(p, s)
-            _ui.update { it.copy(adSlots = it.adSlots.map { a -> if (a.placement == p) a.copy(schedule = s) else a }) }
+            _ui.update { it.copy(adSlots = it.adSlots.rescheduled(p, s)) }
         }
         override fun applyTicker(text: String) {
             val size = _ui.value.tickerSize
@@ -771,8 +798,7 @@ class StreamController @Inject constructor(
                 if (oldBmp != null && oldBmp !== outcome.logo?.bitmap) runCatching { oldBmp.recycle() }
                 val newLogo = outcome.logo; val bytes = outcome.logoBytes
                 if (newLogo != null && bytes != null && app.streambird.android.brand.sniffImage(bytes)?.format == app.streambird.android.brand.ImageFormat.GIF) startLogoAnimation(newLogo, bytes, outcome.kit.logoSize, g, silent = true)
-                val slots = (outcome.inputs.map { a -> LiveAd(a.placement, source = outcome.sources[a.placement] ?: AdSource.KIT, enabled = a.enabled, schedule = a.schedule, hasWindow = if (a.placement in outcome.noWindow) false else null) })
-                    .sortedBy { it.placement.ordinal }
+                val slots = liveAdsOf(outcome.inputs, emptyList(), outcome.noWindow)
                 _ui.update {
                     if (gen != g) it else it.copy(
                         adSlots = slots, adsNote = null, adsShrink = outcome.shrink, clock = outcome.clock, logo = logoInfoOf(newLogo),
@@ -891,16 +917,18 @@ class StreamController @Inject constructor(
             }
         }
         val merged = mergeStreamAds(kitAds, req.adOverrides, freePlan = false)
+        // Up to 4 placements x 5 ads: at most four files are in flight at once (each up to 8 MB), so a long sequence never piles up in memory.
+        val gate = kotlinx.coroutines.sync.Semaphore(AD_DOWNLOADS_AT_ONCE)
         val results = coroutineScope {
             merged.map { a ->
                 async {
                     try {
-                        val bytes = if (a.source == AdSource.PHONE) a.phone!!.bytes else retryOnce { api.assetFile(a.assetId!!) }
-                        AdInput(a.placement, bytes, a.enabled, a.schedule) to null
+                        val bytes = if (a.source == AdSource.PHONE) a.phone!!.bytes else gate.withPermit { retryOnce { api.assetFile(a.assetId!!) } }
+                        AdInput(a.placement, bytes, a.enabled, a.schedule, a.dwellSec, a.source, a.index, a.assetId, a.phone?.name) to null
                     } catch (e: CancellationException) {
                         throw e
                     } catch (t: Throwable) {
-                        null to AdLoadFailure(a.placement, (t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName, kitName.takeIf { a.source == AdSource.KIT })
+                        null to AdLoadFailure(a.placement, (t as? ApiException)?.message ?: t.message ?: t.javaClass.simpleName, kitName.takeIf { a.source == AdSource.KIT }, a.index)
                     }
                 }
             }.awaitAll()
@@ -975,5 +1003,5 @@ class StreamController @Inject constructor(
         }
     }
 
-    companion object { const val AUTO_RETURN_MS = 8_000L }
+    companion object { const val AUTO_RETURN_MS = 8_000L; const val AD_DOWNLOADS_AT_ONCE = 4 }
 }

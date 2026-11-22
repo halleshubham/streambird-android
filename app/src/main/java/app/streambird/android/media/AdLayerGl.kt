@@ -11,45 +11,72 @@ import android.os.Build
 import android.os.SystemClock
 import app.streambird.android.R
 import app.streambird.android.ads.AD_DRAW_ORDER
+import app.streambird.android.ads.AD_DWELL_DEFAULT
+import app.streambird.android.ads.AdBlendIn
 import app.streambird.android.ads.AdManual
 import app.streambird.android.ads.AdPlacement
 import app.streambird.android.ads.AdRect
-import app.streambird.android.ads.AdShrinkInput
-import app.streambird.android.ads.placementShrinks
-import app.streambird.android.ads.sceneRectFor
 import app.streambird.android.ads.AdSchedule
+import app.streambird.android.ads.AdShrinkInput
 import app.streambird.android.ads.AdSlot
-import app.streambird.android.ads.NormRect
-import app.streambird.android.ads.windowOfBitmap
-import app.streambird.android.ads.windowOnCanvas
+import app.streambird.android.ads.AdSource
 import app.streambird.android.ads.FREE_PLAN_AD_SCHEDULE
+import app.streambird.android.ads.MAX_ADS_PER_PLACEMENT
+import app.streambird.android.ads.NormRect
 import app.streambird.android.ads.POWERED_BY_TEXT
 import app.streambird.android.ads.POWERED_PILL_ARGB
+import app.streambird.android.ads.SeqAd
+import app.streambird.android.ads.SeqSchedule
+import app.streambird.android.ads.SeqState
+import app.streambird.android.ads.adPriorityFactors
 import app.streambird.android.ads.adRect
+import app.streambird.android.ads.adSequenceState
+import app.streambird.android.ads.adSequenceTargets
 import app.streambird.android.ads.adTargetAlpha
+import app.streambird.android.ads.combinePlacement
 import app.streambird.android.ads.fitAd
+import app.streambird.android.ads.placementShrinks
 import app.streambird.android.ads.planGif
 import app.streambird.android.ads.poweredByLayout
-import app.streambird.android.ads.resolveAdAlphas
-import app.streambird.android.ads.secondsUntilVisible
+import app.streambird.android.ads.sceneRectFor
+import app.streambird.android.ads.seqScheduleOf
 import app.streambird.android.ads.stepAlpha
 import app.streambird.android.ads.stillSampleSize
+import app.streambird.android.ads.wantedAds
+import app.streambird.android.ads.windowOfBitmap
+import app.streambird.android.ads.windowOnCanvas
 import app.streambird.android.brand.sniffImage
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.Executors
 
-/** One custom ad as handed to the engine (raw picture bytes, from the kit library or the phone). */
-class AdInput(val placement: AdPlacement, val bytes: ByteArray, val enabled: Boolean, val schedule: AdSchedule)
+/**
+ * One custom ad as handed to the engine (raw picture bytes, from the kit library or the phone). Several inputs may share a placement: they are its
+ * SEQUENCE in play order (at most 5). [schedule] = the placement's mode and pause with THIS ad's show window (interval); [dwellSec] = this ad's seconds in
+ * continuous mode (null = 20). [index] = its place in the stream's list for that placement (a gap = an ad that could not be loaded).
+ */
+class AdInput(
+    val placement: AdPlacement, val bytes: ByteArray, val enabled: Boolean, val schedule: AdSchedule,
+    val dwellSec: Int? = null, val source: AdSource = AdSource.KIT, val index: Int = 0, val assetId: String? = null, val name: String? = null,
+) {
+    /** The seconds the scheduler uses for this ad (interval: its show window; continuous: its dwell). */
+    val showSec: Int get() = (schedule as? AdSchedule.Interval)?.showSec ?: dwellSec ?: AD_DWELL_DEFAULT
+}
 
 /**
  * Draws the ads over the finished frame, on the camera's GL thread, after the camera, logo and ticker and before nothing else
- * except the Free "Powered by" mark (drawn last). Rules: web-app/src/studio/ads.ts / adLayer.ts, see the pure port in ads/Ads.kt.
+ * except the Free "Powered by" mark (drawn last). Rules: web-app/src/studio/ads.ts / adLayer.ts, see the pure port in ads/Ads.kt and ads/AdSequence.kt.
  *
- * Cost model: pictures are decoded once, off the GL thread ([prepare]) and uploaded once to textures when first needed; per frame
- * there is no bitmap work and no allocation, only a few alpha-blended quads. A GIF is decoded lazily (ImageDecoder, API 28+) on a helper
- * thread shortly before it can be seen, and its frames are rendered into one reusable bitmap at most 15 times a second while it is visible;
- * on API 26/27 or any failure the first frame is shown as a still (the host is told). With no ads and no Free plan [draw] returns at once.
+ * Sequences (1.0.18): a placement holds up to 5 ads. Per frame the pure scheduler ([adSequenceTargets]) says which of them show and how opaque each one is
+ * (round-robin for "now and then", cross-fade for always-on); every ad is drawn with its own opacity and the priority between placements multiplies all ads of
+ * a placement by the same factor.
+ *
+ * Cost model: pictures are decoded once at [prepare] (size, L-frame window), but only the CURRENT, the fading-out and the NEXT ad of a placement keep a
+ * bitmap / texture / GIF animation; the others are released as soon as they have faded out and are decoded again from their file bytes (helper thread) when
+ * they come up next, so GPU memory stays bounded by 3 pictures per placement however long the sequence is. Per frame there is no bitmap work and no
+ * allocation beyond a few small objects, only a few alpha-blended quads. A GIF is decoded lazily (ImageDecoder, API 28+) on a helper thread when it becomes
+ * current or next, and its frames are rendered into one reusable bitmap at most 15 times a second while it is visible; on API 26/27 or any failure the first
+ * frame is shown as a still (the host is told). With no ads and no Free plan [draw] returns at once.
  * UNVERIFIED on a device (written against the Android/GL docs, compiled only).
  */
 class AdLayerGl(
@@ -57,14 +84,21 @@ class AdLayerGl(
     private val outH: Int,
     private val onEvent: (String) -> Unit,
     private val onNote: (String) -> Unit,
-    private val onProblem: (AdPlacement, app.streambird.android.ads.AdProblem) -> Unit = { _, _ -> },
+    /** (placement, what, the ad's index in the stream's list for that placement). */
+    private val onProblem: (AdPlacement, app.streambird.android.ads.AdProblem, Int) -> Unit = { _, _, _ -> },
 ) {
+    /** One ad. Fields written from other threads are volatile. */
     private class Rt(val placement: AdPlacement) {
-        @Volatile var bitmap: Bitmap? = null          // prepared still / first frame, consumed by the GL upload
+        @Volatile var bitmap: Bitmap? = null          // decoded still / first frame, consumed by the GL upload
         var tex = 0; var texW = 0; var texH = 0
         @Volatile var enabled = false
-        @Volatile var schedule: AdSchedule = AdSchedule.Continuous
-        @Volatile var manual: AdManual? = null
+        @Volatile var showSec = AD_DWELL_DEFAULT
+        /** The encoded file, kept so a released picture can be decoded again (null on the Free banner). */
+        var bytes: ByteArray? = null
+        var sample = 1
+        /** Size of the decoded picture (what the rectangle is fitted from, also while its texture is released). 0 = this ad never loaded. */
+        var picW = 0; var picH = 0
+        @Volatile var decoding = false
         var alpha = 0.0; var snap = true
         var wasVisible = false
         var rect = app.streambird.android.ads.AdRect(0.0, 0.0, 0.0, 0.0)
@@ -79,9 +113,22 @@ class AdLayerGl(
         var animBmp: Bitmap? = null; var animCanvas: Canvas? = null; var lastUploadMs = 0L; var animTexReady = false
     }
 
-    private val rts = AdPlacement.entries.map { Rt(it) }          // index = ordinal; draw order is AD_DRAW_ORDER
-    private val slots = rts.map { AdSlot(it.placement, false, AdSchedule.Continuous) }
-    private val targets = DoubleArray(AdPlacement.entries.size)
+    /** One placement: its ads in play order, the schedule they share and the scratch the per-frame scheduler works in. */
+    private class Pl(val placement: AdPlacement, val rts: List<Rt>) {
+        @Volatile var schedule: SeqSchedule = SeqSchedule.Continuous
+        @Volatile var manual: AdManual? = null
+        val seq: List<SeqAd> = List(rts.size) { SeqAd() }
+        val out = DoubleArray(MAX_ADS_PER_PLACEMENT)
+        val st = SeqState()
+        val stNow = SeqState()
+        val wanted = BooleanArray(MAX_ADS_PER_PLACEMENT)
+        var alpha = 0.0
+    }
+
+    /** Rebuilt by [prepare] (before any frame): the placements with their ads. Index = ordinal. */
+    @Volatile private var placements: List<Pl> = AdPlacement.entries.map { Pl(it, emptyList()) }
+    private val placementAlpha = DoubleArray(AdPlacement.entries.size)
+    private val factors = DoubleArray(AdPlacement.entries.size)
     private val decodeExec by lazy { Executors.newSingleThreadExecutor { r -> Thread(r, "sb-ad-decode").apply { isDaemon = true } } }
 
     // Free plan
@@ -104,7 +151,7 @@ class AdLayerGl(
         put(floatArrayOf(-1f, -1f, 0f, 1f, 1f, -1f, 1f, 1f, -1f, 1f, 0f, 0f, 1f, 1f, 1f, 0f)); position(0)
     }
 
-    val hasAnything: Boolean get() = free || rts.any { it.enabled || it.alpha > 0 }
+    val hasAnything: Boolean get() = free || placements.any { pl -> pl.rts.any { it.enabled || it.alpha > 0 } }
 
     /** "Shrink picture while ads show" (kit switch + per-stream override). Changeable live. */
     @Volatile var shrinkPicture = true
@@ -112,15 +159,28 @@ class AdLayerGl(
     private val shrinkIn = HashMap<AdPlacement, AdShrinkInput>()
     private var steppedTickerBar = 0
 
-    fun setManual(p: AdPlacement, m: AdManual?) { rts[p.ordinal].manual = m }
+    /** Show now / Hide for the WHOLE placement (every ad of it); null = follow the schedule. */
+    fun setManual(p: AdPlacement, m: AdManual?) { placements[p.ordinal].manual = m }
 
-    /** Live on/off and schedule of a loaded ad (volatile fields, read by the next frame): nothing is decoded or uploaded, so no frame is dropped. Ignored for an ad that never loaded. */
-    fun setEnabled(p: AdPlacement, on: Boolean) { val r = rts[p.ordinal]; if (r.bitmap != null || r.tex != 0) r.enabled = on }
-    fun setSchedule(p: AdPlacement, s: AdSchedule) { val r = rts[p.ordinal]; if (r.bitmap != null || r.tex != 0) r.schedule = s }
+    /** Live On / Off of a placement: every ad of it (volatile fields, read by the next frame): nothing is decoded or uploaded, so no frame is dropped. A placement without a loaded ad is ignored. */
+    fun setEnabled(p: AdPlacement, on: Boolean) { for (r in placements[p.ordinal].rts) r.enabled = on }
+
+    /**
+     * Live schedule of a placement: its mode and pause, and (interval) the show window of its FIRST ad (the others keep their own), like the web's `setSchedule`.
+     * Ignored for a placement without a loaded ad.
+     */
+    fun setSchedule(p: AdPlacement, s: AdSchedule) {
+        val pl = placements[p.ordinal]
+        if (pl.rts.isEmpty()) return
+        pl.schedule = seqScheduleOf(s)
+        if (s is AdSchedule.Interval) pl.rts[0].showSec = s.showSec
+    }
 
     private companion object {
         /** The placements whose visible picture can take room from the scene (the lower and left third; the frame when it has a window). */
         val SHRINKING = listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.L_SHAPE)
+        /** Pictures of one placement that keep a bitmap straight after [prepare] (the current and the next one). */
+        const val KEEP_AFTER_PREPARE = 2
     }
 
     // ---- preparation (any thread, before frames flow) ----
@@ -134,31 +194,48 @@ class AdLayerGl(
             poweredBmp = runCatching { renderPoweredMark(context) }.getOrNull()
             return
         }
-        for (a in inputs) {
-            val rt = rts[a.placement.ordinal]
-            val area = adRect(a.placement, outW, outH, 0)
-            val info = sniffImage(a.bytes)
-            if (info == null) { onNote("${a.placement.label} ad: the picture could not be read."); onProblem(a.placement, app.streambird.android.ads.AdProblem.UNREADABLE); continue }
-            val aw = area.w.toInt(); val ah = area.h.toInt()
-            val opts = BitmapFactory.Options().apply { inSampleSize = stillSampleSize(info.width, info.height, aw, ah) }
-            val bmp = runCatching { BitmapFactory.decodeByteArray(a.bytes, 0, a.bytes.size, opts) }.getOrNull()
-            if (bmp == null) { onNote("${a.placement.label} ad: the picture could not be decoded."); onProblem(a.placement, app.streambird.android.ads.AdProblem.UNREADABLE); continue }
-            rt.schedule = a.schedule; rt.enabled = a.enabled
-            if (info.format == app.streambird.android.brand.ImageFormat.GIF) {
-                val plan = planGif(a.bytes, info.width, info.height, aw, ah, Build.VERSION.SDK_INT)
-                if (plan.animate) { rt.gifBytes = a.bytes; rt.gifW = plan.targetW; rt.gifH = plan.targetH }
-                else plan.reason?.let { onNote("${a.placement.label} ad: shown as a still picture, $it.") }
+        val built = AdPlacement.entries.map { p ->
+            val list = ArrayList<Rt>()
+            var first: AdInput? = null
+            for (a in inputs.filter { it.placement == p }.take(MAX_ADS_PER_PLACEMENT)) {
+                val rt = prepareOne(a, p, list.size) ?: continue
+                if (first == null) first = a
+                list.add(rt)
             }
-            if (a.placement == AdPlacement.L_SHAPE) {
-                // Where the live picture goes: the clear window of the frame graphic (GIF: its first frame). None found -> plain full-screen overlay.
-                rt.window = runCatching { windowOfBitmap(bmp) }.getOrNull()
-                if (rt.window == null) {
-                    onNote("L-shaped frame ad: no clear window found in this graphic. It is drawn as a full-screen overlay and the picture is not resized.")
-                    onProblem(a.placement, app.streambird.android.ads.AdProblem.NO_WINDOW)
-                }
-            }
-            rt.bitmap = bmp
+            Pl(p, list).also { pl -> first?.let { pl.schedule = seqScheduleOf(it.schedule) } }
         }
+        placements = built
+    }
+
+    /** Decodes one ad (size, GIF plan, L-frame window); null when its picture cannot be used. The first [KEEP_AFTER_PREPARE] of a placement keep their bitmap. */
+    private fun prepareOne(a: AdInput, p: AdPlacement, position: Int): Rt? {
+        val rt = Rt(p)
+        val area = adRect(p, outW, outH, 0)
+        val label = if (position > 0 || a.index > 0) "${p.label} ad ${a.index + 1}" else "${p.label} ad"
+        val info = sniffImage(a.bytes)
+        if (info == null) { onNote("$label: the picture could not be read."); onProblem(p, app.streambird.android.ads.AdProblem.UNREADABLE, a.index); return null }
+        val aw = area.w.toInt(); val ah = area.h.toInt()
+        val sample = stillSampleSize(info.width, info.height, aw, ah)
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bmp = runCatching { BitmapFactory.decodeByteArray(a.bytes, 0, a.bytes.size, opts) }.getOrNull()
+        if (bmp == null) { onNote("$label: the picture could not be decoded."); onProblem(p, app.streambird.android.ads.AdProblem.UNREADABLE, a.index); return null }
+        rt.enabled = a.enabled; rt.showSec = a.showSec
+        rt.bytes = a.bytes; rt.sample = sample; rt.picW = bmp.width; rt.picH = bmp.height
+        if (info.format == app.streambird.android.brand.ImageFormat.GIF) {
+            val plan = planGif(a.bytes, info.width, info.height, aw, ah, Build.VERSION.SDK_INT)
+            if (plan.animate) { rt.gifBytes = a.bytes; rt.gifW = plan.targetW; rt.gifH = plan.targetH }
+            else plan.reason?.let { onNote("$label: shown as a still picture, $it.") }
+        }
+        if (p == AdPlacement.L_SHAPE) {
+            // Where the live picture goes: the clear window of the frame graphic (GIF: its first frame). None found -> plain full-screen overlay.
+            rt.window = runCatching { windowOfBitmap(bmp) }.getOrNull()
+            if (rt.window == null) {
+                onNote("$label: no clear window found in this graphic. It is drawn as a full-screen overlay and the picture is not resized.")
+                onProblem(p, app.streambird.android.ads.AdProblem.NO_WINDOW, a.index)
+            }
+        }
+        if (position < KEEP_AFTER_PREPARE) rt.bitmap = bmp else bmp.recycle()
+        return rt
     }
 
     private fun renderPoweredMark(context: android.content.Context): Bitmap {
@@ -203,31 +280,43 @@ class AdLayerGl(
             freeRt.rect = fitAd(AdPlacement.LOWER_THIRD, freeW.takeIf { it > 0 } ?: freeBanner?.width ?: 0, freeH.takeIf { it > 0 } ?: freeBanner?.height ?: 0, adRect(AdPlacement.LOWER_THIRD, outW, outH, tickerBar))
             return
         }
-        for (i in rts.indices) {
-            val r = rts[i]; val s = slots[i]
-            // The L-shaped frame runs with the shrink switch on or off (the switch governs only lower_third / side_third).
-            s.enabled = r.enabled && (r.bitmap != null || r.tex != 0); s.schedule = r.schedule; s.manual = r.manual
-            if (s.enabled && r.gifBytes != null && !r.gifRequested && secondsUntilVisible(elapsed, r.schedule) < 3.0) requestAnim(r)
+        val all = placements
+        // 1. Per placement: which of its ads show and how opaque each one is (the sequence), which pictures must be ready.
+        for (pl in all) {
+            val n = pl.rts.size
+            if (n == 0) { pl.alpha = 0.0; placementAlpha[pl.placement.ordinal] = 0.0; continue }
+            for (i in 0 until n) { val r = pl.rts[i]; pl.seq[i].enabled = r.enabled && r.picW > 0; pl.seq[i].showSec = r.showSec }
+            adSequenceState(elapsed, pl.seq, pl.schedule, n, pl.stNow)
+            wantedAds(pl.stNow, pl.seq, n, pl.schedule, pl.wanted)
+            pl.alpha = adSequenceTargets(elapsed, pl.seq, n, pl.schedule, pl.manual, pl.out, pl.st)
+            placementAlpha[pl.placement.ordinal] = pl.alpha
+            for (i in 0 until n) {
+                val r = pl.rts[i]
+                if (pl.wanted[i] && r.tex == 0 && r.bitmap == null && !r.decoding) requestStill(r)
+                if (pl.wanted[i] && r.gifBytes != null && !r.gifRequested) requestAnim(r)
+            }
         }
-        resolveAdAlphas(elapsed, slots, targets)
+        // 2. Priority between placements (full_screen > l_shape > the thirds) multiplies every ad of the placement by the same factor.
+        adPriorityFactors(placementAlpha, factors)
         for (p in AD_DRAW_ORDER) {
-            val r = rts[p.ordinal]
-            if (r.bitmap != null || r.tex != 0) {
-                r.alpha = if (r.snap) targets[p.ordinal] else stepAlpha(r.alpha, targets[p.ordinal], dt)
+            val pl = all[p.ordinal]
+            val f = factors[p.ordinal]
+            for (i in pl.rts.indices) {
+                val r = pl.rts[i]
+                val target = pl.out[i] * f
+                r.alpha = if (r.snap) target else stepAlpha(r.alpha, target, dt)
                 r.snap = false
-            } else r.alpha = 0.0
-            val vis = r.alpha > 0.002
-            if (vis != r.wasVisible) { r.wasVisible = vis; onEvent("ad ${p.wire} ${if (vis) "shown" else "hidden"}") }
+                if (r.keyBar != tickerBar || r.rect.w == 0.0) { r.rect = fitAd(p, r.picW, r.picH, adRect(p, outW, outH, tickerBar)); r.keyBar = tickerBar }
+                val vis = r.alpha > 0.002
+                if (vis != r.wasVisible) { r.wasVisible = vis; onEvent("ad ${p.wire}${if (pl.rts.size > 1) " ${i + 1}" else ""} ${if (vis) "shown" else "hidden"}") }
+            }
         }
     }
 
-    /** Picture size of the ad in [r]: the texture once uploaded, else the prepared bitmap. (0, 0) when there is none. */
-    private fun picW(r: Rt) = if (r.tex != 0) r.texW else r.bitmap?.width ?: 0
-    private fun picH(r: Rt) = if (r.tex != 0) r.texH else r.bitmap?.height ?: 0
-
     /**
      * Where the scene (camera, logo) is drawn right now, as of the last [update]: the whole frame, or the rectangle the visible lower/left
-     * third ad leaves free (rule and formulas: ads/AdShrink.kt = web ads.ts). Top-left origin, pixels.
+     * third ad leaves free (rule and formulas: ads/AdShrink.kt = web ads.ts). Top-left origin, pixels. With several ads in a placement the rectangle
+     * (and the frame's window) is the blend of the showing ads' by their alpha shares, so the scene eases between them (see [combinePlacement]).
      */
     fun sceneRect(): AdRect {
         if (released) return fullFrame
@@ -241,17 +330,14 @@ class AdLayerGl(
             shrinkIn.clear()
             for (p in SHRINKING) {
                 if (!placementShrinks(p, shrinkPicture)) continue // the switch governs only the thirds; the frame always fits the picture to its window
-                val r = rts[p.ordinal]
-                val a = if (r.alpha > 0.002) r.alpha else 0.0
-                if (a > 0.0) {
-                    val w = picW(r); val h = picH(r)
-                    val fitted = fitAd(p, w, h, adRect(p, outW, outH, steppedTickerBar))
-                    // The frame only resizes the picture when its window is known; without one it is just an overlay.
-                    val win = if (p == AdPlacement.L_SHAPE) r.window?.let { windowOnCanvas(fitted, it) } else null
-                    if (p == AdPlacement.L_SHAPE && win == null) continue
-                    any = true
-                    shrinkIn[p] = AdShrinkInput(a, fitted, win)
-                }
+                val pl = placements[p.ordinal]
+                if (pl.rts.isEmpty()) continue
+                val ins = pl.rts.map { r -> AdBlendIn(if (r.alpha > 0.002) r.alpha else 0.0, r.rect, if (p == AdPlacement.L_SHAPE) r.window?.let { windowOnCanvas(r.rect, it) } else null) }
+                val c = combinePlacement(ins, windowed = p == AdPlacement.L_SHAPE)
+                // The frame only resizes the picture when its window is known; without one it is just an overlay.
+                if (!(c.alpha > 0.0) || c.rect == null || (p == AdPlacement.L_SHAPE && c.win == null)) continue
+                any = true
+                shrinkIn[p] = AdShrinkInput(c.alpha, c.rect, if (p == AdPlacement.L_SHAPE) c.win else null)
             }
             if (!any) return fullFrame
         }
@@ -259,17 +345,20 @@ class AdLayerGl(
     }
 
     /** True while an L-shaped frame with a window is on screen (whatever the shrink switch says): its graphic is the base layer under the scene. */
-    private fun frameOnBase(): Boolean { val r = rts[AdPlacement.L_SHAPE.ordinal]; return !free && r.window != null && r.alpha > 0.002 }
+    private fun frameOnBase(): Boolean = !free && placements[AdPlacement.L_SHAPE.ordinal].rts.any { it.window != null && it.alpha > 0.002 }
 
     /**
-     * Draws the L-shaped frame graphic as the BASE layer. The compositor calls it right after clearing the frame and BEFORE the scene, so the
+     * Draws the L-shaped frame graphic(s) as the BASE layer. The compositor calls it right after clearing the frame and BEFORE the scene, so the
      * camera and logo are drawn on top, inside the window ([sceneRect]). Does nothing when no frame with a window is showing.
      */
     fun drawBase() {
         if (released || !frameOnBase()) return
-        val r = rts[AdPlacement.L_SHAPE.ordinal]
         beginDraw()
-        uploadIfNeeded(r); updateAnim(r, SystemClock.elapsedRealtime()); drawTex(r.tex, r.texW, r.texH, r, AdPlacement.L_SHAPE, steppedTickerBar, r.alpha)
+        val now = SystemClock.elapsedRealtime()
+        for (r in placements[AdPlacement.L_SHAPE.ordinal].rts) {
+            if (r.window == null || r.alpha <= 0.002) continue
+            uploadIfNeeded(r); updateAnim(r, now); drawTex(r.tex, r.picW, r.picH, r, AdPlacement.L_SHAPE, steppedTickerBar, r.alpha)
+        }
         endDraw()
     }
 
@@ -297,16 +386,41 @@ class AdLayerGl(
         if (free) {
             drawFree(tickerBar)
         } else {
-            val base = frameOnBase()
+            housekeeping()
             for (p in AD_DRAW_ORDER) {
-                if (p == AdPlacement.L_SHAPE && base) continue   // already drawn under the scene by drawBase()
-                val r = rts[p.ordinal]
-                if (r.alpha > 0.002) { uploadIfNeeded(r); updateAnim(r, now); drawTex(r.tex, r.texW, r.texH, r, p, tickerBar, r.alpha) }
+                for (r in placements[p.ordinal].rts) {
+                    if (p == AdPlacement.L_SHAPE && r.window != null) continue   // a frame with a window is drawn under the scene by drawBase()
+                    if (r.alpha > 0.002) { uploadIfNeeded(r); updateAnim(r, now); drawTex(r.tex, r.picW, r.picH, r, p, tickerBar, r.alpha) }
+                }
             }
         }
         // The Free "Powered by StreamBird" mark is ALWAYS on top.
         if (free) drawPowered(tickerBar)
         endDraw()
+    }
+
+    /**
+     * Keeps the GPU memory bounded: the current, fading-out and next ad of a placement are uploaded ahead of their time (one picture per frame, so a
+     * cross-fade never waits for an upload); an ad that is neither of them and has faded out gives its texture, bitmap and GIF animation back.
+     */
+    private fun housekeeping() {
+        var uploads = 0
+        for (pl in placements) {
+            for (i in pl.rts.indices) {
+                val r = pl.rts[i]
+                if (pl.wanted[i]) {
+                    if (r.tex == 0 && r.bitmap != null && uploads < 1) { uploadIfNeeded(r); uploads++ }
+                } else if (r.alpha <= 0.002 && (r.tex != 0 || r.bitmap != null || r.anim != null || r.gifRequested)) dropPicture(r)
+            }
+        }
+    }
+
+    /** GL thread. Frees one ad's texture, decoded bitmap and GIF animation; its file bytes stay, so it can be decoded again when it is next. */
+    private fun dropPicture(r: Rt) {
+        if (r.tex != 0) GLES20.glDeleteTextures(1, intArrayOf(r.tex), 0)
+        r.tex = 0; r.texW = 0; r.texH = 0; r.keyBar = -1
+        r.bitmap?.recycle(); r.bitmap = null
+        r.anim = null; r.animBmp?.recycle(); r.animBmp = null; r.animCanvas = null; r.animTexReady = false; r.gifRequested = false; r.lastUploadMs = 0L
     }
 
     private fun drawFree(tickerBar: Int) {
@@ -375,8 +489,27 @@ class AdLayerGl(
 
     private fun uploadIfNeeded(r: Rt) {
         val b = r.bitmap ?: return
+        if (r.tex != 0) { GLES20.glDeleteTextures(1, intArrayOf(r.tex), 0); r.tex = 0 }
         r.tex = upload(b); r.texW = b.width; r.texH = b.height; r.keyBar = -1
         r.bitmap = null; b.recycle()
+    }
+
+    /** Decodes a released still again on the helper thread; the GL thread uploads it ([housekeeping] / draw). Never touches GL. */
+    private fun requestStill(r: Rt) {
+        val bytes = r.bytes ?: return
+        r.decoding = true
+        try {
+            decodeExec.execute {
+                try {
+                    if (!released) {
+                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = r.sample })
+                        if (bmp != null) { if (released) bmp.recycle() else r.bitmap = bmp }
+                    }
+                } catch (t: Throwable) {
+                    onNote("${r.placement.label} ad: the picture could not be decoded again (${t.javaClass.simpleName}).")
+                } finally { r.decoding = false }
+            }
+        } catch (t: Throwable) { r.decoding = false }
     }
 
     /** Decodes the GIF on a helper thread; the GL thread picks the result up in [updateAnim]. */
@@ -436,10 +569,10 @@ class AdLayerGl(
     fun release() {
         released = true
         runCatching { decodeExec.shutdownNow() }
-        for (r in rts) {
+        for (pl in placements) for (r in pl.rts) {
             if (r.tex != 0) GLES20.glDeleteTextures(1, intArrayOf(r.tex), 0)
             r.tex = 0; r.bitmap?.recycle(); r.bitmap = null; r.animBmp?.recycle(); r.animBmp = null
-            r.anim = null
+            r.anim = null; r.bytes = null; r.gifBytes = null
         }
         if (freeTex != 0) GLES20.glDeleteTextures(1, intArrayOf(freeTex), 0)
         if (poweredTex != 0) GLES20.glDeleteTextures(1, intArrayOf(poweredTex), 0)

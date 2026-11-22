@@ -85,7 +85,7 @@ interface EngineListener {
     /** A note about an ad (e.g. an animated GIF that is shown as a still). */
     fun onAdNote(text: String) {}
     /** An ad that was handed over cannot be shown as intended (unreadable picture, frame without a window): the Live sheet says so for that ad. */
-    fun onAdProblem(placement: app.streambird.android.ads.AdPlacement, kind: app.streambird.android.ads.AdProblem) {}
+    fun onAdProblem(placement: app.streambird.android.ads.AdPlacement, kind: app.streambird.android.ads.AdProblem, adIndex: Int = 0) {}
 }
 
 /**
@@ -198,7 +198,7 @@ class StreamEngine(
         comp.ticker = cfg.ticker
         comp.clock = cfg.clock
         cfg.ads?.takeIf { it.freePlan || it.inputs.isNotEmpty() }?.let { ac ->
-            val layer = AdLayerGl(cfg.outWidth, cfg.outHeight, { t -> listener.onEvent(t) }, { t -> listener.onEvent(t); listener.onAdNote(t) }, { p, k -> listener.onAdProblem(p, k) })
+            val layer = AdLayerGl(cfg.outWidth, cfg.outHeight, { t -> listener.onEvent(t) }, { t -> listener.onEvent(t); listener.onAdNote(t) }, { p, k, i -> listener.onAdProblem(p, k, i) })
             layer.shrinkPicture = ac.shrinkPicture
             layer.prepare(context, ac.inputs, ac.freePlan)
             comp.ads = layer
@@ -455,8 +455,8 @@ class StreamEngine(
                 { t -> listener.onEvent(t) },
                 // Silent for the host: notes about the new pictures go to the diagnostic log only (no banner on the Live screen).
                 { t -> if (preparing.get()) notesL.add(t) else app.streambird.android.diag.Diag.log("engine: kit ad: $t") },
-                { p, k ->
-                    if (preparing.get()) { if (k == app.streambird.android.ads.AdProblem.UNREADABLE) unreadableL.add(p) else noWindowL.add(p) } else listener.onAdProblem(p, k)
+                { p, k, i ->
+                    if (preparing.get()) { if (k == app.streambird.android.ads.AdProblem.UNREADABLE) unreadableL.add(p) else noWindowL.add(p) } else listener.onAdProblem(p, k, i)
                 },
             )
             if (layerL != null) {

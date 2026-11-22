@@ -105,10 +105,34 @@ fun slotAspectWarning(o: BrandOrientation, slot: BrandSlot, width: Int, height: 
  * Which materials of a kit a stream uses, by the stream's orientation (rule of web brandKitSet.ts):
  * landscape -> logoAssetId, wallpaperAssetId, ads. Portrait -> logoAssetIdPortrait (falls back to the LANDSCAPE logo),
  * wallpaperAssetIdPortrait and adsPortrait (NO fallback). Position, size, dim, lower-third style and the shrink switch are shared.
+ * [ads] = EVERY ad of the set (1.0.18 sequences): per placement (lower_third, side_third, full_screen, l_shape) its first ad, then its further ones in play order.
  */
 data class KitSet(val logoAssetId: String?, val wallpaperAssetId: String?, val ads: List<KitAd>)
 
 fun kitSetFor(kit: BrandKit, o: BrandOrientation): KitSet = when (o) {
-    BrandOrientation.PORTRAIT -> KitSet(kit.logoAssetIdPortrait ?: kit.logoAssetId, kit.wallpaperAssetIdPortrait, kit.adsPortrait)
-    BrandOrientation.LANDSCAPE -> KitSet(kit.logoAssetId, kit.wallpaperAssetId, kit.ads)
+    BrandOrientation.PORTRAIT -> KitSet(kit.logoAssetIdPortrait ?: kit.logoAssetId, kit.wallpaperAssetIdPortrait, kitSequences(kit.adsPortrait, kit.adsMorePortrait))
+    BrandOrientation.LANDSCAPE -> KitSet(kit.logoAssetId, kit.wallpaperAssetId, kitSequences(kit.ads, kit.adsMore))
+}
+
+/**
+ * The first ads (`ads`, one per placement) and the further ones (`adsMore`) as one flat list: placement by placement in the server's order, each
+ * placement's first ad then its further ads in play order. A further ad whose placement has no first ad is not played (web `kitAdSequence`).
+ */
+fun kitSequences(first: List<KitAd>, more: List<KitAd>): List<KitAd> = app.streambird.android.ads.AdPlacement.entries.flatMap { p ->
+    val head = first.firstOrNull { it.placement == p.wire } ?: return@flatMap emptyList()
+    listOf(head) + more.filter { it.placement == p.wire }.take(app.streambird.android.ads.MAX_ADS_PER_PLACEMENT - 1)
+}
+
+/** The ads of ONE placement in a kit's set for [o], in play order (empty = none). */
+fun kitSequence(kit: BrandKit, o: BrandOrientation, p: app.streambird.android.ads.AdPlacement): List<KitAd> = kitSetFor(kit, o).ads.filter { it.placement == p.wire }
+
+/** The wire split of a flat list of kit ads: the first ad of each placement -> `ads`; the rest, placement by placement in play order -> `adsMore`. */
+fun splitKitAds(all: List<KitAd>): Pair<List<KitAd>, List<KitAd>> {
+    val first = ArrayList<KitAd>(); val more = ArrayList<KitAd>()
+    for (p in app.streambird.android.ads.AdPlacement.entries) {
+        val seq = all.filter { it.placement == p.wire }
+        seq.firstOrNull()?.let { first.add(it) }
+        more.addAll(seq.drop(1))
+    }
+    return first to more
 }

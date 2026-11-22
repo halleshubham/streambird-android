@@ -73,6 +73,12 @@ data class BrandKit(
     val ads: List<KitAd> = emptyList(),
     /** Portrait (9:16) ads, same shape. */
     val adsPortrait: List<KitAd> = emptyList(),
+    /**
+     * 1.0.18 ad sequences: ads 2..5 of each placement in play order (grouped by placement), landscape / portrait. A placement's sequence is its [ads] entry followed by its
+     * [adsMore] entries. Absent on servers without the release (= none); read with [app.streambird.android.brand.kitSequence].
+     */
+    val adsMore: List<KitAd> = emptyList(),
+    val adsMorePortrait: List<KitAd> = emptyList(),
     /** Shrink the live picture into the space an ad leaves free while it shows (default on; absent on older servers = on). */
     val adsShrinkPicture: Boolean = true,
     /** The kit's stream thumbnail (a JPG/PNG library file, shared by both orientations). Absent on servers without the thumbnail release = null. */

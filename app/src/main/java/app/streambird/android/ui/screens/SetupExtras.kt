@@ -179,7 +179,7 @@ fun AdsSetupBlock(
         else app.streambird.android.ads.kitAdsSetupNotice(logoIsBrand, logoLabel, st.loading, st.loaded, st.error, st.blocked, kit, shape)
     AdsSetupSection(
         freePlan, ads, overrides, onChange, shrink = shrink, kitShrink = kit?.adsShrinkPicture ?: true, onShrink = onShrink,
-        notice = notice,
+        notice = notice, library = st.library?.adFiles.orEmpty(), loader = vm.repo.imageLoader, assetUrl = vm.repo::assetUrl,
         frameHasWindow = when (val f = frameState) { is app.streambird.android.ads.FrameWindowState.Found -> true; app.streambird.android.ads.FrameWindowState.NoWindow -> false; else -> null },
     )
 }
