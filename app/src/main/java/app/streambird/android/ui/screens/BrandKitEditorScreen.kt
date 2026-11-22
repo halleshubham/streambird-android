@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.streambird.android.ads.AdEditSlot
 import app.streambird.android.ads.AdPlacement
 import app.streambird.android.brand.BrandOrientation
+import app.streambird.android.brand.UploadKeys
 import app.streambird.android.brand.BrandSlot
 import app.streambird.android.brand.KitDeleteText
 import app.streambird.android.brand.KitText
@@ -59,6 +60,9 @@ import app.streambird.android.ui.theme.Ok
 
 private fun styleLabel(s: String) = when (s) { "bar" -> "Bar"; "accent" -> "Accent"; "glass" -> "Glass"; else -> s }
 
+/** Whether the slot an upload belongs to is shown for [o] (thumbnail: always; the others carry their set's wire name). */
+private fun uploadSlotVisible(key: String, o: BrandOrientation) = key == UploadKeys.THUMBNAIL || key.split(':').getOrNull(1) == o.wire
+
 /** Where a picked file goes once uploaded. */
 private sealed interface UploadTarget {
     data class Logo(val o: BrandOrientation) : UploadTarget
@@ -79,6 +83,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
     val st by vm.state.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val msg by vm.msg.collectAsStateWithLifecycle()
+    val uploading by vm.uploading.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.clearMsg(); if (!st.loaded) vm.refresh() }
     val original = st.kits.firstOrNull { it.id == kitId }
     val key = original?.id ?: "new"
@@ -106,10 +111,10 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
         val t = target; target = null
         if (uri == null || t == null) return@rememberLauncherForActivityResult
         when (t) {
-            is UploadTarget.Logo -> vm.upload(uri, "logo") { id -> if (t.o == BrandOrientation.LANDSCAPE) logoId = id else logoIdP = id }
-            is UploadTarget.Wallpaper -> vm.upload(uri, "wallpaper") { id -> if (t.o == BrandOrientation.LANDSCAPE) wallId = id else wallIdP = id }
-            is UploadTarget.Thumbnail -> vm.upload(uri, "thumbnail") { id -> thumbId = id }
-            is UploadTarget.Ad -> vm.upload(uri, "ad") { id ->
+            is UploadTarget.Logo -> vm.upload(uri, "logo", UploadKeys.logo(t.o)) { id -> if (t.o == BrandOrientation.LANDSCAPE) logoId = id else logoIdP = id }
+            is UploadTarget.Wallpaper -> vm.upload(uri, "wallpaper", UploadKeys.wallpaper(t.o)) { id -> if (t.o == BrandOrientation.LANDSCAPE) wallId = id else wallIdP = id }
+            is UploadTarget.Thumbnail -> vm.upload(uri, "thumbnail", UploadKeys.THUMBNAIL) { id -> thumbId = id }
+            is UploadTarget.Ad -> vm.upload(uri, "ad", UploadKeys.ad(t.o, t.p, t.index)) { id ->
                 val f = { l: List<AdEditSlot> -> l.map { if (it.placement != t.p) it else if (t.index == null || it.assetId == null) it.addAd(id) else it.replaceAd(t.index, id) } }
                 if (t.o == BrandOrientation.LANDSCAPE) adSlots = f(adSlots) else adSlotsP = f(adSlotsP)
             }
@@ -173,6 +178,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                     onUpload = { pick(UploadTarget.Logo(orientation)) },
                     onRemove = { if (portrait) logoIdP = null else logoId = null },
                     modifier = mod,
+                    uploading = uploading?.takeIf { it.slotKey == UploadKeys.logo(orientation) }, onCancelUpload = vm::cancelUpload,
                     extra = {
                         if (portrait && logoIdP == null && logoId != null) Text("Using the 16:9 logo.", style = MaterialTheme.typography.bodySmall)
                         GifLogoNote(vm, st.library?.items?.firstOrNull { it.id == (curLogo ?: if (portrait) logoId else null) }, size.toInt())
@@ -193,6 +199,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                 onChoose = { thumbId = it },
                 onUpload = { pick(UploadTarget.Thumbnail) },
                 onRemove = { thumbId = null },
+                uploading = uploading?.takeIf { it.slotKey == UploadKeys.THUMBNAIL }, onCancelUpload = vm::cancelUpload,
                 extra = { Text("Shared by the 16:9 and 9:16 sets. Streams created without a thumbnail of their own get it on YouTube and Facebook.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
             )
         }
@@ -203,6 +210,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                 onChoose = { if (portrait) wallIdP = it else wallId = it },
                 onUpload = { pick(UploadTarget.Wallpaper(orientation)) },
                 onRemove = { if (portrait) wallIdP = null else wallId = null },
+                uploading = uploading?.takeIf { it.slotKey == UploadKeys.wallpaper(orientation) }, onCancelUpload = vm::cancelUpload,
                 extra = { Text("Saved on the kit for the website studio; the app does not draw wallpapers yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
             )
         }
@@ -279,6 +287,7 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
                 vm.save(o, if (portrait) d.copy(adsPortrait = emptyList(), adsMorePortrait = emptyList<KitAd>().takeIf { o.adsMorePortrait.isNotEmpty() }) else d.copy(ads = emptyList(), adsMore = emptyList<KitAd>().takeIf { o.adsMore.isNotEmpty() }), o.connectionIds.toSet()) { }
             } },
             busy = busy, shrink = shrink, frameWindow = vm.repo::frameWindow,
+            uploading = uploading, onCancelUpload = vm::cancelUpload,
         )
         (adsError ?: adsErrorOther)?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 
@@ -302,6 +311,9 @@ fun BrandKitEditorScreen(kitId: String?, connections: List<PlatformConnection>, 
         ) { Text(if (kitId == null) "Create brand kit" else "Save changes") }
         if (original != null) OutlinedButton(onClick = { confirmDelete = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Delete this kit", color = MaterialTheme.colorScheme.error) }
     }
+
+    // An upload whose slot is not on screen (the other 16:9 / 9:16 set is showing) gets the blocking overlay instead of an inline loader.
+    uploading?.let { u -> if (!uploadSlotVisible(u.slotKey, orientation)) UploadingOverlay(u, onCancel = vm::cancelUpload) }
 
     if (confirmDelete && original != null) AlertDialog(
         onDismissRequest = { confirmDelete = false },

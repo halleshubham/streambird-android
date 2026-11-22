@@ -17,6 +17,8 @@ import java.io.InputStream
 class StreamingFileBody(
     private val mime: String,
     private val length: Long,
+    /** Called on the upload thread with (bytes written so far, total); null = nobody listens. Restarts from 0 when OkHttp writes the body again. */
+    private val onProgress: ((sent: Long, total: Long) -> Unit)? = null,
     private val open: () -> InputStream,
 ) : RequestBody() {
     override fun contentType(): MediaType? = mime.toMediaType()
@@ -25,6 +27,7 @@ class StreamingFileBody(
 
     override fun writeTo(sink: BufferedSink) {
         var left = length
+        onProgress?.invoke(0L, length)
         open().use { input ->
             val source = input.source()
             while (left > 0) {
@@ -32,6 +35,7 @@ class StreamingFileBody(
                 if (n <= 0) throw IOException("The picture changed or could not be read while uploading.")
                 left -= n
                 sink.emitCompleteSegments()
+                onProgress?.invoke(length - left, length)
             }
             if (input.read() != -1) throw IOException("The picture changed while uploading.")
         }

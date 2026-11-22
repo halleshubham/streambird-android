@@ -453,3 +453,30 @@ Founder decision: a placement can play up to 5 ads in turn per orientation (for 
 
 ### 31e. Not verified (no device)
 Nothing was run on a phone: the compositor with several ads (cross-fade look, round-robin timing against a real clock, the scene easing between two frame windows, texture release / re-decode while on air, GIF decode of the next ad), and the layout, TalkBack and 200 % font of the new rows in Setup, Live and the kit editor. The GL code is compiled only.
+
+## 32. Version 1.0.19: StreamBird upload loader
+
+Founder request: whenever a file is being uploaded there must be a visible StreamBird-branded loader. The app had no branded loader (only stock `CircularProgressIndicator` and the static `BirdLogo`), so one reusable composable was added. No server change.
+
+### 32a. What the host sees
+* **`StreamBirdLoader`** (`ui/screens/UploadLoader.kt`): the bird (`logo_bird`) with a gentle pulse inside a ring. Determinate ring when the byte progress is known, spinning ring otherwise. **Reduce motion**: when the system animator scale is 0 ("Remove animations" / developer option) the bird is still and the ring is static (or absent when the progress is unknown). TalkBack name "Uploading".
+* **Inline** (`UploadingInline`): loader + "Uploading <file name> 42%" + a progress bar + **Cancel**. ONE TalkBack node, polite live region, announces "Uploading <file name>" once (the percentage is not read out, it would repeat 100 times); Cancel is a separate button.
+* **Slot card** (`SlotCard`: logo, wallpaper, stream thumbnail, lower third / left third / full screen / L-shaped frame ad): the Upload / Replace button turns into a disabled "loader + Uploading..." button, the 72 dp preview is dimmed with the loader, "Choose from uploaded" and "Remove" are disabled, the inline row with Cancel appears under the buttons. "+ Add another" ad: the button is replaced by the inline row while that file goes up.
+* **Brand screen** library buttons ("Upload a logo from the gallery", "Upload an ad picture or GIF"): same label swap and inline row; the old small spinner is no longer shown for uploads.
+* **Blocking overlay** (`UploadingOverlay`, a modal dialog = dimmed, untouchable screen): only when the upload's slot is not on screen (the kit editor shows the other 16:9 / 9:16 set while the file goes up). Back and Cancel cancel the upload; a tap outside does nothing.
+* **Live screen**: while the go-live thumbnail uploads in the background, a "Uploading..." loader row sits with the other banners (`LiveUi.thumbnailUploading`), replaced by the existing result notice.
+* Success: the loader goes and the "... uploaded." message shows. Failure: the loader goes and the error message stays (red notice). Cancel: the HTTP call is aborted (nothing is stored) and "Upload cancelled." shows.
+
+### 32b. Code
+* `brand/UploadState.kt`: pure state (`UploadState`: slot key, kind, file name, bytes sent / total, fraction, percent, TalkBack text), `UploadKeys` (slot keys per orientation / placement / add-another), `shouldReportProgress` (one UI update per whole percent).
+* `StreamingFileBody` gained an optional `onProgress(sent, total)` (called per 64 KB step, from 0 again if OkHttp rewrites the body); `BrandRepository.uploadPicked(uri, kind, onName, onProgress)`.
+* `BrandViewModel`: `uploading: StateFlow<UploadState?>`, `upload(uri, kind, slotKey, onDone)`, `cancelUpload()`. The state lives in the ViewModel, so it survives rotation (the activity also handles orientation itself) and leaving / re-entering the screen. It is cleared in `finally`, so it ends on success, failure and cancel. One upload at a time (a second pick while one runs is ignored; the buttons are disabled anyway). The existing stall-based timeouts (60 s write, 120 s answer) turn a dead connection into an error, which clears the loader.
+
+### 32c. Uploads in the app (all covered)
+Kit editor: logo (16:9, 9:16), wallpaper (16:9, 9:16), stream thumbnail, ads (replace / first ad per placement, "+ Add another"); Brand screen: logo and ad library uploads; Live: go-live thumbnail. Per-stream phone ads and the Setup thumbnail picker only choose a local picture (kept in memory, sent later), so there is nothing to show there; the Setup thumbnail is sent after go-live and is covered on the Live screen. There is no avatar or other upload in the app.
+
+### 32d. Tests (JVM)
+`UploadStateTest` (fraction / percent clamping, unknown size, TalkBack text without percentage, progress throttling, slot keys), `StreamingProgressTest` (progress from 0 to total, monotone, ends at total, a changed file fails). All earlier tests unchanged.
+
+### 32e. Not verified (no device)
+Nothing was run on a phone: the pulse / ring look, reduce-motion behaviour, TalkBack announcement, the layout at 200 % font, the modal overlay, and real progress on a slow uplink (progress counts bytes handed to the socket, so it can run slightly ahead of the network on a slow link). The Live thumbnail loader is indeterminate (the JPEG is uploaded as a byte array).
