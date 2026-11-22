@@ -1,5 +1,7 @@
 package app.streambird.android.stream
 
+import app.streambird.android.ads.adsSwitchedOffNote
+import app.streambird.android.ads.switchedOffPlacements
 import app.streambird.android.data.ApiClient
 import app.streambird.android.data.ApiException
 import app.streambird.android.data.BrandKit
@@ -313,7 +315,11 @@ class StreamController @Inject constructor(
             val liveAds = (adInputs.map { a -> LiveAd(a.placement, source = loaded.sources[a.placement] ?: AdSource.KIT, enabled = a.enabled, schedule = a.schedule) } +
                 adFailures.map { f -> LiveAd(f.placement, source = loaded.sources[f.placement] ?: AdSource.KIT, problem = f.reason.take(80).trimEnd('.')) })
                 .sortedBy { it.placement.ordinal }
-            val note = (loaded.notes + listOfNotNull(describeAdFailures(adFailures))).joinToString("\n").ifEmpty { null }
+            // Ads that exist but are switched off (the host's own per-stream switch; kit ads start enabled): said once, with at most three names.
+            val offPlacements = switchedOffPlacements(adInputs.map { it.placement to it.enabled })
+            val offNote = adsSwitchedOffNote(offPlacements)
+            if (offPlacements.isNotEmpty()) app.streambird.android.diag.Diag.log("ads switched off: " + offPlacements.joinToString(",") { it.wire })
+            val note = (loaded.notes + listOfNotNull(describeAdFailures(adFailures), offNote)).joinToString("\n").ifEmpty { null }
             startUpdate(g) { it.copy(adSlots = liveAds, adsNote = note, freePlan = req.freePlan, adsShrink = shrink, clock = clock, kitId = loaded.kitId, kits = kitRefs(loaded.kits)) }
             event("clock: ${app.streambird.android.clock.Clock.describe(clock)} (${if (req.clockOverride != null) "this stream" else if (loaded.kitClock != null) "kit '${loaded.kitName}'" else "no kit"})", withRow = true)
             adFailures.forEach { event("ad ${it.placement.wire} failed to load: ${it.reason}", withRow = true) }

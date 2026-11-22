@@ -57,19 +57,46 @@ class AdStatusTest {
         assertEquals("From the brand kit. Hidden by you. Pick Follow schedule to go back.", live(185.0, slot(m = AdManual.HIDDEN)))
     }
 
-    @Test fun `disabled ad says Off`() {
-        assertEquals("From the brand kit. Off", live(185.0, slot(enabled = false)))
-        assertEquals("From the brand kit. Off", adStatusText(null, slot(enabled = false), AdSource.KIT))
+    @Test fun `disabled ad says it is switched off and how to switch it on`() {
+        assertEquals("From the brand kit. Switched off: tick On to use it", live(185.0, slot(enabled = false)))
+        assertEquals("From the brand kit. Switched off: tick On to use it", adStatusText(null, slot(enabled = false), AdSource.KIT))
+        // the Live sheet has no On switch
+        assertEquals("From the brand kit. Switched off for this stream", adStatusText(10.0, slot(enabled = false), AdSource.KIT, hasOnSwitch = false))
+        // switched off wins over a manual Show
+        assertEquals("From the brand kit. Switched off: tick On to use it", live(5.0, slot(AdPlacement.L_SHAPE, enabled = false, m = AdManual.SHOWN)))
     }
 
-    @Test fun `L-shaped frame needs Shrink picture, even when shown by hand`() {
+    @Test fun `the L-shaped frame status does not depend on the shrink switch`() {
         val f = slot(AdPlacement.L_SHAPE, m = AdManual.SHOWN)
-        assertEquals("From the brand kit. Needs Shrink picture while ads show", adStatusText(10.0, f, AdSource.KIT, shrinkOn = false))
-        assertEquals("From the brand kit. Needs Shrink picture while ads show", adStatusText(null, slot(AdPlacement.L_SHAPE), AdSource.KIT, shrinkOn = false))
-        // a lower third does not care about the switch
-        assertEquals("From the brand kit. Always on", adStatusText(10.0, slot(AdPlacement.LOWER_THIRD, s = AdSchedule.Continuous), AdSource.KIT, shrinkOn = false))
-        // a disabled frame says Off before anything else
-        assertEquals("From the brand kit. Off", adStatusText(10.0, slot(AdPlacement.L_SHAPE, enabled = false), AdSource.KIT, shrinkOn = false))
+        assertEquals("From the brand kit. Shown by you. Pick Follow schedule to go back.", adStatusText(10.0, f, AdSource.KIT))
+        assertEquals("From the brand kit. Starts hidden: first shows 3 min after you go live, for 15 s, then repeats.", adStatusText(null, slot(AdPlacement.L_SHAPE), AdSource.KIT))
+    }
+
+    @Test fun `switched-off texts`() {
+        assertEquals("L-shaped frame is switched off: tick On to use it", adSwitchedOffText(AdPlacement.L_SHAPE))
+        assertEquals("Lower third is switched off: tick On to use it", adSwitchedOffText(AdPlacement.LOWER_THIRD))
+        assertTrue(adSwitchedOffText(AdPlacement.L_SHAPE, hasOnSwitch = false).startsWith("L-shaped frame is switched off:"))
+        assertEquals("Off", AD_OFF_CHIP)
+    }
+
+    @Test fun `go-live note names the switched-off ads, at most three`() {
+        assertNull(adsSwitchedOffNote(emptyList()))
+        assertEquals("The L-shaped frame ad is switched off: open Ads and tick On to use it.", adsSwitchedOffNote(listOf(AdPlacement.L_SHAPE)))
+        assertEquals("The lower third ad is switched off: open Ads and tick On to use it.", adsSwitchedOffNote(listOf(AdPlacement.LOWER_THIRD, AdPlacement.LOWER_THIRD)))
+        assertEquals("The lower third and L-shaped frame ads are switched off: open Ads and tick On to use them.", adsSwitchedOffNote(listOf(AdPlacement.L_SHAPE, AdPlacement.LOWER_THIRD)))
+        assertEquals("The lower third, left third and full screen ads are switched off: open Ads and tick On to use them.", adsSwitchedOffNote(listOf(AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD, AdPlacement.FULL_SCREEN)))
+        assertEquals("The lower third, left third, full screen and 1 more ads are switched off: open Ads and tick On to use them.", adsSwitchedOffNote(AdPlacement.entries))
+    }
+
+    @Test fun `off lists and chip counts`() {
+        assertEquals(listOf(AdPlacement.LOWER_THIRD, AdPlacement.L_SHAPE), switchedOffPlacements(listOf(AdPlacement.L_SHAPE to false, AdPlacement.FULL_SCREEN to true, AdPlacement.LOWER_THIRD to false)))
+        val slots = listOf(
+            AdEditSlot(AdPlacement.LOWER_THIRD, false, "a", AdSchedule.Continuous), AdEditSlot(AdPlacement.SIDE_THIRD, false, null, AdSchedule.Continuous),
+            AdEditSlot(AdPlacement.L_SHAPE, true, "f", AdSchedule.Continuous),
+        )
+        assertEquals(listOf(AdPlacement.LOWER_THIRD), slotsSwitchedOff(slots)) // an empty slot is not "an ad switched off"
+        assertEquals(2, kitAdsSwitchedOffCount(listOf(KitAd("l_shape", "x", false), KitAd("lower_third", "y")), listOf(KitAd("full_screen", "z", false))))
+        assertNull(adsSwitchedOffChipText(0)); assertEquals("1 ad switched off", adsSwitchedOffChipText(1)); assertEquals("3 ads switched off", adsSwitchedOffChipText(3))
     }
 
     @Test fun `a frame without a clear window says it covers the picture`() {

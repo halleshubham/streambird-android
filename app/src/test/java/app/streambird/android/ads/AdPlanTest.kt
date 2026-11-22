@@ -57,7 +57,7 @@ class AdPlanTest {
     @Test fun `per-stream merge, kit ads apply automatically, overrides change them, a phone picture replaces the file`() {
         assertEquals(listOf(AdPlacement.LOWER_THIRD, AdPlacement.FULL_SCREEN), mergeStreamAds(kitAds, emptyMap(), false).map { it.placement })
         val a = mergeStreamAds(kitAds, emptyMap(), false)
-        assertEquals(AdSource.KIT, a[0].source); assertEquals("a1", a[0].assetId); assertTrue(a[0].enabled); assertFalse(a[1].enabled)
+        assertEquals(AdSource.KIT, a[0].source); assertEquals("a1", a[0].assetId); assertTrue(a[0].enabled); assertTrue(a[1].enabled) // a kit ad saved "off" starts ON on a new stream
         // switch off / schedule override
         val o = mergeStreamAds(kitAds, mapOf(AdPlacement.LOWER_THIRD to AdOverride(enabled = false), AdPlacement.FULL_SCREEN to AdOverride(enabled = true, schedule = AdSchedule.Continuous)), false)
         assertFalse(o[0].enabled); assertTrue(o[1].enabled); assertEquals(AdSchedule.Continuous, o[1].schedule)

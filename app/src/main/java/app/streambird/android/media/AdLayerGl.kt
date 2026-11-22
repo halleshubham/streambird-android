@@ -15,6 +15,7 @@ import app.streambird.android.ads.AdManual
 import app.streambird.android.ads.AdPlacement
 import app.streambird.android.ads.AdRect
 import app.streambird.android.ads.AdShrinkInput
+import app.streambird.android.ads.placementShrinks
 import app.streambird.android.ads.sceneRectFor
 import app.streambird.android.ads.AdSchedule
 import app.streambird.android.ads.AdSlot
@@ -204,8 +205,8 @@ class AdLayerGl(
         }
         for (i in rts.indices) {
             val r = rts[i]; val s = slots[i]
-            // The L-shaped frame always resizes the picture, so it cannot run while "Shrink picture while ads show" is off.
-            s.enabled = r.enabled && (r.bitmap != null || r.tex != 0) && (s.placement != AdPlacement.L_SHAPE || shrinkPicture); s.schedule = r.schedule; s.manual = r.manual
+            // The L-shaped frame runs with the shrink switch on or off (the switch governs only lower_third / side_third).
+            s.enabled = r.enabled && (r.bitmap != null || r.tex != 0); s.schedule = r.schedule; s.manual = r.manual
             if (s.enabled && r.gifBytes != null && !r.gifRequested && secondsUntilVisible(elapsed, r.schedule) < 3.0) requestAnim(r)
         }
         resolveAdAlphas(elapsed, slots, targets)
@@ -229,8 +230,9 @@ class AdLayerGl(
      * third ad leaves free (rule and formulas: ads/AdShrink.kt = web ads.ts). Top-left origin, pixels.
      */
     fun sceneRect(): AdRect {
-        if (!shrinkPicture || released) return fullFrame
+        if (released) return fullFrame
         if (free) {
+            if (!shrinkPicture) return fullFrame
             val a = if (freeRt.alpha > 0.002) freeRt.alpha else 0.0
             if (a == 0.0) return fullFrame
             shrinkIn.clear(); shrinkIn[AdPlacement.LOWER_THIRD] = AdShrinkInput(a, freeRt.rect)
@@ -238,6 +240,7 @@ class AdLayerGl(
             var any = false
             shrinkIn.clear()
             for (p in SHRINKING) {
+                if (!placementShrinks(p, shrinkPicture)) continue // the switch governs only the thirds; the frame always fits the picture to its window
                 val r = rts[p.ordinal]
                 val a = if (r.alpha > 0.002) r.alpha else 0.0
                 if (a > 0.0) {
@@ -255,8 +258,8 @@ class AdLayerGl(
         return sceneRectFor(outW, outH, shrinkIn, steppedTickerBar)
     }
 
-    /** True while an L-shaped frame with a window is on screen (and the picture-shrink switch is on): its graphic is the base layer under the scene. */
-    private fun frameOnBase(): Boolean { val r = rts[AdPlacement.L_SHAPE.ordinal]; return shrinkPicture && !free && r.window != null && r.alpha > 0.002 }
+    /** True while an L-shaped frame with a window is on screen (whatever the shrink switch says): its graphic is the base layer under the scene. */
+    private fun frameOnBase(): Boolean { val r = rts[AdPlacement.L_SHAPE.ordinal]; return !free && r.window != null && r.alpha > 0.002 }
 
     /**
      * Draws the L-shaped frame graphic as the BASE layer. The compositor calls it right after clearing the frame and BEFORE the scene, so the

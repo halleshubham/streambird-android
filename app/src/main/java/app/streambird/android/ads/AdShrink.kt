@@ -10,8 +10,19 @@ import kotlin.math.min
 //   lower_third: free area = y 0 .. top of the DRAWN ad picture (fitAd result, already above the ticker)
 //   side_third:  free area = the right two thirds, x round(W/3) .. W, full height
 //   both: the intersection. full_screen reserves nothing.
+// The shrink SWITCH governs only lower_third / side_third ([placementShrinks]); the L-shaped frame always fits the scene into its window.
 // L-shaped frame: the scene eases from where the other ads left it to the window ([lShapeSceneRect]), in step with the frame's own fade.
 // Progress: the ad's current opacity through [shrinkEase] (smoothstep), so the picture eases in step with the 300 ms fade.
+
+/**
+ * Whether [p] resizes the picture given the "Shrink picture while ads show" switch: the switch governs ONLY lower_third and side_third.
+ * The L-shaped frame always fits the scene into its own window (switch on or off); full_screen reserves nothing.
+ */
+fun placementShrinks(p: AdPlacement, shrinkSwitchOn: Boolean): Boolean = when (p) {
+    AdPlacement.L_SHAPE -> true
+    AdPlacement.LOWER_THIRD, AdPlacement.SIDE_THIRD -> shrinkSwitchOn
+    AdPlacement.FULL_SCREEN -> false
+}
 
 /** Smoothstep of an ad's opacity: 0 -> 0, 1 -> 1, gentle at both ends. */
 fun shrinkEase(alpha: Double): Double {

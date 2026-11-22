@@ -37,24 +37,24 @@ fun adSourcePrefix(source: AdSource): String = when (source) {
 /**
  * One line for one ad. [elapsedSec] = seconds since the stream went live; null = not live yet (Setup): the schedule is described as it will run.
  * [slot] carries enabled / schedule / manual state. Order of what wins: Free plan, a picture that could not be used ([problem]), switched off,
- * the L-shaped frame without "Shrink picture while ads show", a manual Show / Hide, then the schedule.
+ * a manual Show / Hide, then the schedule. (The "Shrink picture while ads show" switch does not matter here: the L-shaped frame runs with it on or off.)
+ * [hasOnSwitch] = the row has the ad's On switch next to it (Setup); the Live sheet has none, so it says where to switch it on.
  * [hasWindow] false = an L-shaped frame graphic with no clear window (null = unknown / not a frame).
  */
 fun adStatusText(
     elapsedSec: Double?,
     slot: AdSlot,
     source: AdSource,
-    shrinkOn: Boolean = true,
     freePlan: Boolean = false,
     hasWindow: Boolean? = null,
     problem: String? = null,
+    hasOnSwitch: Boolean = true,
 ): String {
     if (freePlan) return "Not included in this account's plan. The StreamBird banner shows instead."
     val prefix = adSourcePrefix(source)
     if (problem != null) return "$prefix Not on the picture: $problem"
-    if (!slot.enabled) return "$prefix Off"
+    if (!slot.enabled) return "$prefix ${if (hasOnSwitch) "Switched off: tick On to use it" else "Switched off for this stream"}"
     val isFrame = slot.placement == AdPlacement.L_SHAPE
-    if (isFrame && !shrinkOn) return "$prefix Needs Shrink picture while ads show"
     val noWindow = if (isFrame && hasWindow == false) " No clear window in this graphic, so it covers the picture instead of framing it." else ""
     if (elapsedSec != null) {
         when (slot.manual) {
@@ -80,3 +80,53 @@ fun adElapsedSec(nowMs: Long, clockStartMs: Long): Double = if (clockStartMs <= 
 
 /** What the compositor found out about an ad while preparing it (reported to the controller so the Live sheet can say it). */
 enum class AdProblem { UNREADABLE, NO_WINDOW }
+
+// ---- Switched-off ads: said clearly where the ad is shown (Setup row, Live sheet, kit editor, go-live note) ----
+
+/** The small chip on a row / card whose ad is switched off. */
+const val AD_OFF_CHIP = "Off"
+
+/**
+ * The warning line under an ad that is present but switched off. With [hasOnSwitch] (Setup, kit editor) it says what to do: "L-shaped frame is
+ * switched off: tick On to use it". The Live sheet has no On switch, so there it says where to change it instead.
+ */
+fun adSwitchedOffText(p: AdPlacement, hasOnSwitch: Boolean = true): String =
+    if (hasOnSwitch) "${p.label} is switched off: tick On to use it"
+    else "${p.label} is switched off: it cannot be switched on during the stream. Tick On in the kit or on the Setup screen before going live."
+
+/** Name of a placement inside a sentence ("lower third", "L-shaped frame"). */
+private fun adNameInSentence(p: AdPlacement): String = if (p.label.startsWith("L-")) p.label else p.label.replaceFirstChar { it.lowercase() }
+
+/** At most three names ("a", "a and b", "a, b and c", "a, b, c and 1 more"). */
+private fun joinAdNames(ps: List<AdPlacement>): String {
+    val names = ps.map(::adNameInSentence)
+    return when {
+        names.size == 1 -> names[0]
+        names.size <= 3 -> names.dropLast(1).joinToString(", ") + " and " + names.last()
+        else -> names.take(3).joinToString(", ") + " and ${names.size - 3} more"
+    }
+}
+
+/**
+ * The note at go-live when the kit / the stream's own choices leave loaded ads switched off ([off] = their placements), or null when none.
+ * "The L-shaped frame ad is switched off: open Ads and tick On to use it."
+ */
+fun adsSwitchedOffNote(off: List<AdPlacement>): String? {
+    val list = off.distinct().sortedBy { it.ordinal }
+    if (list.isEmpty()) return null
+    return if (list.size == 1) "The ${adNameInSentence(list[0])} ad is switched off: open Ads and tick On to use it."
+    else "The ${joinAdNames(list)} ads are switched off: open Ads and tick On to use them."
+}
+
+/** Placements of ads that exist but are switched off. [ads] = (placement, enabled) of the ads that are present. */
+fun switchedOffPlacements(ads: List<Pair<AdPlacement, Boolean>>): List<AdPlacement> = ads.filter { !it.second }.map { it.first }.distinct().sortedBy { it.ordinal }
+
+/** The kit editor's slots: a slot with a picture and its On switch off. */
+fun slotsSwitchedOff(slots: List<AdEditSlot>): List<AdPlacement> = slots.filter { it.assetId != null && !it.enabled }.map { it.placement }
+
+/** Number of switched-off ads on a saved kit (both shapes). */
+fun kitAdsSwitchedOffCount(landscape: List<app.streambird.android.data.KitAd>, portrait: List<app.streambird.android.data.KitAd>): Int =
+    (landscape + portrait).count { !it.enabled }
+
+/** The chip on a kit list card: "1 ad switched off", "2 ads switched off"; null when none. */
+fun adsSwitchedOffChipText(n: Int): String? = when { n <= 0 -> null; n == 1 -> "1 ad switched off"; else -> "$n ads switched off" }

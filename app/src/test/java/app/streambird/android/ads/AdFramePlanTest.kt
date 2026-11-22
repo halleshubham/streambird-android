@@ -61,4 +61,12 @@ class AdFramePlanTest {
         assertEquals(2, stillSampleSize(3000, 1688, area.w.toInt(), area.h.toInt()))
         assertEquals(2, stillSampleSize(4000, 2250, area.w.toInt(), area.h.toInt()))
     }
+
+    @Test fun `a kit ad saved switched off starts enabled on a new stream, a stream switch-off is honoured`() {
+        val kitAds = listOf(lower.copy(enabled = false), frame.copy(enabled = false))
+        val fresh = mergeStreamAds(kitAds, emptyMap(), freePlan = false)
+        assertTrue(fresh.all { it.enabled })
+        val off = mergeStreamAds(kitAds, mapOf(AdPlacement.L_SHAPE to AdOverride(enabled = false)), false)
+        assertTrue(off[0].enabled); assertFalse(off[1].enabled)
+    }
 }

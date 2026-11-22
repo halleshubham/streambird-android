@@ -1,6 +1,17 @@
 package app.streambird.android.ui.screens
 
 import androidx.compose.foundation.clickable
+import app.streambird.android.ads.adSwitchedOffText
+import app.streambird.android.ads.AD_OFF_CHIP
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -151,25 +162,31 @@ fun AdsSetupSection(
             val kit = kitAds.firstOrNull { it.placement == p.wire }
             val o = overrides[p]
             val hasAd = kit != null || o?.phone != null
-            val enabled = o?.enabled ?: kit?.enabled ?: true
+            val enabled = o?.enabled ?: true
             val sched = o?.schedule ?: kit?.let { app.streambird.android.ads.scheduleOf(it) } ?: AdSchedule.Continuous
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(p.label, style = MaterialTheme.typography.titleSmall)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(p.label, style = MaterialTheme.typography.titleSmall)
+                                if (hasAd && !enabled) AdOffChip()
+                            }
                             Text(
                                 if (!hasAd) "No ad"
                                 else adStatusText(
                                     null, AdSlot(p, enabled, sched), if (o?.phone != null) AdSource.PHONE else AdSource.KIT,
-                                    shrinkOn = shrink ?: kitShrink, hasWindow = if (p == AdPlacement.L_SHAPE && o?.phone == null) frameHasWindow else null,
+                                    hasWindow = if (p == AdPlacement.L_SHAPE && o?.phone == null) frameHasWindow else null,
                                 ),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        if (hasAd) Switch(checked = enabled, onCheckedChange = { v -> onChange(overrides + (p to (o ?: AdOverride()).copy(enabled = v))) })
+                        if (hasAd) Switch(
+                            checked = enabled, onCheckedChange = { v -> onChange(overrides + (p to (o ?: AdOverride()).copy(enabled = v))) },
+                            modifier = Modifier.semantics { contentDescription = "${p.label} ad On"; stateDescription = if (enabled) "On" else "Off, switched off" },
+                        )
                     }
-                    if (p == AdPlacement.L_SHAPE && hasAd && !(shrink ?: kitShrink)) Text(app.streambird.android.ads.FRAME_NEEDS_SHRINK, style = MaterialTheme.typography.bodySmall, color = Amber)
+                    if (hasAd && !enabled) AdOffWarning(adSwitchedOffText(p))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { pickFor = p; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) { Text(if (o?.phone != null) "Change picture" else "Use a picture from this phone") }
                         if (hasAd) TextButton(onClick = { scheduleFor = p }) { Text("Schedule") }
@@ -207,7 +224,7 @@ fun ShrinkSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("Shrink picture while ads show", style = MaterialTheme.typography.titleSmall)
-            Text("Lower and left third ads get their own space instead of covering the picture. Full screen ads always cover it. L-shaped ads always resize the picture.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Shrink picture while lower-third and left-third ads show. The L-shaped frame always fits the picture in its window.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked = checked, onCheckedChange = onChange)
     }
@@ -230,12 +247,15 @@ fun AdsLiveSheet(ads: List<LiveAd>, shrink: Boolean, clockStartMs: Long, onShrin
             ShrinkSwitch(shrink, onShrink)
             ads.forEach { a ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(a.placement.label, style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(a.placement.label, style = MaterialTheme.typography.titleSmall)
+                        if (!a.enabled && a.problem == null) AdOffChip()
+                    }
                     Text(
-                        adStatusText(elapsed, AdSlot(a.placement, a.enabled, a.schedule, a.manual), a.source, shrinkOn = shrink, hasWindow = a.hasWindow, problem = a.problem),
+                        adStatusText(elapsed, AdSlot(a.placement, a.enabled, a.schedule, a.manual), a.source, hasWindow = a.hasWindow, problem = a.problem, hasOnSwitch = false),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (a.placement == AdPlacement.L_SHAPE && !shrink) Text(app.streambird.android.ads.FRAME_NEEDS_SHRINK, style = MaterialTheme.typography.bodySmall, color = Amber)
+                    if (!a.enabled && a.problem == null) AdOffWarning(adSwitchedOffText(a.placement, hasOnSwitch = false))
                     if (a.problem == null) Segmented(listOf("show", "hide", "auto"), when (a.manual) { AdManual.SHOWN -> "show"; AdManual.HIDDEN -> "hide"; null -> "auto" }, { when (it) { "show" -> "Show now"; "hide" -> "Hide"; else -> "Follow schedule" } }, { v ->
                         onSet(a.placement, when (v) { "show" -> AdManual.SHOWN; "hide" -> AdManual.HIDDEN; else -> null })
                     })
@@ -252,5 +272,25 @@ fun AdsNoteBar(note: String, onDismiss: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Notice(note, Amber, Modifier.weight(1f))
         TextButton(onClick = onDismiss) { Text("Dismiss") }
+    }
+}
+
+/** Small "Off" chip next to an ad's name (text, so it does not rely on colour). */
+@Composable
+fun AdOffChip(modifier: Modifier = Modifier) {
+    Text(
+        AD_OFF_CHIP, modifier.clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 8.dp, vertical = 2.dp)
+            .semantics { contentDescription = "Switched off" },
+        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface,
+    )
+}
+
+/** The warning line for a switched-off ad: warning icon + text in the contrast-safe warning colour; read as one item by TalkBack. */
+@Composable
+fun AdOffWarning(text: String, modifier: Modifier = Modifier) {
+    val warn = warningTextColor()
+    Row(modifier.semantics(mergeDescendants = true) { contentDescription = text }, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Icon(Icons.Filled.Warning, contentDescription = null, tint = warn, modifier = Modifier.size(16.dp).padding(top = 2.dp))
+        Text(text, style = MaterialTheme.typography.bodySmall, color = warn)
     }
 }

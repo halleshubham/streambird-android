@@ -72,7 +72,7 @@ class ResolvedAd(val placement: AdPlacement, val source: AdSource, val assetId: 
 
 /**
  * Kit ads apply automatically with the kit (like the logo); the user may switch one off, change its schedule, or replace its file with a
- * phone picture for this stream. With no kit ("manual") the kit's ads are cleared but phone-picked ones stay. Free plan: no custom ads at all.
+ * phone picture for this stream. Every kit ad starts ENABLED on a new stream, even if the kit saved it off (only the stream's own switch-off counts). With no kit ("manual") the kit's ads are cleared but phone-picked ones stay. Free plan: no custom ads at all.
  */
 fun mergeStreamAds(kitAds: List<KitAd>?, overrides: Map<AdPlacement, AdOverride>, freePlan: Boolean): List<ResolvedAd> {
     if (freePlan) return emptyList()
@@ -81,7 +81,7 @@ fun mergeStreamAds(kitAds: List<KitAd>?, overrides: Map<AdPlacement, AdOverride>
         val o = overrides[p]
         when {
             o?.phone != null -> ResolvedAd(p, AdSource.PHONE, null, o.phone, o.enabled ?: true, o.schedule ?: kit?.let { scheduleOf(it) } ?: AdSchedule.Continuous)
-            kit != null -> ResolvedAd(p, AdSource.KIT, kit.assetId, null, o?.enabled ?: kit.enabled, o?.schedule ?: scheduleOf(kit))
+            kit != null -> ResolvedAd(p, AdSource.KIT, kit.assetId, null, o?.enabled ?: true, o?.schedule ?: scheduleOf(kit))
             else -> null
         }
     }
