@@ -79,6 +79,9 @@ fun SlotCard(
     onUpload: () -> Unit,
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The upload running for THIS slot (null = none): the Upload button becomes a loader, the preview is dimmed, Cancel appears. */
+    uploading: app.streambird.android.brand.UploadState? = null,
+    onCancelUpload: (() -> Unit)? = null,
     headerEnd: (@Composable () -> Unit)? = null,
     extra: (@Composable () -> Unit)? = null,
 ) {
@@ -95,13 +98,19 @@ fun SlotCard(
             Text("Suggested size ${spec.sizeText}", style = MaterialTheme.typography.labelMedium)
             Text(slotHelp(orientation, slot), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                AssetImage(assetId?.let(assetUrl), loader, Modifier.size(72.dp))
+                Box(Modifier.size(72.dp)) {
+                    AssetImage(assetId?.let(assetUrl), loader, Modifier.size(72.dp))
+                    if (uploading != null) UploadingScrim(Modifier.size(72.dp), uploading.fraction)
+                }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    OutlinedButton(onClick = onUpload, enabled = storageEnabled && !busy, modifier = Modifier.fillMaxWidth()) { Text(if (assetId == null) "Upload" else "Replace") }
-                    OutlinedButton(onClick = { picking = true }, modifier = Modifier.fillMaxWidth()) { Text("Choose from uploaded") }
-                    if (assetId != null) TextButton(onClick = onRemove) { Text("Remove") }
+                    OutlinedButton(onClick = onUpload, enabled = storageEnabled && !busy && uploading == null, modifier = Modifier.fillMaxWidth()) {
+                        if (uploading != null) UploadingButtonLabel() else Text(if (assetId == null) "Upload" else "Replace")
+                    }
+                    OutlinedButton(onClick = { picking = true }, enabled = uploading == null, modifier = Modifier.fillMaxWidth()) { Text("Choose from uploaded") }
+                    if (assetId != null) TextButton(onClick = onRemove, enabled = uploading == null) { Text("Remove") }
                 }
             }
+            if (uploading != null) UploadingInline(uploading, onCancel = onCancelUpload)
             if (item != null) Text(
                 "${item.name.ifBlank { "Untitled" }}, ${item.width} x ${item.height}" + if (item.isGif) ", animated GIF" else "",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
@@ -190,6 +199,9 @@ fun KitAdsSection(
     busy: Boolean,
     shrink: Boolean = true,
     frameWindow: suspend (String) -> FrameWindowState = { FrameWindowState.Checking },
+    /** The running upload (any slot); each slot shows it only when its key matches ([UploadKeys.ad]). */
+    uploading: app.streambird.android.brand.UploadState? = null,
+    onCancelUpload: (() -> Unit)? = null,
 ) {
     Section("Ads (${orientation.label})") {
         when (access) {
@@ -229,6 +241,8 @@ fun KitAdsSection(
                         onChoose = { id -> change(s.placement) { if (it.assetId == null) it.addAd(id) else it.replaceAd(0, id) } },
                         onUpload = { onUpload(s.placement, 0) },
                         onRemove = { change(s.placement) { it.removeAd(0) } },
+                        uploading = uploading?.takeIf { it.slotKey == app.streambird.android.brand.UploadKeys.ad(orientation, s.placement, 0) },
+                        onCancelUpload = onCancelUpload,
                         headerEnd = {
                             if (n >= 2) Text("$n ads", Modifier.padding(end = 8.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             if (s.assetId != null) {
@@ -270,7 +284,9 @@ fun KitAdsSection(
                                         AdSequenceControls(s, i, onSeconds = { sec -> change(s.placement) { it.setAdSeconds(i, sec) } }, onMove = { d -> change(s.placement) { it.moveAd(i, d) } }, onRemove = { change(s.placement) { it.removeAd(i) } })
                                     }
                                 }
-                                if (s.canAddAnother) OutlinedButton(
+                                val addUp = uploading?.takeIf { it.slotKey == app.streambird.android.brand.UploadKeys.ad(orientation, s.placement, null) }
+                                if (addUp != null) UploadingInline(addUp, onCancel = onCancelUpload)
+                                else if (s.canAddAnother) OutlinedButton(
                                     onClick = { addingFor = true }, enabled = !busy,
                                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Add another ${s.placement.label} ad" },
                                 ) { Text("+ Add another") }

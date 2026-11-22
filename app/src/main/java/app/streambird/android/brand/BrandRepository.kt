@@ -187,7 +187,13 @@ class BrandRepository @Inject constructor(
      * logo and ad) and uploads it. The file is NOT loaded: its size comes from the provider, only its first 512 KB are read to find format and size, and the
      * upload streams it from the Uri in 64 KB steps ([StreamingFileBody]) over the upload client with stall-based timeouts (60 s write, 120 s answer).
      */
-    suspend fun uploadPicked(uri: Uri, kind: String = "logo"): UploadedAsset = withContext(Dispatchers.IO) {
+    suspend fun uploadPicked(
+        uri: Uri, kind: String = "logo",
+        /** The picked file's display name, once known (before the first byte is sent). */
+        onName: (String?) -> Unit = {},
+        /** (bytes sent, total), reported at most once per whole percent ([shouldReportProgress]). */
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): UploadedAsset = withContext(Dispatchers.IO) {
         val cr = context.contentResolver
         val open = { cr.openInputStream(uri) }
         val ready = when (val p = prepareUpload(open, declaredSize(cr, uri), kind)) {
@@ -199,7 +205,12 @@ class BrandRepository @Inject constructor(
             cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
         }.getOrNull()
         val fileName = (display ?: kind).let { if (it.contains('.')) it else "$it.${info.format.ext}" }
-        val body = StreamingFileBody(info.format.mime, ready.size) { open() ?: throw IOException("Cannot open the chosen image.") }
+        onName(display?.takeIf { it.isNotBlank() } ?: fileName)
+        var lastPct = -1
+        val body = StreamingFileBody(
+            info.format.mime, ready.size,
+            onProgress = { sent, total -> if (shouldReportProgress(lastPct, sent, total)) { lastPct = if (total > 0) (sent * 100 / total).toInt() else 0; onProgress(sent, total) } },
+        ) { open() ?: throw IOException("Cannot open the chosen image.") }
         val up = api.uploadAssetStreaming(body, fileName, kind = kind, name = display?.substringBeforeLast('.')?.take(120))
         refresh()
         up

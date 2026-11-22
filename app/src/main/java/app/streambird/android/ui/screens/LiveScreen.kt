@@ -219,6 +219,7 @@ private fun LiveBanners(ui: LiveUi, controller: StreamController) {
         if (ui.phase == LivePhase.LIVE || ui.phase == LivePhase.ENDING) SendQualityChip(ui.quality)
         ReconnectBanner(ui.reconnect)
         ui.cameraNote?.let { Notice(it, Amber) }
+        if (ui.thumbnailUploading) UploadingInline(app.streambird.android.brand.UploadState("thumbnail:live", "thumbnail", "thumbnail"))
         ui.thumbnailNotice?.let { ThumbnailNoticeBar(it, onDismiss = controller::dismissThumbnailNotice) }
     }
 }

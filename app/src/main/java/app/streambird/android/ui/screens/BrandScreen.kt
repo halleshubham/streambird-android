@@ -41,6 +41,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.streambird.android.brand.UploadKeys
 import app.streambird.android.brand.KitDeleteText
 import app.streambird.android.brand.formatBytes
 import app.streambird.android.data.BrandKit
@@ -58,18 +59,19 @@ fun BrandScreen(connections: List<PlatformConnection>, onBack: () -> Unit, onEdi
     val selected by vm.selectedKitId.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val msg by vm.msg.collectAsStateWithLifecycle()
+    val uploading by vm.uploading.collectAsStateWithLifecycle()
     var deleteAsset by remember { mutableStateOf<AssetItem?>(null) }
     var deleteKit by remember { mutableStateOf<BrandKit?>(null) }
     LaunchedEffect(Unit) { vm.refresh() }
     var uploadKind by remember { mutableStateOf("logo") }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) vm.upload(uri, uploadKind) { } }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) vm.upload(uri, uploadKind, if (uploadKind == "ad") UploadKeys.LIBRARY_AD else UploadKeys.LIBRARY_LOGO) { } }
     val labels = connections.associate { it.id to it.label }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SubTopBar("Brand kits", onBack)
         PageHeading("Brand", "A kit is a logo and where it sits. Pick one for your next stream, or let the app choose by channel.")
         msg?.let { Notice(it.text, if (it.error) MaterialTheme.colorScheme.error else Ok) }
-        if (st.loading || busy) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+        if (st.loading || (busy && uploading == null)) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
 
         when {
             st.blocked -> Card(Modifier.fillMaxWidth()) {
@@ -164,11 +166,13 @@ fun BrandScreen(connections: List<PlatformConnection>, onBack: () -> Unit, onEdi
                     OutlinedButton(
                         onClick = { uploadKind = "logo"; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         enabled = st.storageEnabled && !busy, modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Upload a logo from the gallery") }
+                    ) { if (uploading?.slotKey == UploadKeys.LIBRARY_LOGO) UploadingButtonLabel() else Text("Upload a logo from the gallery") }
+                    uploading?.takeIf { it.slotKey == UploadKeys.LIBRARY_LOGO }?.let { UploadingInline(it, onCancel = vm::cancelUpload) }
                     OutlinedButton(
                         onClick = { uploadKind = "ad"; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         enabled = st.storageEnabled && !busy && app.streambird.android.ads.adsAccess(st.plan) == app.streambird.android.ads.AdsAccess.EDITABLE, modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Upload an ad picture or GIF") }
+                    ) { if (uploading?.slotKey == UploadKeys.LIBRARY_AD) UploadingButtonLabel() else Text("Upload an ad picture or GIF") }
+                    uploading?.takeIf { it.slotKey == UploadKeys.LIBRARY_AD }?.let { UploadingInline(it, onCancel = vm::cancelUpload) }
                     Text("PNG, JPG or WebP (GIF for logos and ads), up to 8 MB and 8192 px.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }

@@ -188,6 +188,8 @@ data class LiveUi(
     val logRows: Int = 0,
     val logoNote: String = "",
     val thumbnailNotice: ThumbnailNotice? = null,
+    /** The background thumbnail upload after go-live is running (the Live screen shows the StreamBird loader; cleared on success, failure and cancel). */
+    val thumbnailUploading: Boolean = false,
     val tickerText: String = "",
     val tickerSize: TickerSize = TickerSize.S,
     val reconnect: ReconnectUi = ReconnectUi(),
@@ -487,17 +489,19 @@ class StreamController @Inject constructor(
     /** Background thumbnail upload: never delays go-live and never fails the stream; the outcome becomes a dismissible notice. */
     private fun launchThumbnail(stream: StreamDto, req: GoLiveRequest, g: Int) {
         val uri = req.thumbnailUri ?: return
+        _ui.update { if (gen == g) it.copy(thumbnailUploading = true) else it }
         scope.launch {
             val notice = try {
                 val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { env.prepareThumbnail(uri, stream.orientation == "portrait") }
                 thumbnailNotice(api.uploadStreamThumbnail(stream.id, bytes))
             } catch (t: CancellationException) {
+                _ui.update { if (gen == g) it.copy(thumbnailUploading = false) else it }
                 throw t
             } catch (t: Throwable) {
                 thumbnailFailure((t as? ApiException)?.message ?: t.message)
             }
             event("thumbnail: ${notice.kind}", withRow = false)
-            _ui.update { if (gen == g) it.copy(thumbnailNotice = notice) else it }
+            _ui.update { if (gen == g) it.copy(thumbnailNotice = notice, thumbnailUploading = false) else it }
         }
     }
 
