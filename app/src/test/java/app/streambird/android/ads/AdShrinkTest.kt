@@ -1,6 +1,7 @@
 package app.streambird.android.ads
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
@@ -158,5 +159,14 @@ class AdShrinkTest {
             assertTrue("$w x $h a $a: $r", r.x >= -1e-9 && r.y >= -1e-9 && r.x + r.w <= w + 1e-6 && r.y + r.h <= h + 1e-6 && r.w > 0 && r.h > 0)
             near(w.toDouble() / h, r.w / r.h, 1e-9)
         }
+    }
+
+    @Test fun `the shrink switch governs only the thirds, never the L-shaped frame`() {
+        for (on in listOf(true, false)) {
+            assertTrue(placementShrinks(AdPlacement.L_SHAPE, on))
+            assertFalse(placementShrinks(AdPlacement.FULL_SCREEN, on))
+        }
+        assertTrue(placementShrinks(AdPlacement.LOWER_THIRD, true)); assertFalse(placementShrinks(AdPlacement.LOWER_THIRD, false))
+        assertTrue(placementShrinks(AdPlacement.SIDE_THIRD, true)); assertFalse(placementShrinks(AdPlacement.SIDE_THIRD, false))
     }
 }

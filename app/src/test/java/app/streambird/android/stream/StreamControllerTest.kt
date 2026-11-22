@@ -282,6 +282,30 @@ class StreamControllerTest {
         assertEquals(1, engineQueue[0].manuals.size)
     }
 
+    @Test fun `a stream-switched-off ad gives one note at go-live, none when nothing is off`() {
+        controller.start(req.copy(orientation = StreamOrientation.LANDSCAPE, useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertFalse((controller.ui.value.adsNote ?: "").contains("switched off"))
+        controller.end(); waitFor("ended") { controller.ui.value.phase == LivePhase.ENDED }
+    }
+
+    @Test fun `an ad switched off for this stream is named in the ads note`() {
+        controller.start(req.copy(orientation = StreamOrientation.LANDSCAPE, useKitAds = true, adOverrides = mapOf(
+            app.streambird.android.ads.AdPlacement.FULL_SCREEN to app.streambird.android.ads.AdOverride(enabled = false),
+        )))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertTrue(controller.ui.value.adsNote!!.contains("The full screen ad is switched off: open Ads and tick On to use it."))
+        assertFalse(controller.ui.value.adSlots.single { it.placement == app.streambird.android.ads.AdPlacement.FULL_SCREEN }.enabled)
+    }
+
+    @Test fun `free plan has no switched-off note`() {
+        controller.start(req.copy(freePlan = true, useKitAds = true, adOverrides = mapOf(
+            app.streambird.android.ads.AdPlacement.FULL_SCREEN to app.streambird.android.ads.AdOverride(enabled = false),
+        )))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertNull(controller.ui.value.adsNote)
+    }
+
     @Test fun `free plan carries no custom ads, only the StreamBird banner flag`() {
         controller.start(req.copy(freePlan = true, useKitAds = true))
         waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }

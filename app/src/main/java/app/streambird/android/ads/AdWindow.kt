@@ -191,7 +191,6 @@ sealed interface FrameWindowState {
 }
 
 const val NO_WINDOW_WARNING = "No clear window found in this graphic: the picture will not be placed in a window. It is shown as a full-screen overlay and the live picture is not resized."
-const val FRAME_NEEDS_SHRINK = "L-shaped ads always resize the picture, so they only run while \"Shrink picture while ads show\" is on."
 
 fun frameWindowText(s: FrameWindowState): String? = when (s) {
     FrameWindowState.Checking -> null

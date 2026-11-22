@@ -9,7 +9,10 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
-import app.streambird.android.ads.FRAME_NEEDS_SHRINK
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import app.streambird.android.ads.adSwitchedOffText
 import app.streambird.android.ads.FrameWindowState
 import app.streambird.android.ads.frameWindowText
 import androidx.compose.foundation.layout.Arrangement
@@ -186,8 +189,12 @@ fun KitAdsSection(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         AssetImage(assetUrl(a.assetId), loader, Modifier.size(48.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(p.label, style = MaterialTheme.typography.titleSmall)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(p.label, style = MaterialTheme.typography.titleSmall)
+                                if (!a.enabled) AdOffChip()
+                            }
                             Text((if (a.enabled) "" else "Off, ") + describeSchedule(scheduleOf(a)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (!a.enabled) AdOffWarning(adSwitchedOffText(p))
                         }
                     }
                 }
@@ -202,11 +209,19 @@ fun KitAdsSection(
                         onChoose = { id -> change(s.placement) { it.copy(assetId = id) } },
                         onUpload = { onUpload(s.placement) },
                         onRemove = { change(s.placement) { it.copy(assetId = null) } },
-                        headerEnd = { if (s.assetId != null) Switch(checked = s.enabled, onCheckedChange = { v -> change(s.placement) { it.copy(enabled = v) } }) },
+                        headerEnd = {
+                            if (s.assetId != null) {
+                                if (!s.enabled) AdOffChip(Modifier.padding(end = 8.dp))
+                                Switch(
+                                    checked = s.enabled, onCheckedChange = { v -> change(s.placement) { it.copy(enabled = v) } },
+                                    modifier = Modifier.semantics { contentDescription = "${s.placement.label} ad On"; stateDescription = if (s.enabled) "On" else "Off, switched off" },
+                                )
+                            }
+                        },
                         extra = {
+                            if (s.assetId != null && !s.enabled) AdOffWarning(adSwitchedOffText(s.placement))
                             if (s.placement == AdPlacement.L_SHAPE && s.assetId != null) {
                                 FrameWindowPreview(s.assetId, library.firstOrNull { it.id == s.assetId }, loader, assetUrl, frameWindow)
-                                if (!shrink) Text(FRAME_NEEDS_SHRINK, style = MaterialTheme.typography.bodySmall, color = Amber)
                             }
                             if (s.assetId != null) {
                                 ScheduleEditor(s.schedule, { sch -> change(s.placement) { it.copy(schedule = sch) } })

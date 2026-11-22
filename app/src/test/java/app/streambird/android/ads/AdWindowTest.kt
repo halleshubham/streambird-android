@@ -146,6 +146,5 @@ class AdWindowTest {
         assertTrue(frameWindowText(FrameWindowState.NoWindow)!!.startsWith("No clear window found in this graphic"))
         assertTrue(frameWindowText(FrameWindowState.Unreadable("HTTP 500"))!!.contains("HTTP 500"))
         assertEquals("Window found: 80% x 80% of the picture. The live picture is placed inside it.", frameWindowText(FrameWindowState.Found(NormRect(0.2, 0.0, 0.8, 0.8))))
-        assertTrue(FRAME_NEEDS_SHRINK.startsWith("L-shaped ads always resize the picture"))
     }
 }
