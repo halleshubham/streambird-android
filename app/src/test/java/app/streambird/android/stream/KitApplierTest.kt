@@ -42,8 +42,8 @@ class KitApplierTest {
 
     private fun ad(p: String, asset: String, mode: String = "continuous", show: Int? = null, every: Int? = null) = KitAd(p, asset, true, mode, show, every)
     private val kitId = "0b6f6f0e-3c43-4a76-9d3b-6a3f3d6a9c11"
-    private fun kit(id: String = kitId, logo: String? = null, portraitLogo: String? = null, ads: List<KitAd> = emptyList(), portraitAds: List<KitAd> = emptyList(), pos: String = "right", size: Int = 140) = BrandKit(
-        id = id, name = "Kit", logoAssetId = logo, logoAssetIdPortrait = portraitLogo, logoPosition = pos, logoSize = size, ads = ads, adsPortrait = portraitAds,
+    private fun kit(id: String = kitId, logo: String? = null, portraitLogo: String? = null, ads: List<KitAd> = emptyList(), portraitAds: List<KitAd> = emptyList(), pos: String = "right", size: Int = 140, more: List<KitAd> = emptyList(), morePortrait: List<KitAd> = emptyList()) = BrandKit(
+        id = id, name = "Kit", logoAssetId = logo, logoAssetIdPortrait = portraitLogo, logoPosition = pos, logoSize = size, ads = ads, adsPortrait = portraitAds, adsMore = more, adsMorePortrait = morePortrait,
         adsShrinkPicture = false, clockEnabled = true, clockPosition = "bottom_left", clockFormat = "24h", clockStyle = "text", clockAlternate = true,
     )
 
@@ -81,6 +81,34 @@ class KitApplierTest {
 
     private fun failed(o: KitOutcome) = (o as KitOutcome.Failed).reason
     private fun applied(o: KitOutcome) = o as? KitOutcome.Applied ?: error("expected Applied, was Failed(${(o as KitOutcome.Failed).reason})")
+
+    // ---- ad sequences (1.0.18) ----
+
+    @Test fun `a kit with several ads per placement replaces the stream's sequences, in play order, per orientation`() {
+        val k = kit(
+            ads = listOf(ad("lower_third", "l1"), ad("full_screen", "f1")), more = listOf(ad("lower_third", "l2", show = 30), ad("lower_third", "l3", show = 10)),
+            portraitAds = listOf(ad("side_third", "p1")), morePortrait = listOf(ad("side_third", "p2")),
+        )
+        val src = FakeSource({ listOf(k) }, { png() })
+        val land = applied(run(applier(src), FakeTarget(), o = BrandOrientation.LANDSCAPE))
+        assertEquals(listOf("lower_third", "lower_third", "lower_third", "full_screen"), land.inputs.map { it.placement.wire })
+        assertEquals(listOf(0, 1, 2, 0), land.inputs.map { it.index }); assertEquals(listOf(null, 30, 10, null), land.inputs.map { it.dwellSec })
+        val port = applied(run(applier(FakeSource({ listOf(k) }, { png() })), FakeTarget(), o = BrandOrientation.PORTRAIT))
+        assertEquals(listOf("side_third", "side_third"), port.inputs.map { it.placement.wire })           // no landscape ads in the 9:16 set
+    }
+
+    @Test fun `a long sequence is downloaded at most four files at a time`() {
+        val gate = AtomicInteger(); val peak = AtomicInteger()
+        val ids = (0..4).map { "x$it" }
+        val k = kit(ads = listOf(ad("lower_third", ids[0]), ad("side_third", "y0")), more = ids.drop(1).map { ad("lower_third", it) } + (1..4).map { ad("side_third", "y$it") })
+        val src = FakeSource({ listOf(k) }, { delay(30); png() })
+        val a = KitApplier(object : KitSource {
+            override suspend fun kits() = src.kits()
+            override suspend fun file(assetId: String): ByteArray { val n = gate.incrementAndGet(); peak.accumulateAndGet(n) { x, y -> maxOf(x, y) }; try { return src.file(assetId) } finally { gate.decrementAndGet() } }
+        }, { null }, {}, Dispatchers.Default, downloadTimeoutMs = 5_000, swapTimeoutMs = 400, retryDelayMs = 5)
+        val o = applied(run(a, FakeTarget(), o = BrandOrientation.LANDSCAPE))
+        assertEquals(10, o.inputs.size); assertTrue("peak ${peak.get()}", peak.get() <= StreamController.AD_DOWNLOADS_AT_ONCE)
+    }
 
     // ---- the happy path and where each step runs ----
 

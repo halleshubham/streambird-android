@@ -8,6 +8,7 @@ import app.streambird.android.data.KitDraft
  */
 object KitCompat {
     const val NO_FRAME_ADS = "This server does not support L-shaped frame ads yet. Remove that ad or try again later."
+    const val NO_AD_SEQUENCES = "This server does not support several ads per placement yet. Keep one ad per placement or try again later."
     const val NO_KIT_THUMBNAIL = "This server does not support kit thumbnails yet. Remove it or try again later."
     const val NO_KIT_TEXT = "This server does not support a default title and description for brand kits yet. Clear them or try again later."
 
@@ -17,6 +18,8 @@ object KitCompat {
     fun saveError(status: Int, message: String, draft: KitDraft): String? {
         if (status != 400) return null
         val m = message.lowercase()
+        // Sequences first: a server without them rejects the field `adsMore` itself.
+        if ((draft.adsMore != null || draft.adsMorePortrait != null) && "adsmore" in m) return NO_AD_SEQUENCES
         val sentFrame = draft.ads.orEmpty().any { it.placement == "l_shape" } || draft.adsPortrait.orEmpty().any { it.placement == "l_shape" }
         if (sentFrame && ("placement" in m || "l_shape" in m)) return NO_FRAME_ADS
         if (draft.thumbnailAssetId != null && "thumbnailassetid" in m) return NO_KIT_THUMBNAIL

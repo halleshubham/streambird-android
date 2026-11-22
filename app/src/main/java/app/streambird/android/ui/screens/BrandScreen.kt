@@ -4,6 +4,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material.icons.filled.Warning
 import app.streambird.android.ads.kitAdsSwitchedOffCount
+import app.streambird.android.ads.allAds
 import app.streambird.android.ads.adsSwitchedOffChipText
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -108,7 +109,7 @@ fun BrandScreen(connections: List<PlatformConnection>, onBack: () -> Unit, onEdi
                                         if (kit.isDefault) StatusBadge("Default", BadgeKind.SUCCESS)
                                         if (selected == kit.id) StatusBadge("In use", BadgeKind.INFO)
                                     }
-                                    adsSwitchedOffChipText(kitAdsSwitchedOffCount(kit.ads, kit.adsPortrait))?.let { t ->
+                                    adsSwitchedOffChipText(kitAdsSwitchedOffCount(kit.allAds().first, kit.allAds().second))?.let { t ->
                                         Row(Modifier.semantics(mergeDescendants = true) { contentDescription = "Heads up: $t" }, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                                             Icon(Icons.Filled.Warning, contentDescription = null, tint = warningTextColor(), modifier = Modifier.size(16.dp))
                                             Text(t, style = MaterialTheme.typography.labelLarge, color = warningTextColor())

@@ -31,6 +31,12 @@ data class KitDraft(
     val wallpaperAssetIdPortrait: String? = null,
     /** Same semantics as [ads], for the 9:16 set. */
     val adsPortrait: List<KitAd>? = null,
+    /**
+     * 1.0.18 ad sequences: the 2nd..5th ads of each placement, landscape / portrait. null = OMITTED (the server keeps the further ads, which is what older clients get);
+     * [] = none. A new client that sets a set exactly sends `ads` AND `adsMore` together (see [app.streambird.android.ads.kitAdsSave]).
+     */
+    val adsMore: List<KitAd>? = null,
+    val adsMorePortrait: List<KitAd>? = null,
     val adsShrinkPicture: Boolean = true,
     /** The kit's stream thumbnail (shared by both sets); null = none. Sent on PATCH only when it changed (explicit null clears), on POST only when set. */
     val thumbnailAssetId: String? = null,
@@ -82,6 +88,8 @@ object BrandKitPayload {
         if (d.isDefault && !original.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
         d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
+        d.adsMore?.let { put("adsMore", adsJson(it)) }
+        d.adsMorePortrait?.let { put("adsMorePortrait", adsJson(it)) }
     }
 
     /** POST /brand-kits body. New-release fields are only sent when set / non-default. */
@@ -102,6 +110,8 @@ object BrandKitPayload {
         if (d.isDefault) put("isDefault", true)
         d.ads?.let { put("ads", adsJson(it)) }
         d.adsPortrait?.let { put("adsPortrait", adsJson(it)) }
+        d.adsMore?.let { put("adsMore", adsJson(it)) }
+        d.adsMorePortrait?.let { put("adsMorePortrait", adsJson(it)) }
     }
 
     /**

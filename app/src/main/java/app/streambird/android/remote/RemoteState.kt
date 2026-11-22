@@ -4,6 +4,10 @@ import app.streambird.android.ads.AdManual
 import app.streambird.android.ads.AdPlacement
 import app.streambird.android.ads.AdSchedule
 import app.streambird.android.ads.AdSource
+import app.streambird.android.ads.MAX_ADS_PER_PLACEMENT
+import app.streambird.android.ads.SeqAd
+import app.streambird.android.ads.adSequenceState
+import app.streambird.android.ads.seqScheduleOf
 import app.streambird.android.clock.ClockSettings
 import app.streambird.android.media.NameBanner
 import app.streambird.android.media.NameBannerState
@@ -28,6 +32,8 @@ data class RemoteStateInput(
     val kitId: String? = null,
     val logo: LogoInfo = LogoInfo(false, false, DEFAULT_LOGO_SIZE),
     val banner: NameBannerState = NameBannerState(),
+    /** 1.0.18: seconds since go-live, to say which ad of a sequence is current (`current`); the snapshot is taken when the state changes, so it is the ad current THEN. */
+    val adElapsedSec: Double = 0.0,
 )
 
 /** A brand kit as the snapshot lists it: id and name only. */
@@ -57,8 +63,8 @@ object RemoteState {
         put("freePlan", i.freePlan)
         put("ads", buildJsonObject {
             for (p in AdPlacement.entries) {
-                val a = i.ads.firstOrNull { it.placement == p }
-                put(p.wire, if (a == null) buildJsonObject { put("present", false) } else ad(a))
+                val g = i.ads.filter { it.placement == p }.sortedBy { it.index }
+                put(p.wire, if (g.isEmpty()) buildJsonObject { put("present", false) } else ad(g, i.adElapsedSec))
             }
         })
         put("adsShrink", i.adsShrink)
@@ -85,17 +91,37 @@ object RemoteState {
         })
     }
 
-    private fun ad(a: LiveAd): JsonObject = buildJsonObject {
+    /**
+     * One placement. A single ad is exactly what it always was. With several ads (1.0.18) the placement keeps ONE state: `enabled` = any ad is on, `manual`, the mode and pause
+     * are the placement's (the first usable ad's), and two optional fields describe the sequence for a control page that knows them: `sequence` = every ad in play order
+     * (`[{assetId?, enabled, showSec}]`, at most 5; an ad that failed to load is `enabled: false`) and `current` = the 0-based index of the ad showing now (or, in the hidden part
+     * of "show, then hide", the one that shows next); absent when no ad is on. `ads.enabled` / `ads.manual` / `ads.schedule` commands act on the whole placement.
+     */
+    private fun ad(g: List<LiveAd>, elapsedSec: Double): JsonObject = buildJsonObject {
+        val lead = g.firstOrNull { it.problem == null } ?: g.first()
         // A picture that failed to load counts as not present: it cannot be shown or switched.
-        val usable = a.problem == null
+        val usable = g.any { it.problem == null }
         put("present", usable)
-        put("enabled", usable && a.enabled)
-        put("manual", when (a.manual) { AdManual.SHOWN -> "shown"; AdManual.HIDDEN -> "hidden"; null -> null })
-        when (val s = a.schedule) {
+        put("enabled", g.any { it.problem == null && it.enabled })
+        put("manual", when (lead.manual) { AdManual.SHOWN -> "shown"; AdManual.HIDDEN -> "hidden"; null -> null })
+        when (val s = lead.schedule) {
             is AdSchedule.Continuous -> put("mode", "continuous")
             is AdSchedule.Interval -> { put("mode", "interval"); put("showSec", s.showSec); put("everySec", s.everySec) }
         }
-        put("source", if (a.source == AdSource.PHONE) "phone" else "kit")
+        put("source", if (lead.source == AdSource.PHONE) "phone" else "kit")
+        if (g.size >= 2) {
+            val list = g.take(MAX_ADS_PER_PLACEMENT)
+            put("sequence", buildJsonArray {
+                list.forEach { a -> add(buildJsonObject {
+                    a.assetId?.takeIf { a.source == AdSource.KIT }?.let { put("assetId", it) }
+                    put("enabled", a.problem == null && a.enabled)
+                    put("showSec", a.showSec.coerceIn(1, 3600))
+                }) }
+            })
+            val sch = seqScheduleOf(lead.schedule)
+            val st = adSequenceState(elapsedSec, list.map { SeqAd(it.problem == null && it.enabled, it.showSec) }, sch)
+            if (st.index >= 0) put("current", st.index)
+        }
     }
 
     fun clock(c: ClockSettings): JsonObject = buildJsonObject {

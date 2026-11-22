@@ -387,8 +387,9 @@ class StreamControllerTest {
 
     // ---- 1.0.10: a stream started from the app picks up the kit's ads (audit) ----
 
-    private fun kitJson(id: String, name: String, isDefault: Boolean, conns: String = "", ads: String = "", adsPortrait: String = "") =
-        """{"id":"$id","name":"$name","logoAssetId":null,"logoPosition":"left","logoSize":90,"wallpaperAssetId":null,"wallpaperDim":0,"lowerThirdStyle":"accent","isDefault":$isDefault,"connectionIds":[$conns],"ads":[$ads],"adsPortrait":[$adsPortrait]}"""
+    private fun kitJson(id: String, name: String, isDefault: Boolean, conns: String = "", ads: String = "", adsPortrait: String = "", adsMore: String = "", adsMorePortrait: String = "") =
+        """{"id":"$id","name":"$name","logoAssetId":null,"logoPosition":"left","logoSize":90,"wallpaperAssetId":null,"wallpaperDim":0,"lowerThirdStyle":"accent","isDefault":$isDefault,"connectionIds":[$conns],"ads":[$ads],"adsPortrait":[$adsPortrait]""" +
+            (if (adsMore.isNotEmpty()) ""","adsMore":[$adsMore]""" else "") + (if (adsMorePortrait.isNotEmpty()) ""","adsMorePortrait":[$adsMorePortrait]""" else "") + "}"
     private fun adJson(placement: String, asset: String, interval: Boolean = false) =
         """{"placement":"$placement","assetId":"$asset","enabled":true,"mode":"${if (interval) "interval" else "continuous"}","showSec":${if (interval) 15 else "null"},"everySec":${if (interval) 180 else "null"}}"""
     private fun kits(vararg k: String) { server.kitsResponse = { 200 to k.joinToString(",", "[", "]") } }
@@ -828,5 +829,76 @@ class StreamControllerTest {
         assertTrue(remote.states.none { it.containsKey("kits") })
         assertEquals(LivePhase.LIVE, controller.ui.value.phase)
         assertTrue(remote.states[0].containsKey("lowerThird") && remote.states[0].containsKey("logo"))
+    }
+
+    // ---- ad sequences (1.0.18) ----
+
+    private fun moreJson(placement: String, asset: String, showSec: Int?) =
+        """{"placement":"$placement","assetId":"$asset","enabled":true,"mode":"continuous","showSec":${showSec ?: "null"},"everySec":null}"""
+
+    @Test fun `several ads of one placement load in order, each independently, and a failing later ad is named by its number`() {
+        kits(kitJson("ks", "Seq kit", true, adsPortrait = adJson("lower_third", "good"), adsMorePortrait = moreJson("lower_third", "good2", 30) + "," + moreJson("lower_third", "bad", 10)))
+        controller.start(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        val inputs = engineQueue[0].lastConfig!!.ads!!.inputs
+        assertEquals(listOf(0, 1), inputs.map { it.index })                                           // ad 3 failed: only the two that loaded reach the engine, in order
+        assertEquals(listOf(null, 30), inputs.map { it.dwellSec })
+        val slots = controller.ui.value.adSlots
+        assertEquals(listOf(0, 1, 2), slots.map { it.index }); assertEquals(listOf(null, null, "File not found"), slots.map { it.problem })
+        assertTrue(controller.ui.value.adsNote!!.contains("Lower third ad 3 of kit 'Seq kit'"))
+        assertTrue(controller.ui.value.adsNote!!.contains("The other ads"))
+        assertEquals(1, engineQueue[0].clockStarts.get())
+    }
+
+    @Test fun `at most four ad files are downloaded at once however long the sequences are`() {
+        val gate = AtomicInteger(); val peak = AtomicInteger()
+        server.assetResponse = { _ ->
+            val n = gate.incrementAndGet(); peak.accumulateAndGet(n) { a, b -> maxOf(a, b) }
+            Thread.sleep(40); gate.decrementAndGet(); 200 to "PNGBYTES"
+        }
+        val low = (1..4).joinToString(",") { moreJson("lower_third", "x$it", 20) }
+        val side = (1..4).joinToString(",") { moreJson("side_third", "y$it", 20) }
+        kits(kitJson("ks", "Seq kit", true, adsPortrait = adJson("lower_third", "x0") + "," + adJson("side_third", "y0"), adsMorePortrait = "$low,$side"))
+        controller.start(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertEquals(10, engineQueue[0].lastConfig!!.ads!!.inputs.size)
+        assertTrue("peak ${peak.get()}", peak.get() <= StreamController.AD_DOWNLOADS_AT_ONCE)
+    }
+
+    @Test fun `a per-stream list from Setup reaches the engine in its order with its switches and seconds`() {
+        kits(kitJson("ks", "Seq kit", true, adsPortrait = adJson("lower_third", "good"), adsMorePortrait = moreJson("lower_third", "good2", 30)))
+        val kit = app.streambird.android.data.ApiJson.decodeFromString<List<app.streambird.android.data.BrandKit>>(server.kitsResponse().second)[0]
+        val kitAds = app.streambird.android.brand.kitSetFor(kit, app.streambird.android.brand.BrandOrientation.PORTRAIT).ads
+        var o = app.streambird.android.ads.overrideMoveAd(kitAds, emptyMap(), AdPlacement.LOWER_THIRD, 1, -1)
+        o = app.streambird.android.ads.overrideSetOn(kitAds, o, AdPlacement.LOWER_THIRD, 0, false)
+        controller.start(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true, adOverrides = o))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        val inputs = engineQueue[0].lastConfig!!.ads!!.inputs
+        assertEquals(listOf(false, true), inputs.map { it.enabled })                                  // the first one (the kit's second ad) was switched off for this stream
+        assertEquals(listOf(30, null), inputs.map { it.dwellSec })
+        assertFalse((controller.ui.value.adsNote ?: "").contains("switched off"))                     // one ad of the placement is on: no whole-placement note
+    }
+
+    @Test fun `every ad of a placement switched off gives the note once`() {
+        kits(kitJson("ks", "Seq kit", true, adsPortrait = adJson("lower_third", "good"), adsMorePortrait = moreJson("lower_third", "good2", 30)))
+        controller.start(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true, adOverrides = mapOf(AdPlacement.LOWER_THIRD to app.streambird.android.ads.AdOverride(enabled = false))))
+        waitFor("live") { controller.ui.value.phase == LivePhase.LIVE }
+        assertTrue(controller.ui.value.adsNote!!.contains("The lower third ad is switched off"))
+    }
+
+    @Test fun `the remote snapshot lists the sequence and the current ad, and Hide acts on every ad of the placement`() {
+        kits(kitJson("ks", "Seq kit", true, adsPortrait = adJson("lower_third", "good"), adsMorePortrait = moreJson("lower_third", "good2", 30)))
+        val remote = goLiveWithRemote(req.copy(logoChoice = LogoChoice.NONE, useKitAds = true))
+        waitFor("snapshot") { remote.states.isNotEmpty() }
+        val ads = remote.states.last()["ads"] as kotlinx.serialization.json.JsonObject
+        val lt = ads["lower_third"] as kotlinx.serialization.json.JsonObject
+        assertEquals("true", lt["present"].toString()); assertEquals("true", lt["enabled"].toString())
+        val seq = lt["sequence"] as kotlinx.serialization.json.JsonArray
+        assertEquals(2, seq.size)
+        assertEquals("""{"assetId":"good","enabled":true,"showSec":20}""", seq[0].toString())
+        assertEquals("""{"assetId":"good2","enabled":true,"showSec":30}""", seq[1].toString())
+        assertEquals("0", lt["current"].toString())
+        controller.setAdManual(AdPlacement.LOWER_THIRD, app.streambird.android.ads.AdManual.HIDDEN)
+        assertEquals(listOf(app.streambird.android.ads.AdManual.HIDDEN, app.streambird.android.ads.AdManual.HIDDEN), controller.ui.value.adSlots.map { it.manual })   // the whole placement
     }
 }

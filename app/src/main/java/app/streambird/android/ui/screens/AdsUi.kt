@@ -58,6 +58,26 @@ import app.streambird.android.ads.adElapsedSec
 import app.streambird.android.ads.adStatusText
 import app.streambird.android.ads.formatCountdown
 import app.streambird.android.ads.AdsAccess
+import app.streambird.android.ads.MAX_ADS_PER_PLACEMENT
+import app.streambird.android.ads.SeqAd
+import app.streambird.android.ads.SeqState
+import app.streambird.android.ads.adSecondsError
+import app.streambird.android.ads.adSequenceState
+import app.streambird.android.ads.adTalkBackLabel
+import app.streambird.android.ads.overrideAddPhone
+import app.streambird.android.ads.currentAds
+import app.streambird.android.ads.formatDuration
+import app.streambird.android.ads.overrideMoveAd
+import app.streambird.android.ads.placementEdited
+import app.streambird.android.ads.overrideRemoveAd
+import app.streambird.android.ads.overrideReplaceWithPhone
+import app.streambird.android.ads.resetPlacement
+import app.streambird.android.ads.seqScheduleOf
+import app.streambird.android.ads.sequenceSetupText
+import app.streambird.android.ads.sequenceStatusText
+import app.streambird.android.ads.overrideSetOn
+import app.streambird.android.ads.overrideSetSeconds
+import app.streambird.android.ads.overrideSetSchedule
 import app.streambird.android.ads.PhoneAd
 import app.streambird.android.ads.SecUnit
 import app.streambird.android.ads.describeSchedule
@@ -109,8 +129,9 @@ fun ScheduleEditor(schedule: AdSchedule, onChange: (AdSchedule) -> Unit, modifie
 private fun describeScheduleOf(a: KitAd) = describeSchedule(app.streambird.android.ads.scheduleOf(a))
 
 /**
- * Setup screen: kit ads apply automatically with the kit; per placement the user can switch an ad off, change its schedule, or use a picture from
- * the phone for THIS stream only (kept in memory, not uploaded). Free plan: only an explanation.
+ * Setup screen: kit ads apply automatically with the kit; per placement the user sees the ordered LIST of its ads (1.0.18: up to 5 played in turn) and can switch
+ * each one off, give it its own seconds, reorder, remove, add another picture from the phone, change the placement's schedule, or use a picture from the phone
+ * for THIS stream only (kept in memory, not uploaded). [kitAds] = every ad of the kit's set (flat, placement by placement). Free plan: only an explanation.
  */
 @Composable
 fun AdsSetupSection(
@@ -125,6 +146,10 @@ fun AdsSetupSection(
     notice: KitAdsNotice? = null,
     /** The kit's L-shaped graphic: true = a clear window was found, false = none, null = not known (yet). */
     frameHasWindow: Boolean? = null,
+    /** Names and pictures of the kit's ad files (the brand library), to show a name / thumbnail per ad. */
+    library: List<AssetItem> = emptyList(),
+    loader: ImageLoader? = null,
+    assetUrl: (String) -> String = { it },
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Ads", style = MaterialTheme.typography.titleSmall)
@@ -134,12 +159,13 @@ fun AdsSetupSection(
         }
         val ctx = LocalContext.current
         val scope = rememberCoroutineScope()
-        var pickFor by remember { mutableStateOf<AdPlacement?>(null) }
+        /** What the picker is for: (placement, index to replace or null = add another). */
+        var pickFor by remember { mutableStateOf<Pair<AdPlacement, Int?>?>(null) }
         var message by remember { mutableStateOf<String?>(null) }
         var scheduleFor by remember { mutableStateOf<AdPlacement?>(null) }
         val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-            val p = pickFor; pickFor = null
-            if (uri == null || p == null) return@rememberLauncherForActivityResult
+            val target = pickFor; pickFor = null
+            if (uri == null || target == null) return@rememberLauncherForActivityResult
             scope.launch {
                 val res = withContext(Dispatchers.IO) {
                     runCatching {
@@ -152,63 +178,137 @@ fun AdsSetupSection(
                     }.getOrElse { "Could not read that picture." to null }
                 }
                 message = res.first
-                if (res.first == null) res.second?.let { ph -> onChange(overrides + (p to (overrides[p] ?: AdOverride()).copy(phone = ph, enabled = true))) }
-            }
-        }
-        message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-        notice?.let { Text(it.text, style = MaterialTheme.typography.bodySmall, color = if (it.warn) Amber else MaterialTheme.colorScheme.onSurfaceVariant) }
-        ShrinkSwitch(shrink ?: kitShrink, { v -> onShrink(if (v == kitShrink) null else v) })
-        AdPlacement.entries.forEach { p ->
-            val kit = kitAds.firstOrNull { it.placement == p.wire }
-            val o = overrides[p]
-            val hasAd = kit != null || o?.phone != null
-            val enabled = o?.enabled ?: true
-            val sched = o?.schedule ?: kit?.let { app.streambird.android.ads.scheduleOf(it) } ?: AdSchedule.Continuous
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(p.label, style = MaterialTheme.typography.titleSmall)
-                                if (hasAd && !enabled) AdOffChip()
-                            }
-                            Text(
-                                if (!hasAd) "No ad"
-                                else adStatusText(
-                                    null, AdSlot(p, enabled, sched), if (o?.phone != null) AdSource.PHONE else AdSource.KIT,
-                                    hasWindow = if (p == AdPlacement.L_SHAPE && o?.phone == null) frameHasWindow else null,
-                                ),
-                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        if (hasAd) Switch(
-                            checked = enabled, onCheckedChange = { v -> onChange(overrides + (p to (o ?: AdOverride()).copy(enabled = v))) },
-                            modifier = Modifier.semantics { contentDescription = "${p.label} ad On"; stateDescription = if (enabled) "On" else "Off, switched off" },
-                        )
-                    }
-                    if (hasAd && !enabled) AdOffWarning(adSwitchedOffText(p))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { pickFor = p; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) { Text(if (o?.phone != null) "Change picture" else "Use a picture from this phone") }
-                        if (hasAd) TextButton(onClick = { scheduleFor = p }) { Text("Schedule") }
-                        if (o?.phone != null) TextButton(onClick = { onChange(overrides + (p to o.copy(phone = null))) }) { Text("Use kit") }
+                val (p, index) = target
+                if (res.first == null) res.second?.let { ph ->
+                    val cur = currentAds(kitAds, overrides, p)
+                    when {
+                        overrides[p]?.sequence == null && cur.size <= 1 && (index != null || cur.isEmpty()) -> onChange(overrides + (p to (overrides[p] ?: AdOverride()).copy(phone = ph, enabled = true)))   // one ad or none: the single-ad form, as before
+                        index != null -> onChange(overrideReplaceWithPhone(kitAds, overrides, p, index, ph))
+                        else -> onChange(overrideAddPhone(kitAds, overrides, p, ph))
                     }
                 }
             }
         }
-        if (AdPlacement.entries.any { p -> (overrides[p]?.schedule ?: kitAds.firstOrNull { it.placement == p.wire }?.let { app.streambird.android.ads.scheduleOf(it) }) is AdSchedule.Interval }) {
+        fun pick(p: AdPlacement, index: Int?) { pickFor = p to index; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+        message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        notice?.let { Text(it.text, style = MaterialTheme.typography.bodySmall, color = if (it.warn) Amber else MaterialTheme.colorScheme.onSurfaceVariant) }
+        ShrinkSwitch(shrink ?: kitShrink, { v -> onShrink(if (v == kitShrink) null else v) })
+        var anyInterval = false
+        AdPlacement.entries.forEach { p ->
+            val ads = currentAds(kitAds, overrides, p)
+            val hasAd = ads.isNotEmpty()
+            val first = ads.firstOrNull()
+            if (first?.schedule is AdSchedule.Interval) anyInterval = true
+            val edited = placementEdited(overrides, p)
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (ads.size <= 1) {
+                        // One ad (or none): exactly the card of 1.0.17.
+                        val o = overrides[p]
+                        val enabled = first?.enabled ?: true
+                        val sched = first?.schedule ?: AdSchedule.Continuous
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(p.label, style = MaterialTheme.typography.titleSmall)
+                                    if (hasAd && !enabled) AdOffChip()
+                                }
+                                Text(
+                                    if (!hasAd) "No ad"
+                                    else adStatusText(
+                                        null, AdSlot(p, enabled, sched), first!!.source,
+                                        hasWindow = if (p == AdPlacement.L_SHAPE && first.source == AdSource.KIT) frameHasWindow else null,
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (hasAd) Switch(
+                                checked = enabled, onCheckedChange = { v -> onChange(if (o?.sequence == null) overrides + (p to (o ?: AdOverride()).copy(enabled = v)) else overrideSetOn(kitAds, overrides, p, 0, v)) },
+                                modifier = Modifier.semantics { contentDescription = "${adTalkBackLabel(p, 1)} On"; stateDescription = if (enabled) "On" else "Off, switched off" },
+                            )
+                        }
+                        if (hasAd && !enabled) AdOffWarning(adSwitchedOffText(p))
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(p.label, style = MaterialTheme.typography.titleSmall)
+                            Text("${ads.size} ads", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (ads.none { it.enabled }) AdOffChip()
+                        }
+                        Text(sequenceSetupText(ads), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        ads.forEachIndexed { i, r ->
+                            val n = i + 1
+                            val item = r.assetId?.let { id -> library.firstOrNull { it.id == id } }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (r.assetId != null && loader != null) AssetImage(assetUrl(r.assetId), loader, Modifier.size(40.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Ad $n", style = MaterialTheme.typography.titleSmall)
+                                        if (!r.enabled) AdOffChip()
+                                    }
+                                    Text(
+                                        (r.phone?.name ?: item?.name?.ifBlank { null } ?: "Brand kit picture") + if (r.source == AdSource.PHONE) " (this phone, this stream only)" else "",
+                                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                                    )
+                                }
+                                Switch(
+                                    checked = r.enabled, onCheckedChange = { v -> onChange(overrideSetOn(kitAds, overrides, p, i, v)) },
+                                    modifier = Modifier.semantics { contentDescription = "${adTalkBackLabel(p, n)} On"; stateDescription = if (r.enabled) "On" else "Off, switched off" },
+                                )
+                            }
+                            if (!r.enabled) AdOffWarning(adSwitchedOffText(p, adNumber = n))
+                            if (p == AdPlacement.L_SHAPE && r.source == AdSource.KIT && frameHasWindow == false && i == 0) Text("No clear window in this graphic, so it covers the picture instead of framing it.", style = MaterialTheme.typography.bodySmall, color = Amber)
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                AdSecondsField(r.schedule, if (r.schedule is AdSchedule.Interval) r.showSec else r.dwellSec, adTalkBackLabel(p, n), Modifier.weight(1f)) { sec -> onChange(overrideSetSeconds(kitAds, overrides, p, i, sec)) }
+                                TextButton(onClick = { onChange(overrideMoveAd(kitAds, overrides, p, i, -1)) }, enabled = i > 0, modifier = Modifier.semantics { contentDescription = "Move ${adTalkBackLabel(p, n)} up" }) { Text("Up") }
+                                TextButton(onClick = { onChange(overrideMoveAd(kitAds, overrides, p, i, 1)) }, enabled = i < ads.size - 1, modifier = Modifier.semantics { contentDescription = "Move ${adTalkBackLabel(p, n)} down" }) { Text("Down") }
+                                TextButton(onClick = { onChange(overrideRemoveAd(kitAds, overrides, p, i)) }, modifier = Modifier.semantics { contentDescription = "Remove ${adTalkBackLabel(p, n)}" }) { Text("Remove") }
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (ads.size <= 1) OutlinedButton(onClick = { pick(p, if (hasAd) 0 else null) }) { Text(if (first?.source == AdSource.PHONE) "Change picture" else "Use a picture from this phone") }
+                        if (hasAd && ads.size < MAX_ADS_PER_PLACEMENT) OutlinedButton(onClick = { pick(p, null) }, modifier = Modifier.semantics { contentDescription = "Add another ${p.label} ad from this phone" }) { Text("+ Add another") }
+                        if (hasAd) TextButton(onClick = { scheduleFor = p }) { Text("Schedule") }
+                    }
+                    if (edited) TextButton(onClick = { onChange(resetPlacement(overrides, p)) }) { Text(if (kitAds.any { it.placement == p.wire }) "Use the kit's ads" else "Remove phone pictures") }
+                    if (hasAd && ads.size >= MAX_ADS_PER_PLACEMENT) Text("Up to $MAX_ADS_PER_PLACEMENT ads per placement.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        if (anyInterval) {
             Text(AD_CLOCK_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         scheduleFor?.let { p ->
-            val cur = overrides[p]?.schedule ?: kitAds.firstOrNull { it.placement == p.wire }?.let { app.streambird.android.ads.scheduleOf(it) } ?: AdSchedule.Continuous
+            val cur = currentAds(kitAds, overrides, p).firstOrNull()?.schedule ?: AdSchedule.Continuous
             var draft by remember(p) { mutableStateOf(cur) }
             AlertDialog(
                 onDismissRequest = { scheduleFor = null },
                 title = { Text("${p.label}: schedule for this stream") },
                 text = { ScheduleEditor(draft, { draft = it }) },
-                confirmButton = { TextButton(onClick = { if (scheduleError(draft) == null) { onChange(overrides + (p to (overrides[p] ?: AdOverride()).copy(schedule = draft))); scheduleFor = null } }) { Text("Apply") } },
+                confirmButton = { TextButton(onClick = { if (scheduleError(draft) == null) { onChange(overrideSetSchedule(kitAds, overrides, p, draft)); scheduleFor = null } }) { Text("Apply") } },
                 dismissButton = { TextButton(onClick = { scheduleFor = null }) { Text("Cancel") } },
             )
         }
+    }
+}
+
+/**
+ * The seconds of one ad of a sequence: "Shown for [n] s" (interval) or "Seconds before the next ad [n]" (continuous). Empty = the default. Only a valid number is
+ * passed on ([adSecondsError] says what is wrong, in place), so a half-typed value never changes the stream.
+ */
+@Composable
+fun AdSecondsField(schedule: AdSchedule, value: Int?, talkBack: String, modifier: Modifier = Modifier, onValid: (Int?) -> Unit) {
+    var text by remember(value, schedule is AdSchedule.Interval) { mutableStateOf(value?.toString().orEmpty()) }
+    val parsed = text.toIntOrNull()
+    val error = if (text.isNotBlank()) (if (parsed == null) "Enter whole seconds." else adSecondsError(schedule, parsed)) else null
+    Column(modifier) {
+        OutlinedTextField(
+            text, { t -> text = t.filter { c -> c.isDigit() }.take(5); val v = text.toIntOrNull(); if (text.isBlank()) onValid(null) else if (v != null && adSecondsError(schedule, v) == null) onValid(v) },
+            Modifier.fillMaxWidth().semantics { contentDescription = "$talkBack seconds" }, singleLine = true, isError = error != null,
+            label = { Text(if (schedule is AdSchedule.Interval) "Shown for (s)" else "Before next (s)") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        )
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
     }
 }
 
@@ -245,25 +345,70 @@ fun AdsLiveSheet(ads: List<LiveAd>, shrink: Boolean, clockStartMs: Long, onShrin
             Text("Ads", style = MaterialTheme.typography.titleMedium)
             Text(AD_CLOCK_NOTE + " On the air for ${formatCountdown(elapsed.toLong())}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ShrinkSwitch(shrink, onShrink)
-            ads.forEach { a ->
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(a.placement.label, style = MaterialTheme.typography.titleSmall)
-                        if (!a.enabled && a.problem == null) AdOffChip()
+            ads.groupBy { it.placement }.toSortedMap().values.forEach { g0 ->
+                val g = g0.sortedBy { it.index }
+                if (g.size == 1) {
+                    val a = g[0]
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(a.placement.label, style = MaterialTheme.typography.titleSmall)
+                            if (!a.enabled && a.problem == null) AdOffChip()
+                        }
+                        Text(
+                            adStatusText(elapsed, AdSlot(a.placement, a.enabled, a.schedule, a.manual), a.source, hasWindow = a.hasWindow, problem = a.problem, hasOnSwitch = false),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (!a.enabled && a.problem == null) AdOffWarning(adSwitchedOffText(a.placement, hasOnSwitch = false))
+                        PlacementManualControl(a.placement, a.manual, a.problem == null, onSet)
                     }
-                    Text(
-                        adStatusText(elapsed, AdSlot(a.placement, a.enabled, a.schedule, a.manual), a.source, hasWindow = a.hasWindow, problem = a.problem, hasOnSwitch = false),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (!a.enabled && a.problem == null) AdOffWarning(adSwitchedOffText(a.placement, hasOnSwitch = false))
-                    if (a.problem == null) Segmented(listOf("show", "hide", "auto"), when (a.manual) { AdManual.SHOWN -> "show"; AdManual.HIDDEN -> "hide"; null -> "auto" }, { when (it) { "show" -> "Show now"; "hide" -> "Hide"; else -> "Follow schedule" } }, { v ->
-                        onSet(a.placement, when (v) { "show" -> AdManual.SHOWN; "hide" -> AdManual.HIDDEN; else -> null })
-                    })
-                }
+                } else LivePlacementSequence(g, elapsed, onSet)
             }
             Text("Show now keeps an ad on the picture until you pick Follow schedule. Changes here are for this stream only and are never saved.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(Modifier.height(16.dp)) {}
         }
+    }
+}
+
+/** Show now / Hide / Follow schedule: acts on the WHOLE placement (every ad of it). */
+@Composable
+private fun PlacementManualControl(p: AdPlacement, manual: AdManual?, usable: Boolean, onSet: (AdPlacement, AdManual?) -> Unit) {
+    if (!usable) return
+    Segmented(listOf("show", "hide", "auto"), when (manual) { AdManual.SHOWN -> "show"; AdManual.HIDDEN -> "hide"; null -> "auto" }, { when (it) { "show" -> "Show now"; "hide" -> "Hide"; else -> "Follow schedule" } }, { v ->
+        onSet(p, when (v) { "show" -> AdManual.SHOWN; "hide" -> AdManual.HIDDEN; else -> null })
+    })
+}
+
+/**
+ * Live sheet card of a placement with SEVERAL ads (1.0.18): which one is on the picture ("Now showing 2 of 3", counted from the go-live clock like the compositor), every ad
+ * with its state and seconds (the On switch is not here: it is set in the kit or on Setup before going live), and Show now / Hide / Follow schedule for the whole placement.
+ */
+@Composable
+private fun LivePlacementSequence(g: List<LiveAd>, elapsed: Double, onSet: (AdPlacement, AdManual?) -> Unit) {
+    val p = g[0].placement
+    val lead = g.firstOrNull { it.problem == null } ?: g[0]
+    val seq = g.map { SeqAd(it.problem == null && it.enabled, it.showSec) }
+    val usable = g.any { it.problem == null }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(p.label, style = MaterialTheme.typography.titleSmall)
+            Text("${g.size} ads", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (usable && g.none { it.problem == null && it.enabled }) AdOffChip()
+        }
+        if (usable) {
+            val st = adSequenceState(elapsed, seq, seqScheduleOf(lead.schedule), seq.size, SeqState())
+            Text(
+                sequenceStatusText(elapsed, seq, lead.manual, seqScheduleOf(lead.schedule)) + if (st.index >= 0 && lead.hasWindow == false) " No clear window in the frame graphic, so it covers the picture instead of framing it." else "",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { contentDescription = "${p.label}: " + sequenceStatusText(elapsed, seq, lead.manual, seqScheduleOf(lead.schedule)) },
+            )
+        }
+        g.forEachIndexed { i, a ->
+            val n = i + 1
+            val state = when { a.problem != null -> "Not on the picture: ${a.problem}"; !a.enabled -> "Switched off"; else -> if (a.schedule is AdSchedule.Interval) "Shown for ${formatDuration(a.showSec)}" else "Stays ${formatDuration(a.showSec)}" }
+            Text("${adTalkBackLabel(p, n)}: $state" + if (a.source == AdSource.PHONE) " (picture from this phone)" else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (a.problem == null && !a.enabled) AdOffWarning(adSwitchedOffText(p, hasOnSwitch = false, adNumber = n))
+        }
+        PlacementManualControl(p, lead.manual, usable, onSet)
     }
 }
 

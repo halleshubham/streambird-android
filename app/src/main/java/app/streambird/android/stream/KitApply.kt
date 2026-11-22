@@ -25,6 +25,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
@@ -113,7 +114,14 @@ class KitApplier(
         log("kit apply: downloading ${merged.size} ads" + if (set.logoAssetId != null) " and the logo" else "")
         val (logoBytes, ads) = coroutineScope {
             val logoJob = async { set.logoAssetId?.let { id -> checked(timedFile("logo", id, ad = false)) } }
-            val adJobs = merged.map { a -> async { AdInput(a.placement, checked(timedFile("${a.placement.wire} ad", a.assetId!!, ad = true)), a.enabled, a.schedule) } }
+            // At most four files in flight (up to 5 ads x 4 placements): the memory stays bounded however long the sequences are.
+            val gate = kotlinx.coroutines.sync.Semaphore(StreamController.AD_DOWNLOADS_AT_ONCE)
+            val adJobs = merged.map { a ->
+                async {
+                    val bytes = gate.withPermit { checked(timedFile("${a.placement.wire} ad ${a.index + 1}", a.assetId!!, ad = true)) }
+                    AdInput(a.placement, bytes, a.enabled, a.schedule, a.dwellSec, a.source, a.index, a.assetId, null)
+                }
+            }
             logoJob.await() to adJobs.awaitAll()
         }
         // Decode off the render thread. A logo that cannot be decoded fails the whole apply (nothing half-applied).
